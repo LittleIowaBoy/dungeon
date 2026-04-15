@@ -72,9 +72,13 @@ class Game:
 
                 # attack
                 if event.key == pygame.K_SPACE:
-                    hitbox = self.player.attack()
-                    if hitbox:
-                        self.dungeon.hitbox_group.add(hitbox)
+                    result = self.player.attack()
+                    if result:
+                        if isinstance(result, list):
+                            for hb in result:
+                                self.dungeon.hitbox_group.add(hb)
+                        else:
+                            self.dungeon.hitbox_group.add(result)
 
                 # chest interaction
                 if event.key == pygame.K_e:

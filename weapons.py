@@ -94,17 +94,36 @@ class Spear(Weapon):
     def _make_hitbox(self, cx, cy, dx, dy):
         length = int(SPEAR_RANGE * TILE_SIZE)
         width = int(SPEAR_WIDTH * TILE_SIZE)
-        # Oriented rectangle along facing direction
-        if abs(dx) >= abs(dy):
-            w, h = length, width
+        is_diagonal = abs(dx) > 0.1 and abs(dy) > 0.1
+
+        if is_diagonal:
+            # Place a line of small square segments along the diagonal.
+            seg_size = max(width, 12)
+            segments = max(int(length / seg_size), 3)
+            hitboxes = []
+            for i in range(segments):
+                t = (i + 1) / segments  # 0..1 along the line
+                sx = int(cx + dx * length * t)
+                sy = int(cy + dy * length * t)
+                rect = pygame.Rect(0, 0, seg_size, seg_size)
+                rect.center = (sx, sy)
+                hitboxes.append(
+                    AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
+                                 COLOR_SPEAR_HIT)
+                )
+            return hitboxes
         else:
-            w, h = width, length
-        ox = int(dx * length * 0.5)
-        oy = int(dy * length * 0.5)
-        rect = pygame.Rect(0, 0, w, h)
-        rect.center = (cx + ox, cy + oy)
-        return AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
-                            COLOR_SPEAR_HIT)
+            # Cardinal direction: simple oriented rectangle
+            if abs(dx) >= abs(dy):
+                w, h = length, width
+            else:
+                w, h = width, length
+            ox = int(dx * length * 0.5)
+            oy = int(dy * length * 0.5)
+            rect = pygame.Rect(0, 0, w, h)
+            rect.center = (cx + ox, cy + oy)
+            return AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
+                                COLOR_SPEAR_HIT)
 
 
 # ── Axe ─────────────────────────────────────────────────
