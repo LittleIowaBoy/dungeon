@@ -31,14 +31,15 @@ TERRAIN_COLORS = {
     PORTAL: COLOR_PORTAL,
 }
 
-# terrain types that can be randomly placed
+# terrain types that can be randomly placed (default pool)
 _TERRAIN_POOL = [MUD, ICE, WATER]
 
 
 class Room:
     """A single dungeon room stored as a ROOM_COLS×ROOM_ROWS tile grid."""
 
-    def __init__(self, doors, is_exit=False):
+    def __init__(self, doors, is_exit=False, terrain_type=None,
+                 enemy_count_range=None, enemy_type_weights=None):
         """
         Parameters
         ----------
@@ -46,9 +47,19 @@ class Room:
             Which side has a door.
         is_exit : bool
             Whether to place an exit portal in this room.
+        terrain_type : str or None
+            If given, only this terrain is used for patches (e.g. "mud").
+            If None, patches are chosen randomly from the default pool.
+        enemy_count_range : tuple(int, int) or None
+            (min, max) enemies to spawn.  Falls back to settings defaults.
+        enemy_type_weights : list[int] or None
+            Weights for [PatrolEnemy, RandomEnemy, ChaserEnemy].
         """
         self.doors = dict(doors)  # copy
         self.is_exit = is_exit
+        self._terrain_type = terrain_type
+        self._enemy_count_range = enemy_count_range
+        self._enemy_type_weights = enemy_type_weights
 
         # build grid
         self.grid = [[FLOOR] * ROOM_COLS for _ in range(ROOM_ROWS)]
@@ -137,7 +148,10 @@ class Room:
     def _place_terrain(self):
         count = random.randint(TERRAIN_PATCH_MIN, TERRAIN_PATCH_MAX)
         for _ in range(count):
-            kind = random.choice(_TERRAIN_POOL)
+            if self._terrain_type:
+                kind = self._terrain_type
+            else:
+                kind = random.choice(_TERRAIN_POOL)
             w = random.randint(TERRAIN_PATCH_SIZE_MIN, TERRAIN_PATCH_SIZE_MAX)
             h = random.randint(TERRAIN_PATCH_SIZE_MIN, TERRAIN_PATCH_SIZE_MAX)
             sc = random.randint(2, ROOM_COLS - 2 - w)
@@ -168,10 +182,19 @@ class Room:
                 ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2)
 
     def _gen_enemy_configs(self):
-        count = random.randint(ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM)
+        if self._enemy_count_range:
+            lo, hi = self._enemy_count_range
+        else:
+            lo, hi = ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM
+        count = random.randint(lo, hi)
         configs = []
         for _ in range(count):
-            cls = random.choice(ENEMY_CLASSES)
+            if self._enemy_type_weights:
+                cls = random.choices(
+                    ENEMY_CLASSES, weights=self._enemy_type_weights, k=1
+                )[0]
+            else:
+                cls = random.choice(ENEMY_CLASSES)
             pos = self._random_floor_pos(margin=4)
             configs.append((cls, pos))
         return configs

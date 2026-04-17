@@ -154,3 +154,19 @@ class Player(pygame.sprite.Sprite):
         self.rect.center = (x, y)
         self.velocity_x = 0.0
         self.velocity_y = 0.0
+
+    # ── reset for new dungeon run ───────────────────────
+    def reset_for_dungeon(self, progress):
+        """Reset in-dungeon stats for a fresh dungeon entry.
+
+        Persistent coins are synced from *progress*.  In-dungeon boosts
+        (speed, HP) are reset to base values from progress.
+        """
+        self.max_hp = progress.max_hp
+        self.current_hp = self.max_hp
+        self.speed_multiplier = 1.0
+        self.coins = progress.coins
+        self._invincible_until = 0
+        self._visible = True
+        self.velocity_x = 0.0
+        self.velocity_y = 0.0

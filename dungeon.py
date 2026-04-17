@@ -2,7 +2,7 @@
 import random
 import pygame
 from settings import (
-    PORTAL_DISTANCE, MAX_DUNGEON_RADIUS,
+    DEFAULT_PORTAL_DISTANCE, MAX_DUNGEON_RADIUS,
     DIR_OFFSETS, OPPOSITE_DIR,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
 )
@@ -14,16 +14,35 @@ from enemies import Enemy
 _ALL_DIRS = list(DIR_OFFSETS.keys())
 
 
-def _in_bounds(x, y):
-    return abs(x) <= MAX_DUNGEON_RADIUS and abs(y) <= MAX_DUNGEON_RADIUS
+def _in_bounds(x, y, radius=MAX_DUNGEON_RADIUS):
+    return abs(x) <= radius and abs(y) <= radius
 
 
 class Dungeon:
     """Manages the full dungeon graph of Room objects."""
 
-    def __init__(self):
+    def __init__(self, dungeon_config=None, level_index=0):
         self.rooms: dict[tuple[int, int], Room] = {}
         self.current_pos = (0, 0)
+
+        # ── extract level config (or use defaults) ──────
+        self._config = dungeon_config
+        self._level_index = level_index
+
+        if dungeon_config and level_index < len(dungeon_config["levels"]):
+            lvl = dungeon_config["levels"][level_index]
+            self._path_length = lvl["path_length"]
+            self._terrain_type = dungeon_config["terrain_type"]
+            self._enemy_count_range = lvl["enemy_count_range"]
+            self._enemy_type_weights = lvl["enemy_type_weights"]
+        else:
+            self._path_length = DEFAULT_PORTAL_DISTANCE
+            self._terrain_type = None
+            self._enemy_count_range = None
+            self._enemy_type_weights = None
+
+        # dynamic radius: ensure the path can always fit
+        self._radius = max(MAX_DUNGEON_RADIUS, self._path_length + 2)
 
         # pre-seed the critical path from (0,0) to exit
         self._exit_path = self._generate_exit_path()
@@ -73,7 +92,7 @@ class Dungeon:
         dx, dy = DIR_OFFSETS[direction]
         nx, ny = self.current_pos[0] + dx, self.current_pos[1] + dy
 
-        if not _in_bounds(nx, ny):
+        if not _in_bounds(nx, ny, self._radius):
             return None  # should never happen (door suppressed)
 
         if (nx, ny) not in self.rooms:
@@ -97,19 +116,19 @@ class Dungeon:
 
     # ── exit path generation ────────────────────────────
     def _generate_exit_path(self):
-        """Random walk of PORTAL_DISTANCE steps from (0,0), no revisits."""
+        """Random walk of _path_length steps from (0,0), no revisits."""
         path = [(0, 0)]
         visited = {(0, 0)}
         cx, cy = 0, 0
-        for _ in range(PORTAL_DISTANCE):
+        for _ in range(self._path_length):
             candidates = []
             for d in _ALL_DIRS:
                 ox, oy = DIR_OFFSETS[d]
                 nx, ny = cx + ox, cy + oy
-                if _in_bounds(nx, ny) and (nx, ny) not in visited:
+                if _in_bounds(nx, ny, self._radius) and (nx, ny) not in visited:
                     candidates.append((d, nx, ny))
             if not candidates:
-                break  # shouldn't happen with radius >> distance
+                break
             d, cx, cy = random.choice(candidates)
             path.append((cx, cy))
             visited.add((cx, cy))
@@ -136,7 +155,10 @@ class Dungeon:
     # ── room creation / generation ──────────────────────
     def _create_room(self, pos, forced_doors=None, is_exit=False):
         doors = self._random_doors(pos, forced_doors)
-        room = Room(doors, is_exit=is_exit)
+        room = Room(doors, is_exit=is_exit,
+                    terrain_type=self._terrain_type,
+                    enemy_count_range=self._enemy_count_range,
+                    enemy_type_weights=self._enemy_type_weights)
         self.rooms[pos] = room
         return room
 
@@ -158,7 +180,7 @@ class Dungeon:
         doors = {}
         for d, (ox, oy) in DIR_OFFSETS.items():
             nx, ny = pos[0] + ox, pos[1] + oy
-            if not _in_bounds(nx, ny):
+            if not _in_bounds(nx, ny, self._radius):
                 doors[d] = False
             elif forced and d in forced:
                 doors[d] = True
@@ -168,7 +190,8 @@ class Dungeon:
         if not any(doors.values()):
             options = [d for d in _ALL_DIRS
                        if _in_bounds(pos[0] + DIR_OFFSETS[d][0],
-                                     pos[1] + DIR_OFFSETS[d][1])]
+                                     pos[1] + DIR_OFFSETS[d][1],
+                                     self._radius)]
             if options:
                 doors[random.choice(options)] = True
         return doors

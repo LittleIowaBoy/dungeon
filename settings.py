@@ -9,8 +9,9 @@ ROOM_COLS = SCREEN_WIDTH // TILE_SIZE   # 20
 ROOM_ROWS = SCREEN_HEIGHT // TILE_SIZE  # 15
 
 # ── Dungeon limits ──────────────────────────────────────
-PORTAL_DISTANCE = 5          # rooms from start to exit
-MAX_DUNGEON_RADIUS = 7       # hard boundary: |x|,|y| <= 7
+# PORTAL_DISTANCE is now driven per-level via dungeon_config.py
+DEFAULT_PORTAL_DISTANCE = 5  # fallback only
+MAX_DUNGEON_RADIUS = 7       # base hard boundary; scales with path length
 
 # ── Door ────────────────────────────────────────────────
 DOOR_WIDTH = 2               # tiles wide
@@ -102,6 +103,7 @@ CHASER_DAMAGE  = 12
 CHASE_RADIUS   = 6 * TILE_SIZE   # pixels
 CHASE_LOST_RADIUS = 8 * TILE_SIZE
 
+# Default enemy counts (overridden per-level via dungeon_config.py)
 ENEMY_MIN_PER_ROOM = 1
 ENEMY_MAX_PER_ROOM = 4
 

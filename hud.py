@@ -5,7 +5,6 @@ from settings import (
     COLOR_HEALTH_BAR, COLOR_HEALTH_BG, COLOR_HUD_TEXT,
     COLOR_WHITE, COLOR_BLACK, COLOR_COIN, COLOR_PORTAL,
     COLOR_PLAYER, COLOR_DARK_GRAY, COLOR_GRAY,
-    MAX_DUNGEON_RADIUS,
 )
 
 
@@ -58,7 +57,7 @@ class HUD:
     # ── minimap ─────────────────────────────────────────
     def _draw_minimap(self, surface, dungeon):
         cell = 7
-        rad = MAX_DUNGEON_RADIUS
+        rad = getattr(dungeon, '_radius', 7)
         size = (2 * rad + 1) * cell
         ox = SCREEN_WIDTH - size - 10
         oy = SCREEN_HEIGHT - size - 40
@@ -89,7 +88,7 @@ class HUD:
         txt = big.render("GAME OVER", True, COLOR_HEALTH_BAR)
         surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2,
                                                 SCREEN_HEIGHT // 2 - 20)))
-        sub = self._font.render("Press R to restart", True, COLOR_WHITE)
+        sub = self._font.render("Press R to return to menu", True, COLOR_WHITE)
         surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2,
                                                 SCREEN_HEIGHT // 2 + 30)))
 
@@ -106,6 +105,6 @@ class HUD:
                                   True, COLOR_COIN)
         surface.blit(coins, coins.get_rect(center=(SCREEN_WIDTH // 2,
                                                     SCREEN_HEIGHT // 2 + 20)))
-        sub = self._font.render("Press R to restart", True, COLOR_WHITE)
+        sub = self._font.render("Press R to return to menu", True, COLOR_WHITE)
         surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2,
                                                 SCREEN_HEIGHT // 2 + 50)))
