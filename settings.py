@@ -64,12 +64,75 @@ PLAYER_SIZE         = 28     # pixels (square)
 INVINCIBILITY_MS    = 1000   # 1 second
 FLASH_INTERVAL_MS   = 100
 
-# ── Speed boost ─────────────────────────────────────────
+# ── Speed boost (legacy instant pickup) ─────────────────
 SPEED_BOOST_AMOUNT = 0.10    # +10 % per pickup
 SPEED_CAP          = 1.5     # max multiplier
 
-# ── Item values ─────────────────────────────────────────
+# ── Item values (legacy instant pickup) ─────────────────
 HEAL_AMOUNT = 25
+
+# ── Consumable items ────────────────────────────────────
+# Health potions
+HEAL_SMALL          = 25
+HEAL_MEDIUM         = 50
+HEAL_LARGE          = 100
+POTION_SMALL_MAX    = 3
+POTION_MEDIUM_MAX   = 2
+POTION_LARGE_MAX    = 1
+
+# Speed boost (inventory consumable — timed)
+SPEED_BOOST_DURATION_MS = 20_000   # 20 seconds
+SPEED_BOOST_MULTIPLIER  = 2.0     # doubles base speed
+SPEED_BOOST_MAX         = 3
+
+# Attack boost (inventory consumable — timed)
+ATTACK_BOOST_DURATION_MS = 20_000  # 20 seconds
+ATTACK_BOOST_MULTIPLIER  = 2.0    # doubles damage
+ATTACK_BOOST_MAX         = 1
+
+# Armor
+ARMOR_HP = 50
+
+# Weapon +1 upgrades
+WEAPON_PLUS_MULTIPLIER = 1.5
+
+# Compass
+COMPASS_MAX  = 1
+COMPASS_USES = 3
+COMPASS_DISPLAY_MS = 5000  # how long direction shows after use
+
+# ── Shop prices ─────────────────────────────────────────
+PRICE_POTION_SMALL  = 10
+PRICE_POTION_MEDIUM = 25
+PRICE_POTION_LARGE  = 50
+PRICE_SPEED_BOOST   = 20
+PRICE_ATTACK_BOOST  = 30
+PRICE_ARMOR         = 40
+PRICE_WEAPON_PLUS   = 75
+PRICE_COMPASS       = 35
+
+# ── Colors (new items) ─────────────────────────────────
+COLOR_ARMOR        = (100, 140, 200)    # steel blue
+COLOR_ARMOR_BAR    = (100, 140, 200)
+COLOR_ARMOR_BG     = (30, 40, 60)
+COLOR_SPEED_GLOW   = (40, 220, 220)     # cyan
+COLOR_ATTACK_GLOW  = (255, 50, 50, 160) # red, semi-transparent
+COLOR_COMPASS      = (220, 200, 60)     # gold
+
+# ── Loot drop weights (database-driven) ────────────────
+# weights for inventory loot drops from enemies
+LOOT_WEIGHT_POTION_SMALL  = 20
+LOOT_WEIGHT_POTION_MEDIUM = 6
+LOOT_WEIGHT_POTION_LARGE  = 2
+LOOT_WEIGHT_SPEED_BOOST   = 10
+LOOT_WEIGHT_ATTACK_BOOST  = 4
+
+# chest loot has slightly better odds for rare items
+CHEST_LOOT_WEIGHT_POTION_SMALL  = 15
+CHEST_LOOT_WEIGHT_POTION_MEDIUM = 10
+CHEST_LOOT_WEIGHT_POTION_LARGE  = 5
+CHEST_LOOT_WEIGHT_SPEED_BOOST   = 12
+CHEST_LOOT_WEIGHT_ATTACK_BOOST  = 8
 
 # ── Weapon stats  (damage, range_tiles, cooldown_ms) ────
 SWORD_DAMAGE   = 15

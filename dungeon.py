@@ -54,6 +54,9 @@ class Dungeon:
             doors = self._path_doors(i)
             self._create_room(pos, forced_doors=doors, is_exit=is_exit)
 
+        # track which rooms the player has visited (for minimap fog-of-war)
+        self.visited: set[tuple[int, int]] = {(0, 0)}
+
         # runtime sprite groups (populated when entering a room)
         self.enemy_group: pygame.sprite.Group = pygame.sprite.Group()
         self.item_group: pygame.sprite.Group = pygame.sprite.Group()
@@ -103,6 +106,7 @@ class Dungeon:
         self._save_chest_state()
 
         self.current_pos = (nx, ny)
+        self.visited.add(self.current_pos)
         self._load_room_sprites()
 
         # player spawn position: opposite door

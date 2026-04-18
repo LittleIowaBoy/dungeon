@@ -7,6 +7,7 @@ from settings import (
     SPEAR_DAMAGE, SPEAR_RANGE, SPEAR_WIDTH, SPEAR_COOLDOWN,
     AXE_DAMAGE, AXE_RANGE, AXE_COOLDOWN,
     COLOR_SWORD_HIT, COLOR_SPEAR_HIT, COLOR_AXE_HIT,
+    COLOR_ATTACK_GLOW,
 )
 
 
@@ -42,6 +43,12 @@ class AttackHitbox(pygame.sprite.Sprite):
             return False
         self._hit_enemies.add(eid)
         return True
+
+    def set_glow(self):
+        """Re-tint the hitbox image with attack boost red glow."""
+        glow = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
+        glow.fill(COLOR_ATTACK_GLOW)
+        self.image = glow
 
 
 # ── Base Weapon ─────────────────────────────────────────

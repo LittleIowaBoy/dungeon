@@ -11,7 +11,7 @@ from settings import (
     CHASE_RADIUS, CHASE_LOST_RADIUS,
     DROP_CHANCE, DROP_WEIGHTS,
 )
-from items import ITEM_CLASSES
+from items import ITEM_CLASSES, ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS, LootDrop, Coin
 
 ENEMY_SIZE = 26
 
@@ -45,8 +45,14 @@ class Enemy(pygame.sprite.Sprite):
         """Return an Item instance (or None) at this enemy's position."""
         if random.random() > DROP_CHANCE:
             return None
-        cls = random.choices(ITEM_CLASSES, weights=DROP_WEIGHTS, k=1)[0]
-        return cls(self.rect.centerx, self.rect.centery)
+        # 50% chance of a coin (instant pickup), 50% chance of inventory loot
+        if random.random() < 0.5:
+            return Coin(self.rect.centerx, self.rect.centery)
+        # Pick from the inventory loot table
+        if not ENEMY_LOOT_IDS:
+            return None
+        item_id = random.choices(ENEMY_LOOT_IDS, weights=ENEMY_LOOT_WEIGHTS, k=1)[0]
+        return LootDrop(self.rect.centerx, self.rect.centery, item_id)
 
     # ── collision helper ────────────────────────────────
     def _move_axis(self, dx, dy, wall_rects):

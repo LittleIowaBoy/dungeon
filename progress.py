@@ -45,6 +45,10 @@ class PlayerProgress:
         self.dungeons: dict[str, DungeonProgress] = {}
         self.inventory: dict[str, int] = {}  # item_id -> quantity
 
+        # Equipment state (persists across levels, lost on death)
+        self.armor_hp = 0        # current armor durability
+        self.compass_uses = 0    # remaining compass uses
+
         # create an entry for every defined dungeon
         for d in DUNGEONS:
             self.dungeons[d["id"]] = DungeonProgress(d["id"])
@@ -60,6 +64,15 @@ class PlayerProgress:
 
     def die_in_dungeon(self, dungeon_id):
         self.get_dungeon(dungeon_id).die()
+        # Clear equipment that is lost on death
+        self.armor_hp = 0
+        self.compass_uses = 0
+        # Remove +1 weapons from inventory
+        for weapon_id in ("sword_plus", "spear_plus", "axe_plus"):
+            self.inventory.pop(weapon_id, None)
+        # Remove armor and compass ownership flags
+        self.inventory.pop("armor", None)
+        self.inventory.pop("compass", None)
 
     def advance_in_dungeon(self, dungeon_id, total_levels=5):
         return self.get_dungeon(dungeon_id).advance_level(total_levels)

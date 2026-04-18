@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS player (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     coins       INTEGER NOT NULL DEFAULT 0,
     max_hp      INTEGER NOT NULL DEFAULT 100,
-    speed_cap   REAL    NOT NULL DEFAULT 1.5
+    speed_cap   REAL    NOT NULL DEFAULT 1.5,
+    armor_hp    INTEGER NOT NULL DEFAULT 0,
+    compass_uses INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS dungeon_progress (
@@ -37,6 +39,15 @@ def _get_conn():
     conn = sqlite3.connect(_DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    # Migrate: add new columns if missing (for existing save files)
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(player)")
+    columns = {row[1] for row in cur.fetchall()}
+    if "armor_hp" not in columns:
+        cur.execute("ALTER TABLE player ADD COLUMN armor_hp INTEGER NOT NULL DEFAULT 0")
+    if "compass_uses" not in columns:
+        cur.execute("ALTER TABLE player ADD COLUMN compass_uses INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
     return conn
 
 
@@ -50,11 +61,13 @@ def save_progress(progress: PlayerProgress):
 
         # player row (upsert)
         cur.execute(
-            "INSERT INTO player (id, coins, max_hp, speed_cap) "
-            "VALUES (1, ?, ?, ?) "
+            "INSERT INTO player (id, coins, max_hp, speed_cap, armor_hp, compass_uses) "
+            "VALUES (1, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET coins=excluded.coins, "
-            "max_hp=excluded.max_hp, speed_cap=excluded.speed_cap",
-            (progress.coins, progress.max_hp, progress.speed_cap),
+            "max_hp=excluded.max_hp, speed_cap=excluded.speed_cap, "
+            "armor_hp=excluded.armor_hp, compass_uses=excluded.compass_uses",
+            (progress.coins, progress.max_hp, progress.speed_cap,
+             progress.armor_hp, progress.compass_uses),
         )
 
         # dungeon progress (upsert each)
@@ -94,12 +107,15 @@ def load_progress() -> PlayerProgress:
         cur = conn.cursor()
 
         # player
-        cur.execute("SELECT coins, max_hp, speed_cap FROM player WHERE id=1")
+        cur.execute("SELECT coins, max_hp, speed_cap, armor_hp, compass_uses "
+                    "FROM player WHERE id=1")
         row = cur.fetchone()
         if row:
             progress.coins = row[0]
             progress.max_hp = row[1]
             progress.speed_cap = row[2]
+            progress.armor_hp = row[3]
+            progress.compass_uses = row[4]
 
         # dungeon progress
         cur.execute("SELECT dungeon_id, current_level, is_alive, completed "

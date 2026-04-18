@@ -1,8 +1,8 @@
-"""Menu screens: MainMenu, DungeonSelect, CharacterCustomize, Shop, LevelComplete."""
+"""Menu screens: MainMenu, DungeonSelect, CharacterCustomize, Shop, Pause, LevelComplete."""
 import pygame
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    COLOR_WHITE, COLOR_BLACK, COLOR_GRAY, COLOR_COIN,
+    COLOR_WHITE, COLOR_BLACK, COLOR_GRAY, COLOR_DARK_GRAY, COLOR_COIN,
     COLOR_PORTAL, COLOR_HEALTH_BAR, COLOR_MUD, COLOR_ICE, COLOR_WATER,
 )
 from game_states import GameState
@@ -230,7 +230,9 @@ class ShopScreen:
             elif event.key in (pygame.K_DOWN, pygame.K_s):
                 self.selected = (self.selected + 1) % len(items)
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                self.shop.buy(items[self.selected].id, self.progress)
+                item = items[self.selected]
+                if not self.shop.is_maxed(item.id, self.progress):
+                    self.shop.buy(item.id, self.progress)
         return None
 
     def draw(self, surface):
@@ -250,14 +252,36 @@ class ShopScreen:
         else:
             y = 120
             for i, item in enumerate(items):
-                color = COLOR_WHITE if i == self.selected else COLOR_GRAY
+                owned = self.progress.inventory.get(item.id, 0)
+                maxed = self.shop.is_maxed(item.id, self.progress)
+                can_afford = self.progress.coins >= item.cost
+
+                # Determine line color
+                if maxed and item.id not in ("armor", "compass"):
+                    line_color = COLOR_DARK_GRAY
+                elif i == self.selected:
+                    line_color = COLOR_WHITE
+                else:
+                    line_color = COLOR_GRAY
+
                 prefix = "> " if i == self.selected else "  "
 
-                owned = self.progress.inventory.get(item.id, 0)
-                badge = f"  [Owned x{owned}]" if owned else ""
+                # Owned badge with max
+                if item.max_owned > 0:
+                    badge = f"  [{owned}/{item.max_owned}]"
+                else:
+                    badge = f"  [x{owned}]" if owned else ""
 
-                line = f"{prefix}{item.name} - {item.cost} coins{badge}"
-                txt = self._font.render(line, True, color)
+                # Status suffix
+                if maxed and item.id not in ("armor", "compass"):
+                    suffix = "  MAXED"
+                elif not can_afford:
+                    suffix = "  (not enough coins)"
+                else:
+                    suffix = ""
+
+                line = f"{prefix}{item.name} - {item.cost} coins{badge}{suffix}"
+                txt = self._font.render(line, True, line_color)
                 surface.blit(txt, (60, y + i * 50))
 
                 desc = self._small_font.render(item.description, True, COLOR_GRAY)
@@ -266,6 +290,60 @@ class ShopScreen:
         hint = self._font.render("Press ESC to return", True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                   SCREEN_HEIGHT - 40)))
+
+
+# ═════════════════════════════════════════════════════════
+#  Pause Screen
+# ═════════════════════════════════════════════════════════
+class PauseScreen:
+    OPTIONS = ["Resume", "Quit Level"]
+
+    def __init__(self):
+        self.selected = 0
+        self._font = None
+        self._title_font = None
+        self._small_font = None
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 40)
+            self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def handle_events(self, events):
+        """Returns a choice string or None."""
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return "Resume"
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.selected = (self.selected - 1) % len(self.OPTIONS)
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected = (self.selected + 1) % len(self.OPTIONS)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                return self.OPTIONS[self.selected]
+        return None
+
+    def draw(self, surface):
+        self._ensure_fonts()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        surface.blit(overlay, (0, 0))
+
+        title = self._title_font.render("Paused", True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2,
+                                                    SCREEN_HEIGHT // 2 - 80)))
+
+        _draw_options(
+            surface, self._font, self.OPTIONS, self.selected,
+            SCREEN_WIDTH // 2 - 100, SCREEN_HEIGHT // 2 - 20,
+        )
+
+        warn = self._small_font.render(
+            "Quitting will lose all progress in this level.", True, COLOR_GRAY)
+        surface.blit(warn, warn.get_rect(center=(SCREEN_WIDTH // 2,
+                                                  SCREEN_HEIGHT // 2 + 60)))
 
 
 # ═════════════════════════════════════════════════════════

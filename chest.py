@@ -5,9 +5,23 @@ from sprites import make_rect_surface
 from settings import (
     COLOR_CHEST, COLOR_CHEST_LOOTED,
     CHEST_MIN_ITEMS, CHEST_MAX_ITEMS, CHEST_INTERACT_DIST,
-    DROP_WEIGHTS,
+    CHEST_LOOT_WEIGHT_POTION_SMALL, CHEST_LOOT_WEIGHT_POTION_MEDIUM,
+    CHEST_LOOT_WEIGHT_POTION_LARGE, CHEST_LOOT_WEIGHT_SPEED_BOOST,
+    CHEST_LOOT_WEIGHT_ATTACK_BOOST,
 )
-from items import ITEM_CLASSES
+from items import Coin, LootDrop, ITEM_DATABASE
+
+
+# Build chest loot table from database (items that can_loot) with chest weights
+_CHEST_LOOT_WEIGHTS = {
+    "health_potion_small": CHEST_LOOT_WEIGHT_POTION_SMALL,
+    "health_potion_medium": CHEST_LOOT_WEIGHT_POTION_MEDIUM,
+    "health_potion_large": CHEST_LOOT_WEIGHT_POTION_LARGE,
+    "speed_boost": CHEST_LOOT_WEIGHT_SPEED_BOOST,
+    "attack_boost": CHEST_LOOT_WEIGHT_ATTACK_BOOST,
+}
+_CHEST_LOOT_IDS = [k for k in _CHEST_LOOT_WEIGHTS if k in ITEM_DATABASE]
+_CHEST_LOOT_W = [_CHEST_LOOT_WEIGHTS[k] for k in _CHEST_LOOT_IDS]
 
 
 class Chest(pygame.sprite.Sprite):
@@ -19,12 +33,18 @@ class Chest(pygame.sprite.Sprite):
         self._set_image()
         self.rect = self.image.get_rect(center=(x, y))
         # Pre-generate contents (only used if not looted)
+        # Each entry is either ("coin",) or ("loot", item_id)
         self.contents = []
         if not looted:
             count = random.randint(CHEST_MIN_ITEMS, CHEST_MAX_ITEMS)
             for _ in range(count):
-                cls = random.choices(ITEM_CLASSES, weights=DROP_WEIGHTS, k=1)[0]
-                self.contents.append(cls)
+                # 40% coin, 60% inventory loot
+                if random.random() < 0.4:
+                    self.contents.append(("coin",))
+                else:
+                    item_id = random.choices(_CHEST_LOOT_IDS,
+                                             weights=_CHEST_LOOT_W, k=1)[0]
+                    self.contents.append(("loot", item_id))
 
     # ── visuals ─────────────────────────────────────────
     def _set_image(self):
@@ -47,9 +67,14 @@ class Chest(pygame.sprite.Sprite):
         self.looted = True
         self._set_image()
         # Spawn items around the chest
-        for i, cls in enumerate(self.contents):
+        for i, entry in enumerate(self.contents):
             offset_x = (i - len(self.contents) // 2) * 20
-            item = cls(self.rect.centerx + offset_x, self.rect.centery - 24)
+            cx = self.rect.centerx + offset_x
+            cy = self.rect.centery - 24
+            if entry[0] == "coin":
+                item = Coin(cx, cy)
+            else:
+                item = LootDrop(cx, cy, entry[1])
             items_group.add(item)
         self.contents.clear()
         return True

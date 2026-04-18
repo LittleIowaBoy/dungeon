@@ -1,4 +1,4 @@
-"""Player: 8-dir movement, ice momentum, health, inventory, weapon slot."""
+"""Player: 8-dir movement, ice momentum, health, inventory, weapon slot, consumables."""
 import math
 import pygame
 from sprites import make_rect_surface
@@ -7,9 +7,29 @@ from settings import (
     INVINCIBILITY_MS, FLASH_INTERVAL_MS,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
     ICE_FRICTION, TERRAIN_SPEED,
-    COLOR_PLAYER,
+    COLOR_PLAYER, COLOR_SPEED_GLOW,
+    HEAL_SMALL, HEAL_MEDIUM, HEAL_LARGE,
+    SPEED_BOOST_DURATION_MS, SPEED_BOOST_MULTIPLIER,
+    ATTACK_BOOST_DURATION_MS, ATTACK_BOOST_MULTIPLIER,
+    WEAPON_PLUS_MULTIPLIER, ARMOR_HP,
+    COMPASS_DISPLAY_MS,
 )
 from weapons import Sword, Spear, Axe
+
+# Potion size cycle order and healing values
+_POTION_SIZES = ["small", "medium", "large"]
+_POTION_ITEM_IDS = {
+    "small": "health_potion_small",
+    "medium": "health_potion_medium",
+    "large": "health_potion_large",
+}
+_POTION_HEAL = {
+    "small": HEAL_SMALL,
+    "medium": HEAL_MEDIUM,
+    "large": HEAL_LARGE,
+}
+# Map weapon index to +1 item id
+_WEAPON_PLUS_IDS = {0: "sword_plus", 1: "spear_plus", 2: "axe_plus"}
 
 
 class Player(pygame.sprite.Sprite):
@@ -25,6 +45,12 @@ class Player(pygame.sprite.Sprite):
         self.speed_multiplier = 1.0
         self.coins = 0
 
+        # progress reference (set in reset_for_dungeon)
+        self.progress = None
+
+        # armor
+        self.armor_hp = 0
+
         # movement
         self.facing_dx = 0.0
         self.facing_dy = 1.0  # face down initially
@@ -35,10 +61,22 @@ class Player(pygame.sprite.Sprite):
         # weapons
         self.weapons = [Sword(), Spear(), Axe()]
         self.current_weapon_index = 0
+        self.has_weapon_plus = {0: False, 1: False, 2: False}
 
         # invincibility
         self._invincible_until = 0
         self._visible = True
+
+        # consumable state
+        self.selected_potion_size = "small"  # cycles: small → medium → large
+        self.speed_boost_until = 0   # ticks timestamp; 0 = inactive
+        self.attack_boost_until = 0  # ticks timestamp; 0 = inactive
+
+        # compass
+        self.compass_uses = 0
+        self.compass_direction = None       # e.g. "NE"
+        self.compass_arrow = None           # e.g. "↗"
+        self._compass_display_until = 0     # ticks timestamp
 
     # ── properties ──────────────────────────────────────
     @property
@@ -57,6 +95,11 @@ class Player(pygame.sprite.Sprite):
     def take_damage(self, amount):
         if self.is_invincible:
             return
+        # Armor absorbs damage first
+        if self.armor_hp > 0:
+            absorbed = min(amount, self.armor_hp)
+            self.armor_hp -= absorbed
+            amount -= absorbed
         self.current_hp = max(0, self.current_hp - amount)
         self._invincible_until = pygame.time.get_ticks() + INVINCIBILITY_MS
 
@@ -66,10 +109,30 @@ class Player(pygame.sprite.Sprite):
             self.current_weapon_index = index
 
     def attack(self):
-        return self.weapon.attack(
+        result = self.weapon.attack(
             self.rect.centerx, self.rect.centery,
             self.facing_dx, self.facing_dy,
         )
+        if result is None:
+            return None
+        # Calculate damage multiplier
+        multiplier = 1.0
+        if self.is_attack_boosted:
+            multiplier *= ATTACK_BOOST_MULTIPLIER
+        if self.has_weapon_plus.get(self.current_weapon_index, False):
+            multiplier *= WEAPON_PLUS_MULTIPLIER
+        # Apply multiplier to hitbox damage(s)
+        use_glow = self.is_attack_boosted
+        if isinstance(result, list):
+            for hb in result:
+                hb.damage = int(hb.damage * multiplier)
+                if use_glow:
+                    hb.set_glow()
+        else:
+            result.damage = int(result.damage * multiplier)
+            if use_glow:
+                result.set_glow()
+        return result
 
     # ── movement / update ───────────────────────────────
     def update(self, wall_rects, terrain_at):
@@ -103,7 +166,7 @@ class Player(pygame.sprite.Sprite):
         self._on_ice = terrain == "ice"
 
         # compute effective speed
-        speed = PLAYER_BASE_SPEED * self.speed_multiplier
+        speed = PLAYER_BASE_SPEED * self._effective_speed_multiplier()
         terrain_mult = TERRAIN_SPEED.get(terrain, 1.0)
 
         if self._on_ice:
@@ -120,7 +183,7 @@ class Player(pygame.sprite.Sprite):
         self._move_axis(self.velocity_x, 0, wall_rects)
         self._move_axis(0, self.velocity_y, wall_rects)
 
-        # invincibility flash
+        # invincibility flash + speed boost glow
         if self.is_invincible:
             now = pygame.time.get_ticks()
             self._visible = ((now // FLASH_INTERVAL_MS) % 2 == 0)
@@ -131,7 +194,16 @@ class Player(pygame.sprite.Sprite):
                                             pygame.SRCALPHA)
         else:
             self._visible = True
-            self.image = self._base_image
+            if self.is_speed_boosted:
+                # cyan glow border around player
+                glow = pygame.Surface((PLAYER_SIZE + 4, PLAYER_SIZE + 4),
+                                      pygame.SRCALPHA)
+                glow.fill((*COLOR_SPEED_GLOW, 80))
+                glow.blit(self._base_image, (2, 2))
+                self.image = glow
+                self.rect = glow.get_rect(center=self.rect.center)
+            else:
+                self.image = self._base_image
 
     # ── collision helper ────────────────────────────────
     def _move_axis(self, dx, dy, wall_rects):
@@ -161,7 +233,9 @@ class Player(pygame.sprite.Sprite):
 
         Persistent coins are synced from *progress*.  In-dungeon boosts
         (speed, HP) are reset to base values from progress.
+        Equipment (armor, +1 weapons, compass) is loaded from progress.
         """
+        self.progress = progress
         self.max_hp = progress.max_hp
         self.current_hp = self.max_hp
         self.speed_multiplier = 1.0
@@ -170,3 +244,132 @@ class Player(pygame.sprite.Sprite):
         self._visible = True
         self.velocity_x = 0.0
         self.velocity_y = 0.0
+
+        # Armor — persists across levels, loaded from progress
+        self.armor_hp = getattr(progress, 'armor_hp', 0)
+
+        # Compass uses — persists across levels
+        self.compass_uses = getattr(progress, 'compass_uses', 0)
+        self.compass_direction = None
+        self.compass_arrow = None
+        self._compass_display_until = 0
+
+        # +1 weapons — check inventory
+        inv = progress.inventory
+        self.has_weapon_plus = {
+            0: inv.get("sword_plus", 0) >= 1,
+            1: inv.get("spear_plus", 0) >= 1,
+            2: inv.get("axe_plus", 0) >= 1,
+        }
+
+        # Reset boosts
+        self.speed_boost_until = 0
+        self.attack_boost_until = 0
+        self.selected_potion_size = "small"
+
+    # ── boost properties ────────────────────────────────
+    @property
+    def is_speed_boosted(self):
+        return pygame.time.get_ticks() < self.speed_boost_until
+
+    @property
+    def is_attack_boosted(self):
+        return pygame.time.get_ticks() < self.attack_boost_until
+
+    @property
+    def compass_showing(self):
+        return pygame.time.get_ticks() < self._compass_display_until
+
+    def _effective_speed_multiplier(self):
+        if self.is_speed_boosted:
+            return SPEED_BOOST_MULTIPLIER
+        return self.speed_multiplier
+
+    # ── consumable use methods ──────────────────────────
+    def cycle_potion(self):
+        """Cycle the selected potion size: small → medium → large → small."""
+        idx = _POTION_SIZES.index(self.selected_potion_size)
+        self.selected_potion_size = _POTION_SIZES[(idx + 1) % len(_POTION_SIZES)]
+
+    def use_potion(self):
+        """Use the currently selected potion. Returns True on success."""
+        if self.progress is None:
+            return False
+        item_id = _POTION_ITEM_IDS[self.selected_potion_size]
+        inv = self.progress.inventory
+        if inv.get(item_id, 0) <= 0:
+            return False
+        heal = _POTION_HEAL[self.selected_potion_size]
+        self.current_hp = min(self.current_hp + heal, self.max_hp)
+        inv[item_id] -= 1
+        if inv[item_id] <= 0:
+            del inv[item_id]
+        return True
+
+    def use_speed_boost(self):
+        """Activate a speed boost. Returns True on success."""
+        if self.progress is None:
+            return False
+        inv = self.progress.inventory
+        if inv.get("speed_boost", 0) <= 0:
+            return False
+        inv["speed_boost"] -= 1
+        if inv["speed_boost"] <= 0:
+            del inv["speed_boost"]
+        self.speed_boost_until = pygame.time.get_ticks() + SPEED_BOOST_DURATION_MS
+        return True
+
+    def use_attack_boost(self):
+        """Activate an attack boost. Returns True on success."""
+        if self.progress is None:
+            return False
+        inv = self.progress.inventory
+        if inv.get("attack_boost", 0) <= 0:
+            return False
+        inv["attack_boost"] -= 1
+        if inv["attack_boost"] <= 0:
+            del inv["attack_boost"]
+        self.attack_boost_until = pygame.time.get_ticks() + ATTACK_BOOST_DURATION_MS
+        return True
+
+    def use_compass(self, dungeon):
+        """Use the compass to find the portal direction. Returns True on success."""
+        if self.compass_uses <= 0:
+            return False
+        self.compass_uses -= 1
+        # Update progress
+        if self.progress is not None:
+            self.progress.compass_uses = self.compass_uses
+
+        # Calculate direction from current room to exit
+        cx, cy = dungeon.current_pos
+        ex, ey = dungeon._exit_pos
+        dx = ex - cx
+        dy = ey - cy
+
+        if dx == 0 and dy == 0:
+            self.compass_direction = "HERE"
+            self.compass_arrow = "●"
+        else:
+            # Map to 8-direction compass (screen coords: +y is down)
+            direction = ""
+            arrow = ""
+            if dy < 0:
+                direction += "N"
+            elif dy > 0:
+                direction += "S"
+            if dx > 0:
+                direction += "E"
+            elif dx < 0:
+                direction += "W"
+
+            _ARROWS = {
+                "N": "↑", "S": "↓", "E": "→", "W": "←",
+                "NE": "↗", "NW": "↖", "SE": "↘", "SW": "↙",
+            }
+            arrow = _ARROWS.get(direction, "?")
+            self.compass_direction = direction
+            self.compass_arrow = arrow
+
+        self._compass_display_until = pygame.time.get_ticks() + COMPASS_DISPLAY_MS
+        return True
