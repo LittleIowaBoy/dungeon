@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS inventory (
     item_id  TEXT    PRIMARY KEY,
     quantity INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS equipment_storage (
+    item_id  TEXT    PRIMARY KEY,
+    quantity INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS equipped_slots (
+    slot_name TEXT PRIMARY KEY,
+    item_id   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS weapon_upgrades (
+    weapon_id TEXT PRIMARY KEY,
+    tier      INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -58,6 +73,7 @@ def save_progress(progress: PlayerProgress):
     conn = _get_conn()
     try:
         cur = conn.cursor()
+        progress.ensure_loadout_state()
 
         # player row (upsert)
         cur.execute(
@@ -83,12 +99,36 @@ def save_progress(progress: PlayerProgress):
                  int(dp.is_alive), int(dp.completed)),
             )
 
-        # inventory (upsert each)
+        # inventory
+        cur.execute("DELETE FROM inventory")
         for item_id, qty in progress.inventory.items():
             cur.execute(
-                "INSERT INTO inventory (item_id, quantity) VALUES (?, ?) "
-                "ON CONFLICT(item_id) DO UPDATE SET quantity=excluded.quantity",
+                "INSERT INTO inventory (item_id, quantity) VALUES (?, ?)",
                 (item_id, qty),
+            )
+
+        # equipment storage
+        cur.execute("DELETE FROM equipment_storage")
+        for item_id, qty in progress.equipment_storage.items():
+            cur.execute(
+                "INSERT INTO equipment_storage (item_id, quantity) VALUES (?, ?)",
+                (item_id, qty),
+            )
+
+        # equipped slots
+        cur.execute("DELETE FROM equipped_slots")
+        for slot_name, item_id in progress.equipped_slots.items():
+            cur.execute(
+                "INSERT INTO equipped_slots (slot_name, item_id) VALUES (?, ?)",
+                (slot_name, item_id),
+            )
+
+        # weapon upgrades
+        cur.execute("DELETE FROM weapon_upgrades")
+        for weapon_id, tier in progress.weapon_upgrades.items():
+            cur.execute(
+                "INSERT INTO weapon_upgrades (weapon_id, tier) VALUES (?, ?)",
+                (weapon_id, tier),
             )
 
         conn.commit()
@@ -105,6 +145,14 @@ def load_progress() -> PlayerProgress:
     conn = _get_conn()
     try:
         cur = conn.cursor()
+        progress.inventory = {}
+        progress.equipment_storage = {}
+        progress.equipped_slots = {
+            slot_name: None for slot_name in progress.equipped_slots
+        }
+        progress.weapon_upgrades = {
+            weapon_id: 0 for weapon_id in progress.weapon_upgrades
+        }
 
         # player
         cur.execute("SELECT coins, max_hp, speed_cap, armor_hp, compass_uses "
@@ -130,6 +178,23 @@ def load_progress() -> PlayerProgress:
         cur.execute("SELECT item_id, quantity FROM inventory")
         for item_id, qty in cur.fetchall():
             progress.inventory[item_id] = qty
+
+        # equipment storage
+        cur.execute("SELECT item_id, quantity FROM equipment_storage")
+        for item_id, qty in cur.fetchall():
+            progress.equipment_storage[item_id] = qty
+
+        # equipped slots
+        cur.execute("SELECT slot_name, item_id FROM equipped_slots")
+        for slot_name, item_id in cur.fetchall():
+            progress.equipped_slots[slot_name] = item_id
+
+        # weapon upgrades
+        cur.execute("SELECT weapon_id, tier FROM weapon_upgrades")
+        for weapon_id, tier in cur.fetchall():
+            progress.weapon_upgrades[weapon_id] = tier
+
+        progress.migrate_legacy_state()
 
     finally:
         conn.close()

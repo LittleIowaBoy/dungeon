@@ -14,7 +14,7 @@ from settings import (
     WEAPON_PLUS_MULTIPLIER, ARMOR_HP,
     COMPASS_DISPLAY_MS,
 )
-from weapons import Sword, Spear, Axe
+from weapons import create_weapon
 
 # Potion size cycle order and healing values
 _POTION_SIZES = ["small", "medium", "large"]
@@ -28,8 +28,12 @@ _POTION_HEAL = {
     "medium": HEAL_MEDIUM,
     "large": HEAL_LARGE,
 }
-# Map weapon index to +1 item id
-_WEAPON_PLUS_IDS = {0: "sword_plus", 1: "spear_plus", 2: "axe_plus"}
+_WEAPON_SLOT_KEYS = ("weapon_1", "weapon_2")
+_LEGACY_WEAPON_PLUS_IDS = {
+    "sword": "sword_plus",
+    "spear": "spear_plus",
+    "axe": "axe_plus",
+}
 
 
 class Player(pygame.sprite.Sprite):
@@ -59,9 +63,10 @@ class Player(pygame.sprite.Sprite):
         self._on_ice = False
 
         # weapons
-        self.weapons = [Sword(), Spear(), Axe()]
+        self.weapon_ids = ["sword", "spear"]
+        self.weapons = [create_weapon(weapon_id) for weapon_id in self.weapon_ids]
         self.current_weapon_index = 0
-        self.has_weapon_plus = {0: False, 1: False, 2: False}
+        self.weapon_upgrade_tiers = {weapon_id: 0 for weapon_id in self.weapon_ids}
 
         # invincibility
         self._invincible_until = 0
@@ -81,7 +86,15 @@ class Player(pygame.sprite.Sprite):
     # ── properties ──────────────────────────────────────
     @property
     def weapon(self):
+        if not self.weapons:
+            return None
         return self.weapons[self.current_weapon_index]
+
+    @property
+    def current_weapon_id(self):
+        if not self.weapon_ids:
+            return None
+        return self.weapon_ids[self.current_weapon_index]
 
     @property
     def is_invincible(self):
@@ -90,6 +103,11 @@ class Player(pygame.sprite.Sprite):
     @property
     def alive(self):
         return self.current_hp > 0
+
+    def weapon_upgrade_tier(self, weapon_id):
+        if weapon_id is None:
+            return 0
+        return self.weapon_upgrade_tiers.get(weapon_id, 0)
 
     # ── damage ──────────────────────────────────────────
     def take_damage(self, amount):
@@ -108,8 +126,25 @@ class Player(pygame.sprite.Sprite):
         if 0 <= index < len(self.weapons):
             self.current_weapon_index = index
 
+    def _load_equipped_weapons(self, progress):
+        self.weapon_ids = []
+        self.weapons = []
+        equipped_slots = getattr(progress, "equipped_slots", {})
+        for slot_key in _WEAPON_SLOT_KEYS:
+            weapon_id = equipped_slots.get(slot_key)
+            weapon = create_weapon(weapon_id)
+            if weapon is None:
+                continue
+            self.weapon_ids.append(weapon_id)
+            self.weapons.append(weapon)
+        self.current_weapon_index = 0
+
     def attack(self):
-        result = self.weapon.attack(
+        weapon = self.weapon
+        if weapon is None:
+            return None
+
+        result = weapon.attack(
             self.rect.centerx, self.rect.centery,
             self.facing_dx, self.facing_dy,
         )
@@ -119,8 +154,9 @@ class Player(pygame.sprite.Sprite):
         multiplier = 1.0
         if self.is_attack_boosted:
             multiplier *= ATTACK_BOOST_MULTIPLIER
-        if self.has_weapon_plus.get(self.current_weapon_index, False):
-            multiplier *= WEAPON_PLUS_MULTIPLIER
+        upgrade_tier = self.weapon_upgrade_tier(self.current_weapon_id)
+        if upgrade_tier > 0:
+            multiplier *= WEAPON_PLUS_MULTIPLIER ** upgrade_tier
         # Apply multiplier to hitbox damage(s)
         use_glow = self.is_attack_boosted
         if isinstance(result, list):
@@ -254,13 +290,20 @@ class Player(pygame.sprite.Sprite):
         self.compass_arrow = None
         self._compass_display_until = 0
 
-        # +1 weapons — check inventory
+        # Equipped weapons and upgrades
+        if hasattr(progress, "ensure_loadout_state"):
+            progress.ensure_loadout_state()
+        self._load_equipped_weapons(progress)
+
+        # Upgrade tiers (with legacy inventory fallback)
         inv = progress.inventory
-        self.has_weapon_plus = {
-            0: inv.get("sword_plus", 0) >= 1,
-            1: inv.get("spear_plus", 0) >= 1,
-            2: inv.get("axe_plus", 0) >= 1,
-        }
+        self.weapon_upgrade_tiers = dict(getattr(progress, "weapon_upgrades", {}))
+        for weapon_id, legacy_item_id in _LEGACY_WEAPON_PLUS_IDS.items():
+            if inv.get(legacy_item_id, 0) > 0:
+                self.weapon_upgrade_tiers[weapon_id] = max(
+                    self.weapon_upgrade_tiers.get(weapon_id, 0),
+                    1,
+                )
 
         # Reset boosts
         self.speed_boost_until = 0

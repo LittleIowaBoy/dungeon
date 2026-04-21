@@ -2,11 +2,12 @@
 import math
 import pygame
 from settings import (
-    TILE_SIZE, ATTACK_DURATION_MS,
+    TILE_SIZE, PLAYER_SIZE, ATTACK_DURATION_MS,
     SWORD_DAMAGE, SWORD_RANGE, SWORD_COOLDOWN, SWORD_ARC_DEG,
     SPEAR_DAMAGE, SPEAR_RANGE, SPEAR_WIDTH, SPEAR_COOLDOWN,
     AXE_DAMAGE, AXE_RANGE, AXE_COOLDOWN,
-    COLOR_SWORD_HIT, COLOR_SPEAR_HIT, COLOR_AXE_HIT,
+    HAMMER_DAMAGE, HAMMER_RANGE, HAMMER_COOLDOWN,
+    COLOR_SWORD_HIT, COLOR_SPEAR_HIT, COLOR_AXE_HIT, COLOR_HAMMER_HIT,
     COLOR_ATTACK_GLOW,
 )
 
@@ -23,12 +24,15 @@ def _direction_angle(dx, dy):
 class AttackHitbox(pygame.sprite.Sprite):
     """Temporary sprite that checks collisions with enemies."""
 
-    def __init__(self, rect, damage, duration_ms, color):
+    def __init__(self, rect, damage, duration_ms, color,
+                 weapon_id=None, damage_type=None):
         super().__init__()
         self.image = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
         self.image.fill(color)
         self.rect = rect
         self.damage = damage
+        self.weapon_id = weapon_id
+        self.damage_type = damage_type
         self._spawn_time = pygame.time.get_ticks()
         self._duration = duration_ms
         self._hit_enemies = set()
@@ -54,6 +58,8 @@ class AttackHitbox(pygame.sprite.Sprite):
 # ── Base Weapon ─────────────────────────────────────────
 class Weapon:
     name = "weapon"
+    weapon_id = None
+    damage_type = None
     damage = 0
     cooldown_ms = 300
 
@@ -73,33 +79,47 @@ class Weapon:
     def _make_hitbox(self, cx, cy, dx, dy):
         raise NotImplementedError
 
+    def _build_hitbox(self, rect, color):
+        return AttackHitbox(
+            rect,
+            self.damage,
+            ATTACK_DURATION_MS,
+            color,
+            weapon_id=self.weapon_id,
+            damage_type=self.damage_type,
+        )
+
 
 # ── Sword ───────────────────────────────────────────────
 class Sword(Weapon):
     name = "Sword"
+    weapon_id = "sword"
+    damage_type = "slash"
     damage = SWORD_DAMAGE
     cooldown_ms = SWORD_COOLDOWN
 
     def _make_hitbox(self, cx, cy, dx, dy):
-        r = int(SWORD_RANGE * TILE_SIZE)
-        # Build a square hitbox in front of the player
-        size = r
-        ox = int(dx * r * 0.6)
-        oy = int(dy * r * 0.6)
+        depth = int(SWORD_RANGE * TILE_SIZE)
+        # Keep sword wider than the player and place it fully in front.
+        size = max(depth, PLAYER_SIZE + 8)
+        offset = PLAYER_SIZE // 2 + size // 2 + 2
+        ox = int(dx * offset)
+        oy = int(dy * offset)
         rect = pygame.Rect(0, 0, size, size)
         rect.center = (cx + ox, cy + oy)
-        return AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
-                            COLOR_SWORD_HIT)
+        return self._build_hitbox(rect, COLOR_SWORD_HIT)
 
 
 # ── Spear ───────────────────────────────────────────────
 class Spear(Weapon):
     name = "Spear"
+    weapon_id = "spear"
+    damage_type = "pierce"
     damage = SPEAR_DAMAGE
     cooldown_ms = SPEAR_COOLDOWN
 
     def _make_hitbox(self, cx, cy, dx, dy):
-        length = int(SPEAR_RANGE * TILE_SIZE)
+        length = int(SPEAR_RANGE * TILE_SIZE * 1.5)
         width = int(SPEAR_WIDTH * TILE_SIZE)
         is_diagonal = abs(dx) > 0.1 and abs(dy) > 0.1
 
@@ -115,8 +135,7 @@ class Spear(Weapon):
                 rect = pygame.Rect(0, 0, seg_size, seg_size)
                 rect.center = (sx, sy)
                 hitboxes.append(
-                    AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
-                                 COLOR_SPEAR_HIT)
+                    self._build_hitbox(rect, COLOR_SPEAR_HIT)
                 )
             return hitboxes
         else:
@@ -129,13 +148,14 @@ class Spear(Weapon):
             oy = int(dy * length * 0.5)
             rect = pygame.Rect(0, 0, w, h)
             rect.center = (cx + ox, cy + oy)
-            return AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
-                                COLOR_SPEAR_HIT)
+            return self._build_hitbox(rect, COLOR_SPEAR_HIT)
 
 
 # ── Axe ─────────────────────────────────────────────────
 class Axe(Weapon):
     name = "Axe"
+    weapon_id = "axe"
+    damage_type = "slash"
     damage = AXE_DAMAGE
     cooldown_ms = AXE_COOLDOWN
 
@@ -144,5 +164,35 @@ class Axe(Weapon):
         size = r * 2
         rect = pygame.Rect(0, 0, size, size)
         rect.center = (cx, cy)
-        return AttackHitbox(rect, self.damage, ATTACK_DURATION_MS,
-                            COLOR_AXE_HIT)
+        return self._build_hitbox(rect, COLOR_AXE_HIT)
+
+
+class Hammer(Weapon):
+    name = "Hammer"
+    weapon_id = "hammer"
+    damage_type = "blunt"
+    damage = HAMMER_DAMAGE
+    cooldown_ms = HAMMER_COOLDOWN
+
+    def _make_hitbox(self, cx, cy, dx, dy):
+        depth = int(HAMMER_RANGE * TILE_SIZE)
+        size = max(depth, PLAYER_SIZE + 6)
+        offset = PLAYER_SIZE // 2 + size // 2 + 2
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (cx + int(dx * offset), cy + int(dy * offset))
+        return self._build_hitbox(rect, COLOR_HAMMER_HIT)
+
+
+WEAPON_CLASS_BY_ID = {
+    "sword": Sword,
+    "spear": Spear,
+    "axe": Axe,
+    "hammer": Hammer,
+}
+
+
+def create_weapon(weapon_id):
+    weapon_cls = WEAPON_CLASS_BY_ID.get(weapon_id)
+    if weapon_cls is None:
+        return None
+    return weapon_cls()

@@ -71,6 +71,31 @@ class Dungeon:
     def current_room(self) -> Room:
         return self.rooms[self.current_pos]
 
+    def door_kind(self, pos, direction):
+        """Return door kind on a room wall: 'none', 'two_way', or 'one_way'."""
+        room = self.rooms.get(pos)
+        if room is None or not room.doors.get(direction):
+            return "none"
+
+        ox, oy = DIR_OFFSETS[direction]
+        neighbor_pos = (pos[0] + ox, pos[1] + oy)
+        neighbor = self.rooms.get(neighbor_pos)
+        if neighbor is None:
+            # Unknown room will be generated with reciprocal door on entry.
+            return "two_way"
+
+        opposite = OPPOSITE_DIR[direction]
+        if neighbor.doors.get(opposite):
+            return "two_way"
+        return "one_way"
+
+    def current_room_door_kinds(self):
+        """Return {direction: kind} for the current room."""
+        return {
+            direction: self.door_kind(self.current_pos, direction)
+            for direction in _ALL_DIRS
+        }
+
     def try_transition(self, player_rect):
         """Check if the player has stepped through a door.
 

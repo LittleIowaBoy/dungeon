@@ -1,13 +1,16 @@
 """Camera: draws current room tiles then all sprite groups."""
 import pygame
-from settings import TILE_SIZE, ROOM_COLS, ROOM_ROWS
+from settings import (
+    TILE_SIZE, ROOM_COLS, ROOM_ROWS,
+    COLOR_DOOR_ONE_WAY,
+)
 from room import TERRAIN_COLORS
 
 
 class Camera:
     """Renders the current room (room == screen, no scrolling)."""
 
-    def draw(self, surface, room, sprite_groups):
+    def draw(self, surface, room, sprite_groups, dungeon=None):
         """
         Parameters
         ----------
@@ -29,3 +32,32 @@ class Camera:
         # sprites
         for group in sprite_groups:
             group.draw(surface)
+
+        # one-way door overlays (drawn on top so they are clearly visible)
+        if dungeon is not None:
+            self._draw_one_way_door_markers(surface, dungeon)
+
+    def _draw_one_way_door_markers(self, surface, dungeon):
+        marker_margin = 2
+        marker_thickness = 5
+        current_kinds = dungeon.current_room_door_kinds()
+
+        if current_kinds.get("top") == "one_way":
+            y = marker_margin
+            rect = pygame.Rect(0, y, ROOM_COLS * TILE_SIZE, marker_thickness)
+            pygame.draw.rect(surface, COLOR_DOOR_ONE_WAY, rect)
+
+        if current_kinds.get("bottom") == "one_way":
+            y = ROOM_ROWS * TILE_SIZE - marker_margin - marker_thickness
+            rect = pygame.Rect(0, y, ROOM_COLS * TILE_SIZE, marker_thickness)
+            pygame.draw.rect(surface, COLOR_DOOR_ONE_WAY, rect)
+
+        if current_kinds.get("left") == "one_way":
+            x = marker_margin
+            rect = pygame.Rect(x, 0, marker_thickness, ROOM_ROWS * TILE_SIZE)
+            pygame.draw.rect(surface, COLOR_DOOR_ONE_WAY, rect)
+
+        if current_kinds.get("right") == "one_way":
+            x = ROOM_COLS * TILE_SIZE - marker_margin - marker_thickness
+            rect = pygame.Rect(x, 0, marker_thickness, ROOM_ROWS * TILE_SIZE)
+            pygame.draw.rect(surface, COLOR_DOOR_ONE_WAY, rect)

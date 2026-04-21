@@ -1,8 +1,63 @@
+import ctypes
+import sys
+
+
 # ── Display ──────────────────────────────────────────────
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 600
 TILE_SIZE = 40
 FPS = 60
+
+_MIN_SCREEN_WIDTH = 800
+_MIN_SCREEN_HEIGHT = 600
+_WINDOW_MARGIN_X = 40
+_WINDOW_MARGIN_Y = 80
+
+
+def _align_down(value, step):
+    return max(step, (value // step) * step)
+
+
+def _desktop_work_area_size():
+    if sys.platform == "win32":
+        try:
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            rect = RECT()
+            spi_get_work_area = 0x0030
+            if ctypes.windll.user32.SystemParametersInfoW(
+                spi_get_work_area, 0, ctypes.byref(rect), 0
+            ):
+                return rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.destroy()
+        return width, height
+    except Exception:
+        return _MIN_SCREEN_WIDTH, _MIN_SCREEN_HEIGHT
+
+
+_desktop_width, _desktop_height = _desktop_work_area_size()
+SCREEN_WIDTH = _align_down(
+    max(_MIN_SCREEN_WIDTH, _desktop_width - _WINDOW_MARGIN_X),
+    TILE_SIZE,
+)
+SCREEN_HEIGHT = _align_down(
+    max(_MIN_SCREEN_HEIGHT, _desktop_height - _WINDOW_MARGIN_Y),
+    TILE_SIZE,
+)
 
 # ── Room grid (in tiles) ────────────────────────────────
 ROOM_COLS = SCREEN_WIDTH // TILE_SIZE   # 20
@@ -37,6 +92,9 @@ COLOR_ICE        = (160, 210, 240)
 COLOR_WATER      = (50, 80, 130)
 COLOR_DOOR       = (170, 170, 140)
 COLOR_PORTAL     = (160, 60, 220)
+COLOR_DOOR_TWO_WAY = (70, 200, 90)
+COLOR_DOOR_ONE_WAY = (235, 215, 70)
+COLOR_DOOR_NONE    = (210, 70, 70)
 
 # items
 COLOR_HEALTH_POTION = (30, 200, 60)
@@ -51,6 +109,7 @@ COLOR_CHEST_LOOTED  = (80, 50, 20)
 COLOR_SWORD_HIT  = (255, 255, 200, 120)
 COLOR_SPEAR_HIT  = (200, 255, 200, 120)
 COLOR_AXE_HIT    = (255, 200, 200, 120)
+COLOR_HAMMER_HIT = (220, 220, 220, 120)
 
 # HUD
 COLOR_HEALTH_BAR = (220, 30, 30)
@@ -147,7 +206,11 @@ SPEAR_COOLDOWN = 250
 
 AXE_DAMAGE     = 20
 AXE_RANGE      = 1.5
-AXE_COOLDOWN   = 600
+AXE_COOLDOWN   = 1200
+
+HAMMER_DAMAGE   = 28
+HAMMER_RANGE    = 1.25
+HAMMER_COOLDOWN = 800
 
 ATTACK_DURATION_MS = 150     # how long the hitbox sprite lives
 

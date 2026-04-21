@@ -34,6 +34,20 @@ SHOP_ITEMS: list[ShopItem] = [
     if data["can_purchase"]
 ]
 
+_helmet_index = next(
+    (i for i, item in enumerate(SHOP_ITEMS) if item.id == "iron_helmet"),
+    None,
+)
+_armor_index = next(
+    (i for i, item in enumerate(SHOP_ITEMS) if item.id == "armor"),
+    None,
+)
+if _helmet_index is not None and _armor_index is not None and _armor_index != _helmet_index + 1:
+    armor_item = SHOP_ITEMS.pop(_armor_index)
+    if _armor_index < _helmet_index:
+        _helmet_index -= 1
+    SHOP_ITEMS.insert(_helmet_index + 1, armor_item)
+
 
 class Shop:
     """Manages the purchasable item catalogue and transactions."""
@@ -52,7 +66,19 @@ class Shop:
         item = self._find(item_id)
         if item is None:
             return True
-        owned = player_progress.inventory.get(item_id, 0)
+        item_data = ITEM_DATABASE[item_id]
+
+        if item_data.get("category") == "weapon_upgrade":
+            owned = player_progress.weapon_upgrade_tier(
+                item_data["upgrade_weapon_id"]
+            )
+            return owned >= item.max_owned
+
+        if item_data.get("storage_bucket") == "equipment":
+            owned = player_progress.total_owned(item_id)
+        else:
+            owned = player_progress.inventory.get(item_id, 0)
+
         # Armor: allow re-purchase to restore HP (not blocked by max_owned)
         if item_id == "armor" and owned >= 1:
             return False
@@ -64,7 +90,21 @@ class Shop:
         if item is None or player_progress.coins < item.cost:
             return False
 
-        owned = player_progress.inventory.get(item_id, 0)
+        item_data = ITEM_DATABASE[item_id]
+        if item_data.get("storage_bucket") == "equipment":
+            owned = player_progress.total_owned(item_id)
+        else:
+            owned = player_progress.inventory.get(item_id, 0)
+
+        if item_data.get("category") == "weapon_upgrade":
+            if player_progress.weapon_upgrade_tier(item_data["upgrade_weapon_id"]) >= item.max_owned:
+                return False
+            player_progress.coins -= item.cost
+            player_progress.set_weapon_upgrade(
+                item_data["upgrade_weapon_id"],
+                item_data.get("upgrade_tier", 1),
+            )
+            return True
 
         # Armor special case: re-buying restores armor HP, doesn't add count
         if item_id == "armor" and owned >= 1:
@@ -83,7 +123,12 @@ class Shop:
             return False
 
         player_progress.coins -= item.cost
-        player_progress.inventory[item_id] = owned + 1
+        if item_data.get("storage_bucket") == "equipment":
+            player_progress.add_to_equipment_storage(item_id)
+            if item_id == "armor" and player_progress.equipped_slots.get("chest") is None:
+                player_progress.equip_item("chest", item_id)
+        else:
+            player_progress.inventory[item_id] = owned + 1
 
         # Initialize armor HP on first purchase
         if item_id == "armor":

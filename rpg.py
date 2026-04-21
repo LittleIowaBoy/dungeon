@@ -1,5 +1,6 @@
 """Top-Down Dungeon Crawler RPG — entry point."""
 import copy
+import os
 import sys
 import pygame
 from settings import (
@@ -30,6 +31,7 @@ from shop import Shop
 
 class Game:
     def __init__(self):
+        os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Dungeon Crawler")
@@ -50,7 +52,7 @@ class Game:
         # menu screens
         self._main_menu = MainMenuScreen()
         self._dungeon_select = DungeonSelectScreen(self.progress)
-        self._character_screen = CharacterCustomizeScreen()
+        self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
         self._level_complete = None  # created on level complete
         self._pause_screen = PauseScreen()
@@ -129,6 +131,7 @@ class Game:
         self._sync_coins_to_progress()
         save_progress(self.progress)
         self._dungeon_select = DungeonSelectScreen(self.progress)
+        self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
         self.state = GameState.MAIN_MENU
 
@@ -191,6 +194,7 @@ class Game:
     def _handle_character(self, events):
         result = self._character_screen.handle_events(events)
         if result is not None:
+            save_progress(self.progress)
             self.state = result
 
     def _handle_shop(self, events):
@@ -209,8 +213,6 @@ class Game:
                 self.player.switch_weapon(0)
             elif event.key == pygame.K_2:
                 self.player.switch_weapon(1)
-            elif event.key == pygame.K_3:
-                self.player.switch_weapon(2)
 
             # attack
             if event.key == pygame.K_SPACE:
@@ -403,6 +405,7 @@ class Game:
                         self.player_group,
                         self.dungeon.hitbox_group,
                     ],
+                    self.dungeon,
                 )
                 self.hud.draw(self.screen, self.player, self.dungeon)
 

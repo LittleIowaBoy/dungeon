@@ -8,6 +8,7 @@ from settings import (
     COLOR_PLAYER, COLOR_DARK_GRAY, COLOR_GRAY,
     COLOR_ARMOR_BAR, COLOR_ARMOR_BG,
     COLOR_SPEED_GLOW, COLOR_COMPASS,
+    COLOR_DOOR_TWO_WAY, COLOR_DOOR_ONE_WAY, COLOR_DOOR_NONE,
     ARMOR_HP,
     SPEED_BOOST_DURATION_MS, ATTACK_BOOST_DURATION_MS,
 )
@@ -63,9 +64,18 @@ class HUD:
     def _draw_weapon(self, surface, player):
         y = SCREEN_HEIGHT - 30
         x = 10
+        if not player.weapons:
+            txt = self._font.render("No weapons equipped", True, COLOR_GRAY)
+            surface.blit(txt, (x, y))
+            return
+
         for i, wpn in enumerate(player.weapons):
             prefix = "> " if i == player.current_weapon_index else "  "
             label = f"[{i+1}] {wpn.name}"
+            weapon_id = player.weapon_ids[i] if i < len(player.weapon_ids) else None
+            tier = player.weapon_upgrade_tier(weapon_id)
+            if tier > 0:
+                label += f" +{tier}"
             color = COLOR_WHITE if i == player.current_weapon_index else COLOR_GRAY
             txt = self._font.render(prefix + label, True, color)
             surface.blit(txt, (x, y))
@@ -99,6 +109,42 @@ class HUD:
             else:
                 color = COLOR_DARK_GRAY
             pygame.draw.rect(surface, color, (px, py, cell - 1, cell - 1))
+            self._draw_minimap_wall_indicators(surface, dungeon, (rx, ry), px, py, cell)
+
+    def _draw_minimap_wall_indicators(self, surface, dungeon, room_pos, px, py, cell):
+        top = pygame.Rect(px, py, cell - 1, 1)
+        bottom = pygame.Rect(px, py + cell - 2, cell - 1, 1)
+        left = pygame.Rect(px, py, 1, cell - 1)
+        right = pygame.Rect(px + cell - 2, py, 1, cell - 1)
+
+        pygame.draw.rect(
+            surface,
+            self._door_kind_color(dungeon.door_kind(room_pos, "top")),
+            top,
+        )
+        pygame.draw.rect(
+            surface,
+            self._door_kind_color(dungeon.door_kind(room_pos, "bottom")),
+            bottom,
+        )
+        pygame.draw.rect(
+            surface,
+            self._door_kind_color(dungeon.door_kind(room_pos, "left")),
+            left,
+        )
+        pygame.draw.rect(
+            surface,
+            self._door_kind_color(dungeon.door_kind(room_pos, "right")),
+            right,
+        )
+
+    @staticmethod
+    def _door_kind_color(kind):
+        if kind == "two_way":
+            return COLOR_DOOR_TWO_WAY
+        if kind == "one_way":
+            return COLOR_DOOR_ONE_WAY
+        return COLOR_DOOR_NONE
 
     # ── consumable quick-bar ────────────────────────────
     def _draw_quick_bar(self, surface, player):

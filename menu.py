@@ -7,6 +7,7 @@ from settings import (
 )
 from game_states import GameState
 from dungeon_config import DUNGEONS
+from items import ITEM_DATABASE
 from shop import Shop
 
 
@@ -168,34 +169,192 @@ class DungeonSelectScreen:
 
 
 # ═════════════════════════════════════════════════════════
-#  Character Customize (placeholder)
+#  Character Customize
 # ═════════════════════════════════════════════════════════
 class CharacterCustomizeScreen:
-    def __init__(self):
+    SLOTS = [
+        ("weapon_1", "Weapon 1"),
+        ("weapon_2", "Weapon 2"),
+        ("helmet", "Helmet"),
+        ("chest", "Chest"),
+        ("arms", "Arms"),
+        ("legs", "Legs"),
+    ]
+
+    def __init__(self, player_progress):
+        self.progress = player_progress
+        self.selected_slot = 0
+        self.selected_item = 0
+        self.focus = "slots"
         self._font = None
+        self._small_font = None
         self._title_font = None
 
     def _ensure_fonts(self):
         if self._font is None:
             self._title_font = pygame.font.SysFont("consolas", 36)
             self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def _current_slot_key(self):
+        return self.SLOTS[self.selected_slot][0]
+
+    def _current_slot_label(self):
+        return self.SLOTS[self.selected_slot][1]
+
+    def _item_name(self, item_id):
+        if not item_id:
+            return "Empty"
+        return ITEM_DATABASE.get(item_id, {}).get("name", item_id)
+
+    def _slot_value_label(self, slot_key):
+        item_id = self.progress.equipped_slots.get(slot_key)
+        if not item_id:
+            return "Empty"
+        label = self._item_name(item_id)
+        if slot_key.startswith("weapon"):
+            tier = self.progress.weapon_upgrade_tier(item_id)
+            if tier > 0:
+                label = f"{label} +{tier}"
+        return label
+
+    def _compatible_items(self):
+        slot_key = self._current_slot_key()
+        compatible = []
+        for item_id, qty in self.progress.equipment_storage.items():
+            if qty <= 0:
+                continue
+            if self.progress.can_equip(slot_key, item_id):
+                compatible.append(item_id)
+        compatible.sort(key=lambda item_id: ITEM_DATABASE[item_id]["name"])
+        return compatible
+
+    def _toggle_focus(self):
+        self.focus = "items" if self.focus == "slots" else "slots"
+        self.selected_item = 0
 
     def handle_events(self, events):
         for event in events:
-            if event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
-                    return GameState.MAIN_MENU
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return GameState.MAIN_MENU
+            if event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_TAB):
+                self._toggle_focus()
+                continue
+            if event.key in (pygame.K_UP, pygame.K_w):
+                if self.focus == "slots":
+                    self.selected_slot = (self.selected_slot - 1) % len(self.SLOTS)
+                    self.selected_item = 0
+                else:
+                    compatible = self._compatible_items()
+                    if compatible:
+                        self.selected_item = (self.selected_item - 1) % len(compatible)
+                continue
+            if event.key in (pygame.K_DOWN, pygame.K_s):
+                if self.focus == "slots":
+                    self.selected_slot = (self.selected_slot + 1) % len(self.SLOTS)
+                    self.selected_item = 0
+                else:
+                    compatible = self._compatible_items()
+                    if compatible:
+                        self.selected_item = (self.selected_item + 1) % len(compatible)
+                continue
+
+            slot_key = self._current_slot_key()
+            if event.key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+                self.progress.unequip_slot(slot_key)
+                continue
+
+            if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                if self.focus == "slots":
+                    self.progress.unequip_slot(slot_key)
+                else:
+                    compatible = self._compatible_items()
+                    if compatible:
+                        chosen_item = compatible[self.selected_item]
+                        self.progress.equip_item(slot_key, chosen_item)
+                        compatible = self._compatible_items()
+                        if compatible:
+                            self.selected_item = min(self.selected_item,
+                                                     len(compatible) - 1)
+                        else:
+                            self.selected_item = 0
         return None
 
     def draw(self, surface):
         self._ensure_fonts()
         surface.fill(COLOR_BLACK)
-        title = self._title_font.render("Character", True, COLOR_WHITE)
-        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 100)))
-        msg = self._font.render("Coming Soon", True, COLOR_GRAY)
-        surface.blit(msg, msg.get_rect(center=(SCREEN_WIDTH // 2, 250)))
-        hint = self._font.render("Press ESC to return", True, COLOR_GRAY)
-        surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, 350)))
+        title = self._title_font.render("Character Loadout", True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 48)))
+
+        subtitle = self._small_font.render(
+            "Select a slot, then equip from stored compatible gear.",
+            True,
+            COLOR_GRAY,
+        )
+        surface.blit(subtitle, subtitle.get_rect(center=(SCREEN_WIDTH // 2, 80)))
+
+        slot_x, slot_y, slot_w, slot_h = 40, 110, 300, 58
+        for index, (slot_key, slot_label) in enumerate(self.SLOTS):
+            y = slot_y + index * (slot_h + 10)
+            border = COLOR_WHITE if self.focus == "slots" and index == self.selected_slot else COLOR_GRAY
+            pygame.draw.rect(surface, COLOR_DARK_GRAY, (slot_x, y, slot_w, slot_h))
+            pygame.draw.rect(surface, border, (slot_x, y, slot_w, slot_h), 2)
+
+            header = self._small_font.render(slot_label, True, COLOR_WHITE)
+            value = self._font.render(
+                self._slot_value_label(slot_key),
+                True,
+                COLOR_WHITE if self.progress.equipped_slots.get(slot_key) else COLOR_GRAY,
+            )
+            surface.blit(header, (slot_x + 12, y + 8))
+            surface.blit(value, (slot_x + 12, y + 26))
+
+        panel_x, panel_y, panel_w, panel_h = 380, 110, 380, 360
+        panel_border = COLOR_WHITE if self.focus == "items" else COLOR_GRAY
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (panel_x, panel_y, panel_w, panel_h))
+        pygame.draw.rect(surface, panel_border, (panel_x, panel_y, panel_w, panel_h), 2)
+
+        panel_title = self._font.render(
+            f"{self._current_slot_label()} Options",
+            True,
+            COLOR_WHITE,
+        )
+        surface.blit(panel_title, (panel_x + 12, panel_y + 12))
+
+        compatible = self._compatible_items()
+        if compatible:
+            for index, item_id in enumerate(compatible):
+                item_y = panel_y + 56 + index * 38
+                line_color = COLOR_WHITE if self.focus == "items" and index == self.selected_item else COLOR_GRAY
+                prefix = "> " if self.focus == "items" and index == self.selected_item else "  "
+                label = self._item_name(item_id)
+                tier = self.progress.weapon_upgrade_tier(item_id)
+                if tier > 0:
+                    label = f"{label} +{tier}"
+                qty = self.progress.equipment_storage.get(item_id, 0)
+                text = self._font.render(f"{prefix}{label} x{qty}", True, line_color)
+                surface.blit(text, (panel_x + 14, item_y))
+        else:
+            empty = self._font.render("No compatible stored items", True, COLOR_GRAY)
+            surface.blit(empty, (panel_x + 14, panel_y + 64))
+
+        help_box_y = SCREEN_HEIGHT - 110
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (40, help_box_y, 720, 70))
+        pygame.draw.rect(surface, COLOR_GRAY, (40, help_box_y, 720, 70), 1)
+        hint_1 = self._small_font.render(
+            "Up/Down: move  Left/Right or Tab: switch panels  Enter: equip or unequip",
+            True,
+            COLOR_WHITE,
+        )
+        hint_2 = self._small_font.render(
+            "Backspace/Delete: unequip selected slot  ESC: return to menu",
+            True,
+            COLOR_WHITE,
+        )
+        surface.blit(hint_1, (54, help_box_y + 16))
+        surface.blit(hint_2, (54, help_box_y + 40))
 
 
 # ═════════════════════════════════════════════════════════
@@ -206,6 +365,7 @@ class ShopScreen:
         self.progress = player_progress
         self.shop = shop or Shop()
         self.selected = 0
+        self.scroll_offset = 0
         self._font = None
         self._title_font = None
         self._small_font = None
@@ -215,6 +375,36 @@ class ShopScreen:
             self._title_font = pygame.font.SysFont("consolas", 36)
             self._font = pygame.font.SysFont("consolas", 22)
             self._small_font = pygame.font.SysFont("consolas", 16)
+
+    @staticmethod
+    def _row_height():
+        return 50
+
+    def _visible_item_count(self):
+        top_y = 120
+        bottom_padding = 90
+        available_height = SCREEN_HEIGHT - top_y - bottom_padding
+        return max(1, available_height // self._row_height())
+
+    def _owned_count(self, item):
+        data = ITEM_DATABASE[item.id]
+        if data.get("category") == "weapon_upgrade":
+            return self.progress.weapon_upgrade_tier(data["upgrade_weapon_id"])
+        if data.get("storage_bucket") == "equipment":
+            return self.progress.total_owned(item.id)
+        return self.progress.inventory.get(item.id, 0)
+
+    def _ensure_selection_visible(self, items):
+        if not items:
+            self.scroll_offset = 0
+            return
+        visible_count = self._visible_item_count()
+        max_offset = max(0, len(items) - visible_count)
+        if self.selected < self.scroll_offset:
+            self.scroll_offset = self.selected
+        elif self.selected >= self.scroll_offset + visible_count:
+            self.scroll_offset = self.selected - visible_count + 1
+        self.scroll_offset = max(0, min(self.scroll_offset, max_offset))
 
     def handle_events(self, events):
         items = self.shop.items
@@ -227,8 +417,10 @@ class ShopScreen:
                 continue
             if event.key in (pygame.K_UP, pygame.K_w):
                 self.selected = (self.selected - 1) % len(items)
+                self._ensure_selection_visible(items)
             elif event.key in (pygame.K_DOWN, pygame.K_s):
                 self.selected = (self.selected + 1) % len(items)
+                self._ensure_selection_visible(items)
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                 item = items[self.selected]
                 if not self.shop.is_maxed(item.id, self.progress):
@@ -250,11 +442,19 @@ class ShopScreen:
             msg = self._font.render("No items available", True, COLOR_GRAY)
             surface.blit(msg, msg.get_rect(center=(SCREEN_WIDTH // 2, 250)))
         else:
+            self._ensure_selection_visible(items)
+            start_index = self.scroll_offset
+            visible_count = self._visible_item_count()
+            end_index = min(len(items), start_index + visible_count)
             y = 120
-            for i, item in enumerate(items):
-                owned = self.progress.inventory.get(item.id, 0)
+            row_height = self._row_height()
+
+            for draw_index, i in enumerate(range(start_index, end_index)):
+                item = items[i]
+                owned = self._owned_count(item)
                 maxed = self.shop.is_maxed(item.id, self.progress)
                 can_afford = self.progress.coins >= item.cost
+                row_y = y + draw_index * row_height
 
                 # Determine line color
                 if maxed and item.id not in ("armor", "compass"):
@@ -282,10 +482,17 @@ class ShopScreen:
 
                 line = f"{prefix}{item.name} - {item.cost} coins{badge}{suffix}"
                 txt = self._font.render(line, True, line_color)
-                surface.blit(txt, (60, y + i * 50))
+                surface.blit(txt, (60, row_y))
 
                 desc = self._small_font.render(item.description, True, COLOR_GRAY)
-                surface.blit(desc, (88, y + i * 50 + 24))
+                surface.blit(desc, (88, row_y + 24))
+
+            if start_index > 0:
+                up_hint = self._small_font.render("More above...", True, COLOR_GRAY)
+                surface.blit(up_hint, (60, y - 22))
+            if end_index < len(items):
+                down_hint = self._small_font.render("More below...", True, COLOR_GRAY)
+                surface.blit(down_hint, (60, y + visible_count * row_height))
 
         hint = self._font.render("Press ESC to return", True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2,

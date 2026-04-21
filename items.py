@@ -19,6 +19,32 @@ from settings import (
 )
 
 
+EQUIPMENT_SLOTS = (
+    "weapon_1",
+    "weapon_2",
+    "helmet",
+    "chest",
+    "arms",
+    "legs",
+)
+WEAPON_EQUIPMENT_SLOTS = ("weapon_1", "weapon_2")
+STARTER_WEAPON_IDS = ("sword", "spear", "axe", "hammer")
+UPGRADEABLE_WEAPON_IDS = STARTER_WEAPON_IDS
+DEFAULT_EQUIPPED_SLOTS = {
+    "weapon_1": "sword",
+    "weapon_2": "spear",
+    "helmet": None,
+    "chest": None,
+    "arms": None,
+    "legs": None,
+}
+LEGACY_WEAPON_PLUS_IDS = {
+    "sword_plus": "sword",
+    "spear_plus": "spear",
+    "axe_plus": "axe",
+}
+
+
 class Item(pygame.sprite.Sprite):
     """Base class for all ground items."""
 
@@ -128,7 +154,7 @@ ITEM_DATABASE = {
     },
     # ── Armor ───────────────────────────────────────────
     "armor": {
-        "name": "Armor",
+        "name": "Iron Chestplate",
         "description": f"+{ARMOR_HP} armor HP (absorbs damage first)",
         "cost": PRICE_ARMOR,
         "icon_color": COLOR_ARMOR,
@@ -185,6 +211,148 @@ ITEM_DATABASE = {
         "category": "tool",
     },
 }
+
+ITEM_DATABASE.update({
+    "sword": {
+        "name": "Sword",
+        "description": "Starter weapon. Slash damage.",
+        "cost": 0,
+        "icon_color": (220, 220, 255),
+        "max_owned": 1,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "weapon",
+        "equipment_slots": list(WEAPON_EQUIPMENT_SLOTS),
+        "storage_bucket": "equipment",
+        "weapon_id": "sword",
+        "damage_type": "slash",
+        "is_equippable": True,
+    },
+    "spear": {
+        "name": "Spear",
+        "description": "Starter weapon. Pierce damage.",
+        "cost": 0,
+        "icon_color": (200, 255, 200),
+        "max_owned": 1,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "weapon",
+        "equipment_slots": list(WEAPON_EQUIPMENT_SLOTS),
+        "storage_bucket": "equipment",
+        "weapon_id": "spear",
+        "damage_type": "pierce",
+        "is_equippable": True,
+    },
+    "axe": {
+        "name": "Axe",
+        "description": "Starter weapon. Slash damage.",
+        "cost": 0,
+        "icon_color": (255, 200, 200),
+        "max_owned": 1,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "weapon",
+        "equipment_slots": list(WEAPON_EQUIPMENT_SLOTS),
+        "storage_bucket": "equipment",
+        "weapon_id": "axe",
+        "damage_type": "slash",
+        "is_equippable": True,
+    },
+    "hammer": {
+        "name": "Hammer",
+        "description": "Starter weapon. Blunt damage.",
+        "cost": 0,
+        "icon_color": (180, 180, 180),
+        "max_owned": 1,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "weapon",
+        "equipment_slots": list(WEAPON_EQUIPMENT_SLOTS),
+        "storage_bucket": "equipment",
+        "weapon_id": "hammer",
+        "damage_type": "blunt",
+        "is_equippable": True,
+    },
+    "iron_helmet": {
+        "name": "Iron Helmet",
+        "description": "Basic head protection for the helmet slot.",
+        "cost": 40,
+        "icon_color": (145, 155, 170),
+        "max_owned": 1,
+        "can_purchase": True,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "equipment",
+        "equipment_slots": ["helmet"],
+        "storage_bucket": "equipment",
+        "is_equippable": True,
+    },
+    "iron_bracers": {
+        "name": "Iron Bracers",
+        "description": "Basic arm guards for the arms slot.",
+        "cost": 35,
+        "icon_color": (165, 145, 120),
+        "max_owned": 1,
+        "can_purchase": True,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "equipment",
+        "equipment_slots": ["arms"],
+        "storage_bucket": "equipment",
+        "is_equippable": True,
+    },
+    "traveler_boots": {
+        "name": "Traveler Boots",
+        "description": "Basic leg gear for the legs slot.",
+        "cost": 30,
+        "icon_color": (120, 100, 80),
+        "max_owned": 1,
+        "can_purchase": True,
+        "can_loot": False,
+        "drop_weight": 0,
+        "category": "equipment",
+        "equipment_slots": ["legs"],
+        "storage_bucket": "equipment",
+        "is_equippable": True,
+    },
+})
+
+ITEM_DATABASE["armor"].update({
+    "equipment_slots": ["chest"],
+    "storage_bucket": "equipment",
+    "is_equippable": True,
+})
+ITEM_DATABASE["sword_plus"].update({
+    "category": "weapon_upgrade",
+    "storage_bucket": "upgrade",
+    "upgrade_weapon_id": "sword",
+    "upgrade_tier": 1,
+})
+ITEM_DATABASE["spear_plus"].update({
+    "category": "weapon_upgrade",
+    "storage_bucket": "upgrade",
+    "upgrade_weapon_id": "spear",
+    "upgrade_tier": 1,
+})
+ITEM_DATABASE["axe_plus"].update({
+    "category": "weapon_upgrade",
+    "storage_bucket": "upgrade",
+    "upgrade_weapon_id": "axe",
+    "upgrade_tier": 1,
+})
+
+for item_data in ITEM_DATABASE.values():
+    item_data.setdefault("equipment_slots", [])
+    item_data.setdefault("storage_bucket", "inventory")
+    item_data.setdefault("weapon_id", None)
+    item_data.setdefault("damage_type", None)
+    item_data.setdefault("upgrade_weapon_id", None)
+    item_data.setdefault("upgrade_tier", 0)
+    item_data.setdefault("is_equippable", bool(item_data["equipment_slots"]))
 
 # Precomputed loot tables
 ENEMY_LOOT_TABLE = [
