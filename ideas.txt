@@ -1,0 +1,26 @@
+Tilesets: Different room ideas unique to each dungeon that allows for more engaging gameplay.
+    -Earth
+        - Boulder Room: Have boulder objects spawn and randomly move around the room. Boulders deal high damage
+        - Quicksand Room: Generate patches of quicksand that slowly swallow player, causing death if the player stays on them for too long.
+        - Golem Room: Mini-boss room. Golem is big and slow with multiple attacks depending on distance from player. Can either throw a small boulder or slam the ground around them.
+        - Stalagmite Room: Create terrain patches with spikes that damage the player when the player moves over them. 
+        - 
+    -Water
+        - 
+        - Waterfall room: Big waterfall with a pool at its bottom spawns along one of the walls. Water spirit spawns in the pool with a chance for a chest to be spawned within/behind the waterfall. 
+        - Water Spirit Room: Water pools in this room contain water spirits that are invulnerable but stationary enemies. They shoot water projectiles at the player.
+    -Ice
+        - 
+        -Freeze Room: Ice crystal objects periodically emits a freezing aura which temporarily slows the player if they enter the aura.
+        -Ice Spirit Room: Ice spirits (chain of three small connected rectangles) swarm the player. They fly towards the player to attack them, then move away from the player before moving to attack again.
+Items: Unique collectible item ideas
+    - Helmets
+        -
+    - Chest Pieces
+        -
+    - Leg Armor
+        -
+    - Arm Armor
+        -
+    
+    
