@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+save_data.db
+~$*.docx

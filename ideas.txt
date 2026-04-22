@@ -1,5 +1,6 @@
 Tilesets: Different room ideas unique to each dungeon that allows for more engaging gameplay.
     -Earth
+        - Shrines: Create a series of statues that randomly spawn throughout the dungeon. These statues will have various positive and negative effects
         - Boulder Room: Have boulder objects spawn and randomly move around the room. Boulders deal high damage
         - Quicksand Room: Generate patches of quicksand that slowly swallow player, causing death if the player stays on them for too long.
         - Golem Room: Mini-boss room. Golem is big and slow with multiple attacks depending on distance from player. Can either throw a small boulder or slam the ground around them.
@@ -7,6 +8,7 @@ Tilesets: Different room ideas unique to each dungeon that allows for more engag
         - 
     -Water
         - 
+        - River Room: Have a water object that spans across the room in a random pattern. Causes player to move along the river in a set direction.
         - Waterfall room: Big waterfall with a pool at its bottom spawns along one of the walls. Water spirit spawns in the pool with a chance for a chest to be spawned within/behind the waterfall. 
         - Water Spirit Room: Water pools in this room contain water spirits that are invulnerable but stationary enemies. They shoot water projectiles at the player.
     -Ice
@@ -22,5 +24,56 @@ Items: Unique collectible item ideas
         -
     - Arm Armor
         -
-    
+Runes: Collectible items that persist until a dungeon is cleared. Runes grant progressively powerful bonuses with unique tradeoffs
+    Here's the full expanded rune system across all three tiers:
+
+---
+
+## Stat runes — 12 total
+
+Simple numerical trade-offs. Common drops, easy to evaluate at a glance.
+
+**Offensive (4)**
+- **Bloodthirst** — +50% damage on your first hit in a room / all subsequent hits in that room deal −20% damage
+- **Glass Cannon** — +80% damage / −50% max HP
+- **Executioner** — +100% damage against enemies below 25% HP / −30% damage against enemies above 25% HP
+- **Berserker** — +5% damage stacking per kill in a room / resets to 0 on taking any damage
+
+**Defensive (4)**
+- **Ironhide** — +60 max HP / −20% movement speed
+- **Turtle Shell** — +40% damage reduction / cannot dodge
+- **Last Stand** — +200% damage reduction when below 15% HP / no damage reduction above 15% HP
+- **Thorns** — reflect 30% of damage taken back to attacker / your own attacks deal −25% damage
+
+**Mobility (4)**
+- **Sprinter** — +50% movement speed / −30% attack speed
+- **Slippery** — +40% dodge distance / dodge has a 2-second cooldown instead of 0.5 seconds
+- **Ghost Step** — pass through enemies while dodging / dodging no longer grants invincibility frames
+- **Momentum** — +10% damage stacking per second of continuous movement / dealing damage resets the stack
+
+---
+
+## Behavior runes — 6 total
+
+Change how abilities function rather than tuning their numbers. Uncommon drops.
+
+**Attack behavior (3)**
+- **Ricochet** — your attacks bounce to a second nearby enemy / cannot hit the same enemy twice per attack
+- **Shockwave** — attacks send a slow-moving shockwave forward that deals 150% damage / your direct attack hitbox is removed entirely, you only deal damage through shockwaves
+- **Vampiric Strike** — kills heal you for 8 HP / you can no longer pick up health potions or use healing shrines
+
+**Ability behavior (3)**
+- **Afterimage** — dodging leaves a damaging decoy at your origin point that lasts 2 seconds / dodge distance is halved
+- **Overclock** — your active ability fires twice in rapid succession / active ability cooldown is tripled
+- **Chain Reaction** — applying any status effect to an enemy spreads it to all enemies within 3 tiles / you are also affected by any status effect you apply
+
+---
+
+## Identity runes — 3 total
+
+Fundamentally rewrite the character's game plan. Legendary drops, maximum one per run.
+
+- **The Pacifist** — you deal zero direct damage; enemies who collide with each other take 500% of your normal damage; your movement speed is doubled; picking up any weapon item destroys this rune permanently
+- **Glass Soul** — your max HP is locked at 1 permanently; every source of damage instead triggers a 2-second invincibility window; healing items convert into temporary attack speed boosts; being stunned kills you instantly
+- **Time Anchor** — time slows to 20% speed while you stand completely still; moving instantly snaps time back to normal speed; a hidden patience meter fills while slowed and empties while moving — releasing a fully charged meter triggers a 3-second time freeze for all enemies
     
