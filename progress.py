@@ -3,14 +3,18 @@
 PlayerProgress is the single source of truth for persistent state.
 It is loaded from / saved to the SQLite database via save_system.
 """
+import copy
+
 from dungeon_config import DUNGEONS
-from items import (
+import loadout_rules
+from item_catalog import (
     DEFAULT_EQUIPPED_SLOTS,
     EQUIPMENT_SLOTS,
     ITEM_DATABASE,
     LEGACY_WEAPON_PLUS_IDS,
     STARTER_WEAPON_IDS,
     UPGRADEABLE_WEAPON_IDS,
+    WEAPON_EQUIPMENT_SLOTS,
 )
 
 
@@ -77,29 +81,56 @@ class PlayerProgress:
         dp = self.get_dungeon(dungeon_id)
         return dp.is_alive and dp.current_level > 0 and not dp.completed
 
-    def ensure_loadout_state(self):
-        for slot in EQUIPMENT_SLOTS:
-            self.equipped_slots.setdefault(slot, DEFAULT_EQUIPPED_SLOTS.get(slot))
-        for weapon_id in UPGRADEABLE_WEAPON_IDS:
-            self.weapon_upgrades.setdefault(weapon_id, 0)
-        self._ensure_starter_weapons_owned()
+    def snapshot_run_state(self):
+        """Capture progress that should revert when a level is abandoned."""
+        return {
+            "coins": self.coins,
+            "inventory": copy.deepcopy(self.inventory),
+            "armor_hp": self.armor_hp,
+            "compass_uses": self.compass_uses,
+        }
 
-    def _ensure_starter_weapons_owned(self):
-        for weapon_id in STARTER_WEAPON_IDS:
-            if self.total_owned(weapon_id) > 0:
-                continue
-            default_slot = next(
-                (
-                    slot_name
-                    for slot_name, default_item_id in DEFAULT_EQUIPPED_SLOTS.items()
-                    if default_item_id == weapon_id
-                ),
-                None,
-            )
-            if default_slot and self.equipped_slots.get(default_slot) is None:
-                self.equipped_slots[default_slot] = weapon_id
-            else:
-                self.add_to_equipment_storage(weapon_id)
+    def restore_run_state(self, snapshot):
+        """Restore progress captured by snapshot_run_state()."""
+        self.coins = snapshot["coins"]
+        self.inventory = copy.deepcopy(snapshot["inventory"])
+        self.armor_hp = snapshot["armor_hp"]
+        self.compass_uses = snapshot["compass_uses"]
+
+    def sync_runtime_state(self, player):
+        """Sync runtime player values back into persistent progress."""
+        self.coins = player.coins
+        self.armor_hp = player.armor_hp
+        self.compass_uses = player.compass_uses
+
+    def begin_dungeon_run(self, dungeon_id):
+        """Mark a dungeon run active and capture its pre-level revert point."""
+        self.start_dungeon(dungeon_id)
+        return self.snapshot_run_state()
+
+    def sync_dungeon_run(self, player):
+        """Persist the current dungeon-run resources from the live player."""
+        self.sync_runtime_state(player)
+
+    def advance_dungeon_level_from_runtime(self, dungeon_id, total_levels, player):
+        """Advance after a cleared level and capture the next abandon snapshot."""
+        self.sync_dungeon_run(player)
+        completed = self.advance_in_dungeon(dungeon_id, total_levels)
+        if completed:
+            return True, None
+        return False, self.snapshot_run_state()
+
+    def abandon_dungeon_run(self, snapshot):
+        """Restore the pre-level revert point for an abandoned run."""
+        self.restore_run_state(snapshot)
+
+    def resolve_dungeon_death(self, dungeon_id, player):
+        """Persist the run state, then apply death penalties."""
+        self.sync_dungeon_run(player)
+        self.die_in_dungeon(dungeon_id)
+
+    def ensure_loadout_state(self):
+        loadout_rules.ensure_loadout_state(self)
 
     def migrate_legacy_state(self):
         for legacy_item_id, weapon_id in LEGACY_WEAPON_PLUS_IDS.items():
@@ -142,40 +173,13 @@ class PlayerProgress:
         return True
 
     def can_equip(self, slot, item_id):
-        if slot not in self.equipped_slots:
-            return False
-        item_data = ITEM_DATABASE.get(item_id)
-        if item_data is None or not item_data.get("is_equippable"):
-            return False
-        if slot not in item_data.get("equipment_slots", []):
-            return False
-        if self.equipped_slots.get(slot) == item_id:
-            return True
-        if slot in ("weapon_1", "weapon_2"):
-            other_slot = "weapon_2" if slot == "weapon_1" else "weapon_1"
-            if self.equipped_slots.get(other_slot) == item_id:
-                return False
-        return self.equipment_storage.get(item_id, 0) > 0
+        return loadout_rules.can_equip(self, slot, item_id)
 
     def equip_item(self, slot, item_id):
-        if not self.can_equip(slot, item_id):
-            return False
-        current_item = self.equipped_slots.get(slot)
-        if current_item == item_id:
-            return True
-        if current_item is not None:
-            self.add_to_equipment_storage(current_item)
-        self.remove_from_equipment_storage(item_id)
-        self.equipped_slots[slot] = item_id
-        return True
+        return loadout_rules.equip_item(self, slot, item_id)
 
     def unequip_slot(self, slot):
-        item_id = self.equipped_slots.get(slot)
-        if item_id is None:
-            return False
-        self.add_to_equipment_storage(item_id)
-        self.equipped_slots[slot] = None
-        return True
+        return loadout_rules.unequip_slot(self, slot)
 
     def weapon_upgrade_tier(self, weapon_id):
         return self.weapon_upgrades.get(weapon_id, 0)

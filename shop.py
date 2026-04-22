@@ -4,7 +4,7 @@ Items are filtered from ITEM_DATABASE where can_purchase is True.
 Purchase limits are enforced via max_owned per item.
 """
 from dataclasses import dataclass
-from items import ITEM_DATABASE
+from item_catalog import ITEM_DATABASE
 from settings import ARMOR_HP, COMPASS_USES
 
 

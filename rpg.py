@@ -1,5 +1,4 @@
 """Top-Down Dungeon Crawler RPG — entry point."""
-import copy
 import os
 import sys
 import pygame
@@ -7,6 +6,11 @@ from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
     COLOR_BLACK,
+)
+from hud_view import (
+    build_game_over_overlay_view,
+    build_hud_view,
+    build_victory_overlay_view,
 )
 from player import Player
 from dungeon import Dungeon
@@ -25,6 +29,14 @@ from menu import (
     ShopScreen,
     PauseScreen,
     LevelCompleteScreen,
+)
+from menu_view import (
+    build_main_menu_view,
+    build_character_customize_view,
+    build_dungeon_select_view,
+    build_level_complete_screen_view,
+    build_pause_screen_view,
+    build_shop_view,
 )
 from shop import Shop
 
@@ -69,15 +81,7 @@ class Game:
         self._current_dungeon_id = dungeon_id
         config = get_dungeon(dungeon_id)
         dp = self.progress.get_dungeon(dungeon_id)
-        self.progress.start_dungeon(dungeon_id)
-
-        # Snapshot progress before entering the level (for quit-revert)
-        self._pre_level_progress_snapshot = {
-            "coins": self.progress.coins,
-            "inventory": copy.deepcopy(self.progress.inventory),
-            "armor_hp": self.progress.armor_hp,
-            "compass_uses": self.progress.compass_uses,
-        }
+        self._pre_level_progress_snapshot = self.progress.begin_dungeon_run(dungeon_id)
 
         self.dungeon = Dungeon(dungeon_config=config,
                                level_index=dp.current_level)
@@ -93,24 +97,18 @@ class Game:
         """Move to the next level in the current dungeon."""
         config = get_dungeon(self._current_dungeon_id)
         dp = self.progress.get_dungeon(self._current_dungeon_id)
-        completed = self.progress.advance_in_dungeon(
-            self._current_dungeon_id, len(config["levels"])
+        completed, next_snapshot = self.progress.advance_dungeon_level_from_runtime(
+            self._current_dungeon_id,
+            len(config["levels"]),
+            self.player,
         )
 
         if completed:
             # entire dungeon cleared
-            self._sync_coins_to_progress()
             save_progress(self.progress)
             self.state = GameState.GAME_WIN
         else:
-            # snapshot progress for the new level (for quit-revert)
-            self._sync_coins_to_progress()
-            self._pre_level_progress_snapshot = {
-                "coins": self.progress.coins,
-                "inventory": copy.deepcopy(self.progress.inventory),
-                "armor_hp": self.progress.armor_hp,
-                "compass_uses": self.progress.compass_uses,
-            }
+            self._pre_level_progress_snapshot = next_snapshot
             # generate next level, keep player HP/coins as-is
             self.dungeon = Dungeon(dungeon_config=config,
                                    level_index=dp.current_level)
@@ -119,16 +117,15 @@ class Game:
             self.player.place(start_x, start_y)
             self.state = GameState.PLAYING
 
-    def _sync_coins_to_progress(self):
+    def _sync_player_state_to_progress(self):
         """Copy the player's in-game state back to persistent progress."""
         if self.player:
-            self.progress.coins = self.player.coins
-            self.progress.armor_hp = self.player.armor_hp
-            self.progress.compass_uses = self.player.compass_uses
+            self.progress.sync_runtime_state(self.player)
 
-    def _return_to_menu(self):
+    def _return_to_menu(self, sync_player_state=True):
         """Save and go back to main menu."""
-        self._sync_coins_to_progress()
+        if sync_player_state:
+            self._sync_player_state_to_progress()
         save_progress(self.progress)
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
@@ -144,7 +141,7 @@ class Game:
             # global quit
             for event in events:
                 if event.type == pygame.QUIT:
-                    self._sync_coins_to_progress()
+                    self._sync_player_state_to_progress()
                     save_progress(self.progress)
                     pygame.quit()
                     sys.exit()
@@ -318,14 +315,13 @@ class Game:
         self._level_complete = LevelCompleteScreen(
             config["name"], level_num, is_final_level=is_final,
         )
-        self._sync_coins_to_progress()
+        self.progress.sync_dungeon_run(self.player)
         save_progress(self.progress)
         self.state = GameState.LEVEL_COMPLETE
 
     def _on_death(self):
         """Player died — reset dungeon progress and save."""
-        self._sync_coins_to_progress()
-        self.progress.die_in_dungeon(self._current_dungeon_id)
+        self.progress.resolve_dungeon_death(self._current_dungeon_id, self.player)
         save_progress(self.progress)
         self.state = GameState.GAME_OVER
 
@@ -365,30 +361,30 @@ class Game:
     def _quit_level(self):
         """Quit the current level — revert progress to pre-level snapshot."""
         if self._pre_level_progress_snapshot is not None:
-            # Restore coins, inventory, armor, compass to pre-level state
-            snap = self._pre_level_progress_snapshot
-            self.progress.coins = snap["coins"]
-            self.progress.inventory = snap["inventory"]
-            self.progress.armor_hp = snap["armor_hp"]
-            self.progress.compass_uses = snap["compass_uses"]
-        save_progress(self.progress)
-        self._return_to_menu()
+            self.progress.abandon_dungeon_run(self._pre_level_progress_snapshot)
+        self._return_to_menu(sync_player_state=False)
 
     # ── draw ────────────────────────────────────────────
     def _draw(self):
         self.screen.fill(COLOR_BLACK)
 
         if self.state == GameState.MAIN_MENU:
-            self._main_menu.draw(self.screen)
+            self._main_menu.draw(self.screen, build_main_menu_view(self._main_menu))
 
         elif self.state == GameState.DUNGEON_SELECT:
-            self._dungeon_select.draw(self.screen)
+            self._dungeon_select.draw(
+                self.screen,
+                build_dungeon_select_view(self._dungeon_select),
+            )
 
         elif self.state == GameState.CHARACTER_CUSTOMIZE:
-            self._character_screen.draw(self.screen)
+            self._character_screen.draw(
+                self.screen,
+                build_character_customize_view(self._character_screen),
+            )
 
         elif self.state == GameState.SHOP:
-            self._shop_screen.draw(self.screen)
+            self._shop_screen.draw(self.screen, build_shop_view(self._shop_screen))
 
         elif self.state in (GameState.PLAYING, GameState.PAUSED,
                             GameState.LEVEL_COMPLETE,
@@ -407,16 +403,23 @@ class Game:
                     ],
                     self.dungeon,
                 )
-                self.hud.draw(self.screen, self.player, self.dungeon)
+                hud_view = build_hud_view(self.player, self.dungeon)
+                self.hud.draw(self.screen, hud_view)
 
             if self.state == GameState.PAUSED:
-                self._pause_screen.draw(self.screen)
+                self._pause_screen.draw(self.screen, build_pause_screen_view(self._pause_screen))
             elif self.state == GameState.GAME_OVER:
-                self.hud.draw_game_over(self.screen)
+                self.hud.draw_game_over(self.screen, build_game_over_overlay_view())
             elif self.state == GameState.GAME_WIN:
-                self.hud.draw_victory(self.screen, self.player)
+                self.hud.draw_victory(
+                    self.screen,
+                    build_victory_overlay_view(self.player.coins),
+                )
             elif self.state == GameState.LEVEL_COMPLETE:
-                self._level_complete.draw(self.screen)
+                self._level_complete.draw(
+                    self.screen,
+                    build_level_complete_screen_view(self._level_complete),
+                )
 
         pygame.display.flip()
 

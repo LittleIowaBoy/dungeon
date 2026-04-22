@@ -71,6 +71,32 @@ class Dungeon:
     def current_room(self) -> Room:
         return self.rooms[self.current_pos]
 
+    @property
+    def exit_pos(self):
+        return self._exit_pos
+
+    def minimap_snapshot(self):
+        """Return minimap-ready room state for HUD projection."""
+        rooms = []
+        for pos in sorted(self.visited):
+            if pos == self.current_pos:
+                kind = "current"
+            elif pos == self._exit_pos:
+                kind = "exit"
+            else:
+                kind = "visited"
+            rooms.append(
+                {
+                    "pos": pos,
+                    "kind": kind,
+                    "door_kinds": {
+                        direction: self.door_kind(pos, direction)
+                        for direction in _ALL_DIRS
+                    },
+                }
+            )
+        return {"radius": self._radius, "rooms": rooms}
+
     def door_kind(self, pos, direction):
         """Return door kind on a room wall: 'none', 'two_way', or 'one_way'."""
         room = self.rooms.get(pos)

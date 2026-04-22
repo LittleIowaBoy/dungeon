@@ -11,7 +11,8 @@ from settings import (
     CHASE_RADIUS, CHASE_LOST_RADIUS,
     DROP_CHANCE, DROP_WEIGHTS,
 )
-from items import ITEM_CLASSES, ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS, LootDrop, Coin
+from item_catalog import ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS
+from items import LootDrop, Coin
 
 ENEMY_SIZE = 26
 

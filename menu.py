@@ -7,7 +7,7 @@ from settings import (
 )
 from game_states import GameState
 from dungeon_config import DUNGEONS
-from items import ITEM_DATABASE
+from item_catalog import ITEM_DATABASE
 from shop import Shop
 
 
@@ -66,13 +66,13 @@ class MainMenuScreen:
                     return "QUIT"
         return None
 
-    def draw(self, surface):
+    def draw(self, surface, view):
         self._ensure_fonts()
         surface.fill(COLOR_BLACK)
-        title = self._title_font.render("Dungeon Crawler", True, COLOR_PORTAL)
+        title = self._title_font.render(view.title, True, COLOR_PORTAL)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 120)))
         _draw_options(
-            surface, self._font, self.OPTIONS, self.selected,
+            surface, self._font, view.options, view.selected_index,
             SCREEN_WIDTH // 2 - 80, 240,
         )
 
@@ -112,58 +112,51 @@ class DungeonSelectScreen:
                 return (GameState.MAIN_MENU, None)
         return None
 
-    def draw(self, surface):
+    def draw(self, surface, view):
         self._ensure_fonts()
         surface.fill(COLOR_BLACK)
-        title = self._title_font.render("Select Dungeon", True, COLOR_WHITE)
+        title = self._title_font.render(view.title, True, COLOR_WHITE)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 50)))
 
         card_w, card_h = 220, 140
-        start_x = (SCREEN_WIDTH - len(DUNGEONS) * (card_w + 20) + 20) // 2
+        start_x = (SCREEN_WIDTH - len(view.cards) * (card_w + 20) + 20) // 2
         y = 110
 
-        for i, d in enumerate(DUNGEONS):
+        for i, card in enumerate(view.cards):
             x = start_x + i * (card_w + 20)
-            dp = self.progress.get_dungeon(d["id"])
 
             # card background
-            border_color = COLOR_WHITE if i == self.selected else COLOR_GRAY
-            card_color = _TERRAIN_CARD_COLORS.get(d["terrain_type"], COLOR_GRAY)
+            border_color = COLOR_WHITE if i == view.selected_index else COLOR_GRAY
+            card_color = _TERRAIN_CARD_COLORS.get(card.terrain_type, COLOR_GRAY)
             pygame.draw.rect(surface, card_color, (x, y, card_w, card_h))
             pygame.draw.rect(surface, border_color, (x, y, card_w, card_h), 3)
 
             # dungeon name
-            name = self._font.render(d["name"], True, COLOR_WHITE)
+            name = self._font.render(card.name, True, COLOR_WHITE)
             surface.blit(name, name.get_rect(center=(x + card_w // 2, y + 30)))
 
             # status line
-            if dp.completed:
-                status = "Completed"
-            elif self.progress.can_resume(d["id"]):
-                status = f"Resume Level {dp.current_level + 1}"
-            else:
-                status = "Level 1"
-            st = self._small_font.render(status, True, COLOR_WHITE)
+            st = self._small_font.render(card.status_text, True, COLOR_WHITE)
             surface.blit(st, st.get_rect(center=(x + card_w // 2, y + 65)))
 
             # terrain label
-            terrain = self._small_font.render(
-                f"Terrain: {d['terrain_type'].capitalize()}", True, COLOR_WHITE)
+            terrain = self._small_font.render(card.terrain_label, True, COLOR_WHITE)
             surface.blit(terrain,
                          terrain.get_rect(center=(x + card_w // 2, y + 95)))
 
             # levels bar (filled squares)
             bar_x = x + 30
             bar_y = y + 115
-            for lvl in range(len(d["levels"])):
-                color = COLOR_WHITE if lvl < dp.current_level or dp.completed else (60, 60, 60)
+            for lvl in range(card.total_levels):
+                color = COLOR_WHITE if lvl < card.completed_levels else (60, 60, 60)
                 pygame.draw.rect(surface, color,
                                  (bar_x + lvl * 34, bar_y, 24, 8))
 
         # "Back" option
         back_y = y + card_h + 40
-        back_label = "> Back" if self.selected == len(DUNGEONS) else "  Back"
-        back_color = COLOR_WHITE if self.selected == len(DUNGEONS) else COLOR_GRAY
+        back_selected = view.selected_index == len(view.cards)
+        back_label = "> Back" if back_selected else f"  {view.back_label}"
+        back_color = COLOR_WHITE if back_selected else COLOR_GRAY
         txt = self._font.render(back_label, True, back_color)
         surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2, back_y)))
 
@@ -282,77 +275,60 @@ class CharacterCustomizeScreen:
                             self.selected_item = 0
         return None
 
-    def draw(self, surface):
+    def draw(self, surface, view):
         self._ensure_fonts()
         surface.fill(COLOR_BLACK)
-        title = self._title_font.render("Character Loadout", True, COLOR_WHITE)
+        title = self._title_font.render(view.title, True, COLOR_WHITE)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 48)))
 
-        subtitle = self._small_font.render(
-            "Select a slot, then equip from stored compatible gear.",
-            True,
-            COLOR_GRAY,
-        )
+        subtitle = self._small_font.render(view.subtitle, True, COLOR_GRAY)
         surface.blit(subtitle, subtitle.get_rect(center=(SCREEN_WIDTH // 2, 80)))
 
         slot_x, slot_y, slot_w, slot_h = 40, 110, 300, 58
-        for index, (slot_key, slot_label) in enumerate(self.SLOTS):
+        for index, slot in enumerate(view.slots):
             y = slot_y + index * (slot_h + 10)
-            border = COLOR_WHITE if self.focus == "slots" and index == self.selected_slot else COLOR_GRAY
+            border = COLOR_WHITE if view.slot_panel_focused and index == view.selected_slot_index else COLOR_GRAY
             pygame.draw.rect(surface, COLOR_DARK_GRAY, (slot_x, y, slot_w, slot_h))
             pygame.draw.rect(surface, border, (slot_x, y, slot_w, slot_h), 2)
 
-            header = self._small_font.render(slot_label, True, COLOR_WHITE)
+            header = self._small_font.render(slot.label, True, COLOR_WHITE)
             value = self._font.render(
-                self._slot_value_label(slot_key),
+                slot.value,
                 True,
-                COLOR_WHITE if self.progress.equipped_slots.get(slot_key) else COLOR_GRAY,
+                COLOR_WHITE if slot.equipped else COLOR_GRAY,
             )
             surface.blit(header, (slot_x + 12, y + 8))
             surface.blit(value, (slot_x + 12, y + 26))
 
         panel_x, panel_y, panel_w, panel_h = 380, 110, 380, 360
-        panel_border = COLOR_WHITE if self.focus == "items" else COLOR_GRAY
+        panel_border = COLOR_WHITE if view.item_panel_focused else COLOR_GRAY
         pygame.draw.rect(surface, COLOR_DARK_GRAY, (panel_x, panel_y, panel_w, panel_h))
         pygame.draw.rect(surface, panel_border, (panel_x, panel_y, panel_w, panel_h), 2)
 
-        panel_title = self._font.render(
-            f"{self._current_slot_label()} Options",
-            True,
-            COLOR_WHITE,
-        )
+        panel_title = self._font.render(view.panel_title, True, COLOR_WHITE)
         surface.blit(panel_title, (panel_x + 12, panel_y + 12))
 
-        compatible = self._compatible_items()
-        if compatible:
-            for index, item_id in enumerate(compatible):
+        if view.items:
+            for index, item in enumerate(view.items):
                 item_y = panel_y + 56 + index * 38
-                line_color = COLOR_WHITE if self.focus == "items" and index == self.selected_item else COLOR_GRAY
-                prefix = "> " if self.focus == "items" and index == self.selected_item else "  "
-                label = self._item_name(item_id)
-                tier = self.progress.weapon_upgrade_tier(item_id)
-                if tier > 0:
-                    label = f"{label} +{tier}"
-                qty = self.progress.equipment_storage.get(item_id, 0)
-                text = self._font.render(f"{prefix}{label} x{qty}", True, line_color)
+                is_selected = view.item_panel_focused and index == view.selected_item_index
+                line_color = COLOR_WHITE if is_selected else COLOR_GRAY
+                prefix = "> " if is_selected else "  "
+                text = self._font.render(
+                    f"{prefix}{item.label} x{item.quantity}",
+                    True,
+                    line_color,
+                )
                 surface.blit(text, (panel_x + 14, item_y))
         else:
-            empty = self._font.render("No compatible stored items", True, COLOR_GRAY)
+            empty = self._font.render(view.empty_message, True, COLOR_GRAY)
             surface.blit(empty, (panel_x + 14, panel_y + 64))
 
         help_box_y = SCREEN_HEIGHT - 110
         pygame.draw.rect(surface, COLOR_DARK_GRAY, (40, help_box_y, 720, 70))
         pygame.draw.rect(surface, COLOR_GRAY, (40, help_box_y, 720, 70), 1)
-        hint_1 = self._small_font.render(
-            "Up/Down: move  Left/Right or Tab: switch panels  Enter: equip or unequip",
-            True,
-            COLOR_WHITE,
-        )
-        hint_2 = self._small_font.render(
-            "Backspace/Delete: unequip selected slot  ESC: return to menu",
-            True,
-            COLOR_WHITE,
-        )
+        hint_1 = self._small_font.render(view.help_lines[0], True, COLOR_WHITE)
+        hint_2 = self._small_font.render(view.help_lines[1], True, COLOR_WHITE)
         surface.blit(hint_1, (54, help_box_y + 16))
         surface.blit(hint_2, (54, help_box_y + 40))
 
@@ -427,74 +403,40 @@ class ShopScreen:
                     self.shop.buy(item.id, self.progress)
         return None
 
-    def draw(self, surface):
+    def draw(self, surface, view):
         self._ensure_fonts()
         surface.fill(COLOR_BLACK)
-        title = self._title_font.render("Shop", True, COLOR_WHITE)
+        title = self._title_font.render(view.title, True, COLOR_WHITE)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 50)))
 
         # coin balance
-        coins = self._font.render(f"Coins: {self.progress.coins}", True, COLOR_COIN)
+        coins = self._font.render(view.coins_text, True, COLOR_COIN)
         surface.blit(coins, (SCREEN_WIDTH - coins.get_width() - 20, 20))
 
-        items = self.shop.items
-        if not items:
-            msg = self._font.render("No items available", True, COLOR_GRAY)
+        if not view.items:
+            msg = self._font.render(view.empty_message, True, COLOR_GRAY)
             surface.blit(msg, msg.get_rect(center=(SCREEN_WIDTH // 2, 250)))
         else:
-            self._ensure_selection_visible(items)
-            start_index = self.scroll_offset
-            visible_count = self._visible_item_count()
-            end_index = min(len(items), start_index + visible_count)
             y = 120
             row_height = self._row_height()
 
-            for draw_index, i in enumerate(range(start_index, end_index)):
-                item = items[i]
-                owned = self._owned_count(item)
-                maxed = self.shop.is_maxed(item.id, self.progress)
-                can_afford = self.progress.coins >= item.cost
+            for draw_index, item_view in enumerate(view.items):
                 row_y = y + draw_index * row_height
 
-                # Determine line color
-                if maxed and item.id not in ("armor", "compass"):
-                    line_color = COLOR_DARK_GRAY
-                elif i == self.selected:
-                    line_color = COLOR_WHITE
-                else:
-                    line_color = COLOR_GRAY
-
-                prefix = "> " if i == self.selected else "  "
-
-                # Owned badge with max
-                if item.max_owned > 0:
-                    badge = f"  [{owned}/{item.max_owned}]"
-                else:
-                    badge = f"  [x{owned}]" if owned else ""
-
-                # Status suffix
-                if maxed and item.id not in ("armor", "compass"):
-                    suffix = "  MAXED"
-                elif not can_afford:
-                    suffix = "  (not enough coins)"
-                else:
-                    suffix = ""
-
-                line = f"{prefix}{item.name} - {item.cost} coins{badge}{suffix}"
-                txt = self._font.render(line, True, line_color)
+                txt = self._font.render(item_view.line_text, True, item_view.line_color)
                 surface.blit(txt, (60, row_y))
 
-                desc = self._small_font.render(item.description, True, COLOR_GRAY)
+                desc = self._small_font.render(item_view.description, True, COLOR_GRAY)
                 surface.blit(desc, (88, row_y + 24))
 
-            if start_index > 0:
+            if view.show_more_above:
                 up_hint = self._small_font.render("More above...", True, COLOR_GRAY)
                 surface.blit(up_hint, (60, y - 22))
-            if end_index < len(items):
+            if view.show_more_below:
                 down_hint = self._small_font.render("More below...", True, COLOR_GRAY)
-                surface.blit(down_hint, (60, y + visible_count * row_height))
+                surface.blit(down_hint, (60, y + len(view.items) * row_height))
 
-        hint = self._font.render("Press ESC to return", True, COLOR_GRAY)
+        hint = self._font.render(view.footer_hint, True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                   SCREEN_HEIGHT - 40)))
 
@@ -532,23 +474,23 @@ class PauseScreen:
                 return self.OPTIONS[self.selected]
         return None
 
-    def draw(self, surface):
+    def draw(self, surface, view):
         self._ensure_fonts()
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 180))
         surface.blit(overlay, (0, 0))
 
-        title = self._title_font.render("Paused", True, COLOR_WHITE)
+        title = self._title_font.render(view.title, True, COLOR_WHITE)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2,
                                                     SCREEN_HEIGHT // 2 - 80)))
 
         _draw_options(
-            surface, self._font, self.OPTIONS, self.selected,
+            surface, self._font, view.options, view.selected_index,
             SCREEN_WIDTH // 2 - 100, SCREEN_HEIGHT // 2 - 20,
         )
 
         warn = self._small_font.render(
-            "Quitting will lose all progress in this level.", True, COLOR_GRAY)
+            view.warning_text, True, COLOR_GRAY)
         surface.blit(warn, warn.get_rect(center=(SCREEN_WIDTH // 2,
                                                   SCREEN_HEIGHT // 2 + 60)))
 
@@ -591,23 +533,21 @@ class LevelCompleteScreen:
             return ["Return to Dungeon Select"]
         return list(self.OPTIONS)
 
-    def draw(self, surface):
+    def draw(self, surface, view):
         self._ensure_fonts()
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 180))
         surface.blit(overlay, (0, 0))
 
-        heading = f"Level {self.level_number} Complete!"
-        title = self._title_font.render(heading, True, COLOR_PORTAL)
+        title = self._title_font.render(view.heading, True, COLOR_PORTAL)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2,
                                                     SCREEN_HEIGHT // 2 - 60)))
 
-        sub = self._font.render(self.dungeon_name, True, COLOR_WHITE)
+        sub = self._font.render(view.dungeon_name, True, COLOR_WHITE)
         surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2,
                                                 SCREEN_HEIGHT // 2 - 20)))
 
-        options = self._active_options()
         _draw_options(
-            surface, self._font, options, self.selected,
+            surface, self._font, view.options, view.selected_index,
             SCREEN_WIDTH // 2 - 160, SCREEN_HEIGHT // 2 + 30,
         )

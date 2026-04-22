@@ -25,71 +25,66 @@ class HUD:
             self._small_font = pygame.font.SysFont("consolas", 13)
 
     # ── main in-game overlay ────────────────────────────
-    def draw(self, surface, player, dungeon):
+    def draw(self, surface, view):
         self._ensure_fonts()
-        self._draw_health_bar(surface, player)
-        self._draw_armor_bar(surface, player)
-        self._draw_weapon(surface, player)
-        self._draw_coins(surface, player)
-        self._draw_minimap(surface, dungeon)
-        self._draw_quick_bar(surface, player)
-        self._draw_active_effects(surface, player)
-        self._draw_compass(surface, player)
+        self._draw_health_bar(surface, view)
+        self._draw_armor_bar(surface, view)
+        self._draw_weapon(surface, view)
+        self._draw_coins(surface, view)
+        self._draw_minimap(surface, view.minimap)
+        self._draw_quick_bar(surface, view.quick_bar)
+        self._draw_active_effects(surface, view)
+        self._draw_compass(surface, view.compass)
 
     # ── health bar ──────────────────────────────────────
-    def _draw_health_bar(self, surface, player):
+    def _draw_health_bar(self, surface, view):
         x, y, w, h = 10, 10, 180, 18
         pygame.draw.rect(surface, COLOR_HEALTH_BG, (x, y, w, h))
-        fill_w = int(w * player.current_hp / player.max_hp)
+        fill_w = int(w * view.current_hp / view.max_hp)
         pygame.draw.rect(surface, COLOR_HEALTH_BAR, (x, y, fill_w, h))
         pygame.draw.rect(surface, COLOR_WHITE, (x, y, w, h), 1)
         txt = self._font.render(
-            f"{player.current_hp}/{player.max_hp}", True, COLOR_WHITE)
+            f"{view.current_hp}/{view.max_hp}", True, COLOR_WHITE)
         surface.blit(txt, (x + w + 6, y - 1))
 
     # ── armor bar ───────────────────────────────────────
-    def _draw_armor_bar(self, surface, player):
-        if player.armor_hp <= 0:
+    def _draw_armor_bar(self, surface, view):
+        if view.armor_hp <= 0:
             return
         x, y, w, h = 10, 32, 180, 12
         pygame.draw.rect(surface, COLOR_ARMOR_BG, (x, y, w, h))
-        fill_w = int(w * player.armor_hp / ARMOR_HP)
+        fill_w = int(w * view.armor_hp / ARMOR_HP)
         pygame.draw.rect(surface, COLOR_ARMOR_BAR, (x, y, fill_w, h))
         pygame.draw.rect(surface, COLOR_WHITE, (x, y, w, h), 1)
         txt = self._small_font.render(
-            f"Armor: {player.armor_hp}/{ARMOR_HP}", True, COLOR_WHITE)
+            f"Armor: {view.armor_hp}/{ARMOR_HP}", True, COLOR_WHITE)
         surface.blit(txt, (x + w + 6, y - 1))
 
     # ── weapon indicator ────────────────────────────────
-    def _draw_weapon(self, surface, player):
+    def _draw_weapon(self, surface, view):
         y = SCREEN_HEIGHT - 30
         x = 10
-        if not player.weapons:
+        if not view.weapons:
             txt = self._font.render("No weapons equipped", True, COLOR_GRAY)
             surface.blit(txt, (x, y))
             return
 
-        for i, wpn in enumerate(player.weapons):
-            prefix = "> " if i == player.current_weapon_index else "  "
-            label = f"[{i+1}] {wpn.name}"
-            weapon_id = player.weapon_ids[i] if i < len(player.weapon_ids) else None
-            tier = player.weapon_upgrade_tier(weapon_id)
-            if tier > 0:
-                label += f" +{tier}"
-            color = COLOR_WHITE if i == player.current_weapon_index else COLOR_GRAY
-            txt = self._font.render(prefix + label, True, color)
+        for weapon in view.weapons:
+            prefix = "> " if weapon.selected else "  "
+            color = COLOR_WHITE if weapon.selected else COLOR_GRAY
+            txt = self._font.render(prefix + weapon.label, True, color)
             surface.blit(txt, (x, y))
             x += txt.get_width() + 12
 
     # ── coins ───────────────────────────────────────────
-    def _draw_coins(self, surface, player):
-        txt = self._font.render(f"Coins: {player.coins}", True, COLOR_COIN)
+    def _draw_coins(self, surface, view):
+        txt = self._font.render(f"Coins: {view.coins}", True, COLOR_COIN)
         surface.blit(txt, (SCREEN_WIDTH - txt.get_width() - 10, 10))
 
     # ── minimap ─────────────────────────────────────────
-    def _draw_minimap(self, surface, dungeon):
+    def _draw_minimap(self, surface, minimap_view):
         cell = 7
-        rad = getattr(dungeon, '_radius', 7)
+        rad = minimap_view.radius
         size = (2 * rad + 1) * cell
         ox = SCREEN_WIDTH - size - 10
         oy = SCREEN_HEIGHT - size - 40
@@ -99,19 +94,23 @@ class HUD:
         bg.fill((0, 0, 0, 120))
         surface.blit(bg, (ox, oy))
 
-        for (rx, ry) in dungeon.visited:
+        for room in minimap_view.rooms:
+            rx, ry = room.position
             px = (rx + rad) * cell + ox
             py = (ry + rad) * cell + oy
-            if (rx, ry) == dungeon.current_pos:
-                color = COLOR_PLAYER
-            elif (rx, ry) == dungeon._exit_pos:
-                color = COLOR_PORTAL
-            else:
-                color = COLOR_DARK_GRAY
+            color = self._minimap_room_color(room.kind)
             pygame.draw.rect(surface, color, (px, py, cell - 1, cell - 1))
-            self._draw_minimap_wall_indicators(surface, dungeon, (rx, ry), px, py, cell)
+            self._draw_minimap_wall_indicators(surface, room, px, py, cell)
 
-    def _draw_minimap_wall_indicators(self, surface, dungeon, room_pos, px, py, cell):
+    @staticmethod
+    def _minimap_room_color(kind):
+        if kind == "current":
+            return COLOR_PLAYER
+        if kind == "exit":
+            return COLOR_PORTAL
+        return COLOR_DARK_GRAY
+
+    def _draw_minimap_wall_indicators(self, surface, room_view, px, py, cell):
         top = pygame.Rect(px, py, cell - 1, 1)
         bottom = pygame.Rect(px, py + cell - 2, cell - 1, 1)
         left = pygame.Rect(px, py, 1, cell - 1)
@@ -119,22 +118,22 @@ class HUD:
 
         pygame.draw.rect(
             surface,
-            self._door_kind_color(dungeon.door_kind(room_pos, "top")),
+            self._door_kind_color(room_view.door_kinds.get("top", "none")),
             top,
         )
         pygame.draw.rect(
             surface,
-            self._door_kind_color(dungeon.door_kind(room_pos, "bottom")),
+            self._door_kind_color(room_view.door_kinds.get("bottom", "none")),
             bottom,
         )
         pygame.draw.rect(
             surface,
-            self._door_kind_color(dungeon.door_kind(room_pos, "left")),
+            self._door_kind_color(room_view.door_kinds.get("left", "none")),
             left,
         )
         pygame.draw.rect(
             surface,
-            self._door_kind_color(dungeon.door_kind(room_pos, "right")),
+            self._door_kind_color(room_view.door_kinds.get("right", "none")),
             right,
         )
 
@@ -147,100 +146,88 @@ class HUD:
         return COLOR_DOOR_NONE
 
     # ── consumable quick-bar ────────────────────────────
-    def _draw_quick_bar(self, surface, player):
+    def _draw_quick_bar(self, surface, quick_bar_view):
         """Draw inventory quick-bar: Q=cycle potion, 4-7=use items."""
-        inv = player.progress.inventory if player.progress else {}
         y = SCREEN_HEIGHT - 58
         x = 10
 
         # Potion selector (Q to cycle, 4 to use)
-        size = player.selected_potion_size
-        potion_id = f"health_potion_{size}"
-        count = inv.get(potion_id, 0)
-        potion_label = f"[Q/{4}] {size.capitalize()} Potion x{count}"
+        potion_label = (
+            f"[Q/{4}] {quick_bar_view.selected_potion_name} "
+            f"x{quick_bar_view.selected_potion_count}"
+        )
         txt = self._small_font.render(potion_label, True, COLOR_WHITE)
         surface.blit(txt, (x, y))
 
         # Speed boost (5)
-        sp_count = inv.get("speed_boost", 0)
-        sp_label = f"[5] Speed x{sp_count}"
+        sp_label = f"[5] Speed x{quick_bar_view.speed_boost_count}"
         txt = self._small_font.render(sp_label, True, COLOR_SPEED_GLOW)
         surface.blit(txt, (x + 200, y))
 
         # Attack boost (6)
-        atk_count = inv.get("attack_boost", 0)
-        atk_label = f"[6] Attack x{atk_count}"
+        atk_label = f"[6] Attack x{quick_bar_view.attack_boost_count}"
         txt = self._small_font.render(atk_label, True, (255, 80, 80))
         surface.blit(txt, (x + 330, y))
 
         # Compass (7)
-        comp_uses = player.compass_uses
-        comp_label = f"[7] Compass x{comp_uses}"
+        comp_label = f"[7] Compass x{quick_bar_view.compass_uses}"
         txt = self._small_font.render(comp_label, True, COLOR_COMPASS)
         surface.blit(txt, (x + 470, y))
 
     # ── active effect timers ────────────────────────────
-    def _draw_active_effects(self, surface, player):
+    def _draw_active_effects(self, surface, view):
         """Show remaining time for active boosts."""
-        now = pygame.time.get_ticks()
         y = 50
-        if player.armor_hp > 0:
+        if view.armor_hp > 0:
             y = 50  # shift down if armor bar is showing
 
-        if player.is_speed_boosted:
-            remaining = max(0, player.speed_boost_until - now)
-            secs = remaining / 1000
+        for effect in view.active_effects:
+            color = COLOR_SPEED_GLOW if effect.kind == "speed" else (255, 80, 80)
             txt = self._small_font.render(
-                f"Speed Boost: {secs:.1f}s", True, COLOR_SPEED_GLOW)
+                f"{effect.name}: {effect.seconds_remaining:.1f}s", True, color)
             surface.blit(txt, (10, y))
             y += 16
 
-        if player.is_attack_boosted:
-            remaining = max(0, player.attack_boost_until - now)
-            secs = remaining / 1000
-            txt = self._small_font.render(
-                f"Attack Boost: {secs:.1f}s", True, (255, 80, 80))
-            surface.blit(txt, (10, y))
-
     # ── compass direction display ───────────────────────
-    def _draw_compass(self, surface, player):
+    def _draw_compass(self, surface, compass_view):
         """Show compass direction arrow + text after use."""
-        if not player.compass_showing:
+        if not compass_view.visible:
             return
-        direction = player.compass_direction or ""
-        arrow = player.compass_arrow or ""
-        label = f"Portal: {direction} {arrow}"
-        txt = self._font.render(label, True, COLOR_COMPASS)
+        txt = self._font.render(compass_view.label, True, COLOR_COMPASS)
         surface.blit(txt, txt.get_rect(
             center=(SCREEN_WIDTH // 2, 30)))
 
     # ── game over / victory screens ─────────────────────
-    def draw_game_over(self, surface):
+    def draw_game_over(self, surface, overlay_view):
         self._ensure_fonts()
+        self._draw_overlay(surface, overlay_view)
+
+    def draw_victory(self, surface, overlay_view):
+        self._ensure_fonts()
+        self._draw_overlay(surface, overlay_view)
+
+    def _draw_overlay(self, surface, overlay_view):
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
         surface.blit(overlay, (0, 0))
         big = pygame.font.SysFont("consolas", 48)
-        txt = big.render("GAME OVER", True, COLOR_HEALTH_BAR)
+        txt = big.render(overlay_view.title, True, overlay_view.title_color)
         surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2,
                                                 SCREEN_HEIGHT // 2 - 20)))
-        sub = self._font.render("Press R to return to menu", True, COLOR_WHITE)
-        surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2,
-                                                SCREEN_HEIGHT // 2 + 30)))
-
-    def draw_victory(self, surface, player):
-        self._ensure_fonts()
-        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 160))
-        surface.blit(overlay, (0, 0))
-        big = pygame.font.SysFont("consolas", 48)
-        txt = big.render("DUNGEON CLEARED!", True, COLOR_PORTAL)
-        surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2,
-                                                SCREEN_HEIGHT // 2 - 30)))
-        coins = self._font.render(f"Coins collected: {player.coins}",
-                                  True, COLOR_COIN)
-        surface.blit(coins, coins.get_rect(center=(SCREEN_WIDTH // 2,
-                                                    SCREEN_HEIGHT // 2 + 20)))
-        sub = self._font.render("Press R to return to menu", True, COLOR_WHITE)
-        surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2,
-                                                SCREEN_HEIGHT // 2 + 50)))
+        if overlay_view.detail_text:
+            detail = self._font.render(
+                overlay_view.detail_text,
+                True,
+                overlay_view.detail_color,
+            )
+            surface.blit(detail, detail.get_rect(center=(SCREEN_WIDTH // 2,
+                                                         SCREEN_HEIGHT // 2 + 20)))
+            prompt_y = SCREEN_HEIGHT // 2 + 50
+        else:
+            prompt_y = SCREEN_HEIGHT // 2 + 30
+        sub = self._font.render(
+            overlay_view.prompt_text,
+            True,
+            overlay_view.prompt_color,
+        )
+        surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2, prompt_y)))
