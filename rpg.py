@@ -2,6 +2,7 @@
 import os
 import sys
 import pygame
+from chest import Chest
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
@@ -19,6 +20,7 @@ from hud import HUD
 from room import PORTAL
 from items import LootDrop
 from game_states import GameState
+from content_db import ensure_room_content_db
 from dungeon_config import get_dungeon, DUNGEONS
 from progress import PlayerProgress
 from save_system import save_progress, load_progress
@@ -45,6 +47,7 @@ class Game:
     def __init__(self):
         os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
         pygame.init()
+        ensure_room_content_db()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Dungeon Crawler")
         self.clock = pygame.time.Clock()
@@ -91,6 +94,7 @@ class Game:
         self.player = Player(start_x, start_y)
         self.player.reset_for_dungeon(self.progress)
         self.player_group = pygame.sprite.GroupSingle(self.player)
+        self._enter_current_room()
         self.state = GameState.PLAYING
 
     def _advance_level(self):
@@ -115,6 +119,7 @@ class Game:
             start_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
             start_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
             self.player.place(start_x, start_y)
+            self._enter_current_room()
             self.state = GameState.PLAYING
 
     def _sync_player_state_to_progress(self):
@@ -131,6 +136,31 @@ class Game:
         self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
         self.state = GameState.MAIN_MENU
+
+    def _enter_current_room(self):
+        if self.dungeon is not None:
+            self.dungeon.current_room.on_enter(pygame.time.get_ticks())
+
+    def _apply_room_objective_update(self, update_result):
+        if not update_result:
+            return
+        if update_result.get("kind") in {"spawn_reinforcements", "spawn_enemies"}:
+            for cls, (px, py) in update_result.get("enemy_configs", ()): 
+                self.dungeon.enemy_group.add(cls(px, py))
+        elif update_result.get("kind") == "forfeit_chest":
+            for chest in self.dungeon.chest_group:
+                chest.mark_looted()
+        elif update_result.get("kind") == "spawn_reward_chest":
+            x, y = update_result.get("position", (None, None))
+            if x is not None and y is not None and not self.dungeon.chest_group:
+                self.dungeon.chest_group.add(
+                    Chest(
+                        x,
+                        y,
+                        looted=False,
+                        reward_tier=update_result.get("reward_tier", "standard"),
+                    )
+                )
 
     # ── main loop ───────────────────────────────────────
     def run(self):
@@ -223,8 +253,14 @@ class Game:
 
             # chest interaction
             if event.key == pygame.K_e:
+                now_ticks = pygame.time.get_ticks()
                 for chest in self.dungeon.chest_group:
-                    chest.try_open(self.player.rect, self.dungeon.item_group)
+                    if not self.dungeon.current_room.allows_chest_open(now_ticks):
+                        continue
+                    if chest.try_open(self.player.rect, self.dungeon.item_group):
+                        self.dungeon.current_room.notify_chest_opened(
+                            now_ticks
+                        )
 
             # consumables
             if event.key == pygame.K_q:
@@ -246,6 +282,7 @@ class Game:
     def _update_playing(self):
         room = self.dungeon.current_room
         walls = room.get_wall_rects()
+        now_ticks = pygame.time.get_ticks()
 
         # player movement
         self.player.update(walls, room.terrain_at_pixel)
@@ -256,11 +293,34 @@ class Game:
             spawn = self.dungeon.move_to(direction)
             if spawn:
                 self.player.place(*spawn)
+                self._enter_current_room()
             return
+
+        for objective in self.dungeon.objective_group:
+            objective.update(now_ticks)
+            if hasattr(objective, "update_behavior"):
+                objective.update_behavior(
+                    player=self.player,
+                    wall_rects=walls,
+                    portal_pos=room.portal_center_pixel(),
+                    allow_advance=room.escort_allows_advance(self.dungeon.enemy_group),
+                )
+            if hasattr(objective, "sync_player_overlap"):
+                objective.sync_player_overlap(self.player)
+            if hasattr(objective, "apply_player_pressure"):
+                objective.apply_player_pressure(self.player)
+
+        enemy_focus_rect = self.player.rect
+        for objective in self.dungeon.objective_group:
+            if hasattr(objective, "enemy_target_rect"):
+                target_rect = objective.enemy_target_rect()
+                if target_rect is not None:
+                    enemy_focus_rect = target_rect
+                    break
 
         # enemies AI + movement
         for enemy in self.dungeon.enemy_group:
-            enemy.update_movement(self.player.rect, walls)
+            enemy.update_movement(enemy_focus_rect, walls)
 
         # attack hitboxes
         self.dungeon.hitbox_group.update()
@@ -274,12 +334,22 @@ class Game:
                         if drop:
                             self.dungeon.item_group.add(drop)
 
+        for hitbox in self.dungeon.hitbox_group:
+            hits = pygame.sprite.spritecollide(hitbox, self.dungeon.objective_group, False)
+            for objective in hits:
+                if hitbox.try_hit(objective):
+                    objective.take_damage(hitbox.damage)
+
         # enemy → player contact damage
         if not self.player.is_invincible:
             hits = pygame.sprite.spritecollide(self.player, self.dungeon.enemy_group, False)
             for enemy in hits:
                 self.player.take_damage(enemy.damage)
                 break
+
+        for objective in self.dungeon.objective_group:
+            if hasattr(objective, "apply_enemy_contact"):
+                objective.apply_enemy_contact(self.dungeon.enemy_group, now_ticks)
 
         # item pickup
         for item in list(self.dungeon.item_group):
@@ -294,6 +364,10 @@ class Game:
                 item.kill()
 
         # portal check
+        objective_update = room.update_objective(
+            now_ticks, self.dungeon.enemy_group
+        )
+        self._apply_room_objective_update(objective_update)
         col = self.player.rect.centerx // TILE_SIZE
         row = self.player.rect.centery // TILE_SIZE
         if room.tile_at(col, row) == PORTAL:
@@ -398,6 +472,7 @@ class Game:
                         self.dungeon.enemy_group,
                         self.dungeon.item_group,
                         self.dungeon.chest_group,
+                        self.dungeon.objective_group,
                         self.player_group,
                         self.dungeon.hitbox_group,
                     ],

@@ -91,9 +91,30 @@ class PlayerLoadoutTests(unittest.TestCase):
 
         self.assertEqual(player.compass_uses, 1)
         self.assertEqual(progress.compass_uses, 1)
+        self.assertEqual(player.compass_target_label, "Portal")
         self.assertEqual(player.compass_direction, "NE")
         self.assertEqual(player.compass_arrow, "↗")
         self.assertEqual(player._compass_display_until, 1500 + COMPASS_DISPLAY_MS)
+
+    def test_use_compass_prefers_objective_hint_inside_locked_exit_room(self):
+        progress = PlayerProgress()
+        progress.compass_uses = 1
+        player = Player(32, 32)
+        player.reset_for_dungeon(progress)
+        dungeon = SimpleNamespace(
+            current_pos=(2, -1),
+            exit_pos=(2, -1),
+            current_room=SimpleNamespace(
+                objective_target_info=lambda origin: ("Relic", (origin[0] + 80, origin[1]))
+            ),
+        )
+
+        with patch("pygame.time.get_ticks", return_value=1500):
+            self.assertTrue(player.use_compass(dungeon))
+
+        self.assertEqual(player.compass_target_label, "Relic")
+        self.assertEqual(player.compass_direction, "E")
+        self.assertEqual(player.compass_arrow, "→")
 
     def test_compass_showing_uses_tool_timer_state(self):
         progress = PlayerProgress()

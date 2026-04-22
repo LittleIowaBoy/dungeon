@@ -10,19 +10,28 @@ from item_catalog import CHEST_CONTENT_ENTRIES, CHEST_CONTENT_WEIGHTS
 from items import Coin, LootDrop
 
 
+_CHEST_BONUS_ITEMS_BY_TIER = {
+    "standard": 0,
+    "branch_bonus": 1,
+    "finale_bonus": 2,
+}
+
+
 class Chest(pygame.sprite.Sprite):
     SIZE = 24
 
-    def __init__(self, x, y, looted=False):
+    def __init__(self, x, y, looted=False, reward_tier="standard"):
         super().__init__()
         self.looted = looted
+        self.reward_tier = reward_tier
         self._set_image()
         self.rect = self.image.get_rect(center=(x, y))
         # Pre-generate contents (only used if not looted)
         # Each entry is either ("coin",) or ("loot", item_id)
         self.contents = []
         if not looted:
-            count = random.randint(CHEST_MIN_ITEMS, CHEST_MAX_ITEMS)
+            bonus_items = _CHEST_BONUS_ITEMS_BY_TIER.get(reward_tier, 0)
+            count = random.randint(CHEST_MIN_ITEMS, CHEST_MAX_ITEMS) + bonus_items
             for _ in range(count):
                 entry = random.choices(
                     CHEST_CONTENT_ENTRIES,
@@ -39,6 +48,11 @@ class Chest(pygame.sprite.Sprite):
         color = COLOR_CHEST_LOOTED if self.looted else COLOR_CHEST
         self.image = make_rect_surface(self.SIZE, self.SIZE, color)
 
+    def mark_looted(self):
+        self.looted = True
+        self.contents.clear()
+        self._set_image()
+
     # ── interaction ─────────────────────────────────────
     def try_open(self, player_rect, items_group):
         """If the player is close enough and the chest is unopened, spawn items.
@@ -52,11 +66,11 @@ class Chest(pygame.sprite.Sprite):
         dist = (dx * dx + dy * dy) ** 0.5
         if dist > CHEST_INTERACT_DIST:
             return False
-        self.looted = True
-        self._set_image()
+        contents = list(self.contents)
+        self.mark_looted()
         # Spawn items around the chest
-        for i, entry in enumerate(self.contents):
-            offset_x = (i - len(self.contents) // 2) * 20
+        for i, entry in enumerate(contents):
+            offset_x = (i - len(contents) // 2) * 20
             cx = self.rect.centerx + offset_x
             cy = self.rect.centery - 24
             if entry[0] == "coin":
@@ -64,5 +78,4 @@ class Chest(pygame.sprite.Sprite):
             else:
                 item = LootDrop(cx, cy, entry[1])
             items_group.add(item)
-        self.contents.clear()
         return True

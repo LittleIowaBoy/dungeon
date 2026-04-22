@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
 save_data.db
+room_content.db
+*.db-wal
+*.db-shm
 ~$*.docx

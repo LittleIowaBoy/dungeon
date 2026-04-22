@@ -1,0 +1,171 @@
+"""Room templates and concrete room plans for dungeon generation."""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class RoomTemplate:
+    room_id: str
+    display_name: str
+    objective_kind: str
+    combat_pressure: str
+    decision_complexity: str
+    topology_role: str
+    min_depth: int = 0
+    max_depth: int | None = None
+    branch_preference: str = "either"
+    generation_weight: int = 1
+    enabled: bool = True
+    implementation_status: str = "planned"
+    objective_variant: str = ""
+    path_stage_min: int = 0
+    path_stage_max: int = 4
+    terminal_preference: str = "any"
+    repeat_cooldown: int = 0
+    reward_affinity: str = "any"
+    objective_rule: str = "immediate"
+    objective_duration_ms: int | None = None
+    enemy_minimum_bonus: int = 0
+    enemy_scale_factor: float = 1.0
+    guaranteed_chest: bool = False
+    chest_spawn_chance: float | None = None
+    terrain_patch_count_range: str = ""
+    terrain_patch_size_range: str = ""
+    clear_center: bool = False
+    terminal_chest_lock: bool = False
+    objective_entity_count: int = 0
+    scripted_wave_sizes: str = ""
+    holdout_zone_radius: int = 0
+    ritual_role_script: str = ""
+    ritual_reinforcement_count: int = 0
+    ritual_link_mode: str = ""
+    ritual_payoff_kind: str = ""
+    ritual_payoff_label: str = ""
+    objective_label: str = ""
+    objective_layout_offsets: str = ""
+    objective_spawn_offset: str = ""
+    objective_radius: int = 0
+    objective_trigger_padding: int = 0
+    objective_max_hp: int = 0
+    objective_move_speed: float = 0.0
+    objective_guide_radius: int = 0
+    objective_exit_radius: int = 0
+    objective_damage_cooldown_ms: int = 0
+    notes: str = ""
+
+    @classmethod
+    def from_mapping(cls, row):
+        return cls(
+            room_id=row["room_id"],
+            display_name=row["display_name"],
+            objective_kind=row["objective_kind"],
+            combat_pressure=row["combat_pressure"],
+            decision_complexity=row["decision_complexity"],
+            topology_role=row["topology_role"],
+            min_depth=row["min_depth"],
+            max_depth=row["max_depth"],
+            branch_preference=row["branch_preference"],
+            generation_weight=row["generation_weight"],
+            enabled=bool(row["enabled"]),
+            implementation_status=row["implementation_status"],
+            objective_variant=row.get("objective_variant", ""),
+            path_stage_min=row.get("path_stage_min", 0),
+            path_stage_max=row.get("path_stage_max", 4),
+            terminal_preference=row.get("terminal_preference", "any"),
+            repeat_cooldown=row.get("repeat_cooldown", 0),
+            reward_affinity=row.get("reward_affinity", "any"),
+            objective_rule=row.get("objective_rule", "immediate"),
+            objective_duration_ms=row.get("objective_duration_ms"),
+            enemy_minimum_bonus=row.get("enemy_minimum_bonus", 0),
+            enemy_scale_factor=row.get("enemy_scale_factor", 1.0),
+            guaranteed_chest=bool(row.get("guaranteed_chest", False)),
+            chest_spawn_chance=row.get("chest_spawn_chance"),
+            terrain_patch_count_range=row.get("terrain_patch_count_range", ""),
+            terrain_patch_size_range=row.get("terrain_patch_size_range", ""),
+            clear_center=bool(row.get("clear_center", False)),
+            terminal_chest_lock=bool(row.get("terminal_chest_lock", False)),
+            objective_entity_count=row.get("objective_entity_count", 0),
+            scripted_wave_sizes=row.get("scripted_wave_sizes", ""),
+            holdout_zone_radius=row.get("holdout_zone_radius", 0),
+            ritual_role_script=row.get("ritual_role_script", ""),
+            ritual_reinforcement_count=row.get("ritual_reinforcement_count", 0),
+            ritual_link_mode=row.get("ritual_link_mode", ""),
+            ritual_payoff_kind=row.get("ritual_payoff_kind", ""),
+            ritual_payoff_label=row.get("ritual_payoff_label", ""),
+            objective_label=row.get("objective_label", ""),
+            objective_layout_offsets=row.get("objective_layout_offsets", ""),
+            objective_spawn_offset=row.get("objective_spawn_offset", ""),
+            objective_radius=row.get("objective_radius", 0),
+            objective_trigger_padding=row.get("objective_trigger_padding", 0),
+            objective_max_hp=row.get("objective_max_hp", 0),
+            objective_move_speed=row.get("objective_move_speed", 0.0),
+            objective_guide_radius=row.get("objective_guide_radius", 0),
+            objective_exit_radius=row.get("objective_exit_radius", 0),
+            objective_damage_cooldown_ms=row.get("objective_damage_cooldown_ms", 0),
+            notes=row["notes"],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RoomPlan:
+    position: tuple[int, int]
+    depth: int
+    path_kind: str
+    is_exit: bool
+    template: RoomTemplate
+    terrain_type: str | None
+    enemy_count_range: tuple[int, int] | None
+    enemy_type_weights: tuple[int, ...] | None
+    objective_rule: str
+    objective_duration_ms: int | None = None
+    guaranteed_chest: bool = False
+    chest_spawn_chance: float | None = None
+    terrain_patch_count_range: tuple[int, int] | None = None
+    terrain_patch_size_range: tuple[int, int] | None = None
+    clear_center: bool = False
+    path_id: str = "main"
+    path_index: int = 0
+    path_length: int = 1
+    path_progress: float = 0.0
+    difficulty_band: int = 0
+    is_path_terminal: bool = False
+    reward_tier: str = "standard"
+    chest_locked_until_complete: bool = False
+    objective_entity_count: int = 0
+    scripted_wave_sizes: tuple[int, ...] = ()
+    holdout_zone_radius: int = 0
+    ritual_role_script: tuple[str, ...] = ()
+    ritual_reinforcement_count: int = 0
+    ritual_link_mode: str = ""
+    ritual_payoff_kind: str = ""
+    ritual_payoff_label: str = ""
+    objective_label: str = ""
+    objective_layout_offsets: tuple[tuple[int, int], ...] = ()
+    objective_spawn_offset: tuple[int, int] | None = None
+    objective_radius: int = 0
+    objective_trigger_padding: int = 0
+    objective_max_hp: int = 0
+    objective_move_speed: float = 0.0
+    objective_guide_radius: int = 0
+    objective_exit_radius: int = 0
+    objective_damage_cooldown_ms: int = 0
+
+    @property
+    def room_id(self):
+        return self.template.room_id
+
+    @property
+    def display_name(self):
+        return self.template.display_name
+
+    @property
+    def objective_kind(self):
+        return self.template.objective_kind
+
+    @property
+    def topology_role(self):
+        return self.template.topology_role
+
+    @property
+    def objective_variant(self):
+        return self.template.objective_variant

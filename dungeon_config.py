@@ -6,6 +6,25 @@ they will automatically appear in the dungeon-select screen.
 """
 from enemies import PatrolEnemy, RandomEnemy, ChaserEnemy
 
+
+def _level(
+    path_length,
+    enemy_count_range,
+    enemy_type_weights,
+    *,
+    branch_count_range,
+    branch_length_range,
+    pacing_profile,
+):
+    return {
+        "path_length": path_length,
+        "enemy_count_range": enemy_count_range,
+        "enemy_type_weights": enemy_type_weights,
+        "branch_count_range": branch_count_range,
+        "branch_length_range": branch_length_range,
+        "pacing_profile": pacing_profile,
+    }
+
 # ── Level template ──────────────────────────────────────
 # Each level dict contains:
 #   path_length        – rooms from start to exit portal
@@ -13,27 +32,27 @@ from enemies import PatrolEnemy, RandomEnemy, ChaserEnemy
 #   enemy_type_weights – [PatrolEnemy, RandomEnemy, ChaserEnemy] weights
 
 _MUD_LEVELS = [
-    {"path_length": 3, "enemy_count_range": (1, 2), "enemy_type_weights": [50, 35, 15]},
-    {"path_length": 5, "enemy_count_range": (1, 3), "enemy_type_weights": [40, 35, 25]},
-    {"path_length": 7, "enemy_count_range": (2, 3), "enemy_type_weights": [30, 35, 35]},
-    {"path_length": 9, "enemy_count_range": (2, 4), "enemy_type_weights": [25, 30, 45]},
-    {"path_length": 12, "enemy_count_range": (3, 5), "enemy_type_weights": [20, 25, 55]},
+    _level(3, (1, 2), [50, 35, 15], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(5, (1, 3), [40, 35, 25], branch_count_range=(1, 1), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(7, (2, 3), [30, 35, 35], branch_count_range=(1, 2), branch_length_range=(1, 2), pacing_profile="balanced"),
+    _level(9, (2, 4), [25, 30, 45], branch_count_range=(2, 2), branch_length_range=(1, 2), pacing_profile="backloaded"),
+    _level(12, (3, 5), [20, 25, 55], branch_count_range=(2, 3), branch_length_range=(2, 3), pacing_profile="backloaded"),
 ]
 
 _ICE_LEVELS = [
-    {"path_length": 3, "enemy_count_range": (1, 2), "enemy_type_weights": [50, 35, 15]},
-    {"path_length": 5, "enemy_count_range": (1, 3), "enemy_type_weights": [40, 35, 25]},
-    {"path_length": 7, "enemy_count_range": (2, 3), "enemy_type_weights": [30, 35, 35]},
-    {"path_length": 9, "enemy_count_range": (2, 4), "enemy_type_weights": [25, 30, 45]},
-    {"path_length": 12, "enemy_count_range": (3, 5), "enemy_type_weights": [20, 25, 55]},
+    _level(3, (1, 2), [50, 35, 15], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(5, (1, 3), [40, 35, 25], branch_count_range=(1, 1), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(7, (2, 3), [30, 35, 35], branch_count_range=(1, 2), branch_length_range=(1, 2), pacing_profile="balanced"),
+    _level(9, (2, 4), [25, 30, 45], branch_count_range=(2, 2), branch_length_range=(1, 2), pacing_profile="backloaded"),
+    _level(12, (3, 5), [20, 25, 55], branch_count_range=(2, 3), branch_length_range=(2, 3), pacing_profile="backloaded"),
 ]
 
 _WATER_LEVELS = [
-    {"path_length": 3, "enemy_count_range": (1, 2), "enemy_type_weights": [50, 35, 15]},
-    {"path_length": 5, "enemy_count_range": (1, 3), "enemy_type_weights": [40, 35, 25]},
-    {"path_length": 7, "enemy_count_range": (2, 3), "enemy_type_weights": [30, 35, 35]},
-    {"path_length": 9, "enemy_count_range": (2, 4), "enemy_type_weights": [25, 30, 45]},
-    {"path_length": 12, "enemy_count_range": (3, 5), "enemy_type_weights": [20, 25, 55]},
+    _level(3, (1, 2), [50, 35, 15], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(5, (1, 3), [40, 35, 25], branch_count_range=(1, 1), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(7, (2, 3), [30, 35, 35], branch_count_range=(1, 2), branch_length_range=(1, 2), pacing_profile="balanced"),
+    _level(9, (2, 4), [25, 30, 45], branch_count_range=(2, 2), branch_length_range=(1, 2), pacing_profile="backloaded"),
+    _level(12, (3, 5), [20, 25, 55], branch_count_range=(2, 3), branch_length_range=(2, 3), pacing_profile="backloaded"),
 ]
 
 

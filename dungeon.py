@@ -9,6 +9,9 @@ from settings import (
 from room import Room
 from chest import Chest
 from enemies import Enemy
+from dungeon_topology import TopologyPlanner
+from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutZone, PressurePlate
+from room_selector import RoomSelector
 
 
 _ALL_DIRS = list(DIR_OFFSETS.keys())
@@ -23,11 +26,13 @@ class Dungeon:
 
     def __init__(self, dungeon_config=None, level_index=0):
         self.rooms: dict[tuple[int, int], Room] = {}
+        self.room_plans = {}
         self.current_pos = (0, 0)
 
         # ── extract level config (or use defaults) ──────
         self._config = dungeon_config
         self._level_index = level_index
+        self._dungeon_id = dungeon_config["id"] if dungeon_config else None
 
         if dungeon_config and level_index < len(dungeon_config["levels"]):
             lvl = dungeon_config["levels"][level_index]
@@ -35,24 +40,48 @@ class Dungeon:
             self._terrain_type = dungeon_config["terrain_type"]
             self._enemy_count_range = lvl["enemy_count_range"]
             self._enemy_type_weights = lvl["enemy_type_weights"]
+            self._branch_count_range = lvl.get("branch_count_range")
+            self._branch_length_range = lvl.get("branch_length_range")
+            self._pacing_profile = lvl.get("pacing_profile", "balanced")
         else:
             self._path_length = DEFAULT_PORTAL_DISTANCE
             self._terrain_type = None
             self._enemy_count_range = None
             self._enemy_type_weights = None
+            self._branch_count_range = None
+            self._branch_length_range = None
+            self._pacing_profile = "balanced"
 
         # dynamic radius: ensure the path can always fit
         self._radius = max(MAX_DUNGEON_RADIUS, self._path_length + 2)
+        self._room_depths: dict[tuple[int, int], int] = {}
+        self._room_selector = RoomSelector(
+            self._dungeon_id,
+            self._terrain_type,
+            self._enemy_count_range,
+            self._enemy_type_weights,
+        )
+        self._topology_plan = TopologyPlanner(
+            self._path_length,
+            self._radius,
+            branch_count_range=self._branch_count_range,
+            branch_length_range=self._branch_length_range,
+            pacing_profile=self._pacing_profile,
+        ).build()
 
-        # pre-seed the critical path from (0,0) to exit
-        self._exit_path = self._generate_exit_path()
-        self._exit_pos = self._exit_path[-1]
+        # pre-seed the planned topology
+        self._exit_path = self._topology_plan.main_path
+        self._exit_pos = self._topology_plan.exit_pos
 
-        # generate all rooms along the exit path
-        for i, pos in enumerate(self._exit_path):
-            is_exit = (pos == self._exit_pos)
-            doors = self._path_doors(i)
-            self._create_room(pos, forced_doors=doors, is_exit=is_exit)
+        for room_node in self._ordered_topology_rooms():
+            self._room_depths[room_node.position] = room_node.depth
+            self._create_room(
+                room_node.position,
+                fixed_doors=room_node.doors,
+                is_exit=room_node.is_exit,
+                depth=room_node.depth,
+                path_kind=room_node.path_kind,
+            )
 
         # track which rooms the player has visited (for minimap fog-of-war)
         self.visited: set[tuple[int, int]] = {(0, 0)}
@@ -61,6 +90,7 @@ class Dungeon:
         self.enemy_group: pygame.sprite.Group = pygame.sprite.Group()
         self.item_group: pygame.sprite.Group = pygame.sprite.Group()
         self.chest_group: pygame.sprite.Group = pygame.sprite.Group()
+        self.objective_group: pygame.sprite.Group = pygame.sprite.Group()
         self.hitbox_group: pygame.sprite.Group = pygame.sprite.Group()
 
         # load starting room
@@ -79,16 +109,25 @@ class Dungeon:
         """Return minimap-ready room state for HUD projection."""
         rooms = []
         for pos in sorted(self.visited):
-            if pos == self.current_pos:
+            room = self.rooms[pos]
+            if pos == self._exit_pos and not room._portal_active:
+                kind = "objective"
+            elif pos == self.current_pos:
                 kind = "current"
             elif pos == self._exit_pos:
                 kind = "exit"
             else:
                 kind = "visited"
+
+            objective_marker = None
+            if pos == self.current_pos and hasattr(room, "minimap_objective_marker"):
+                objective_marker = room.minimap_objective_marker()
             rooms.append(
                 {
                     "pos": pos,
                     "kind": kind,
+                    "path_kind": self._topology_plan.rooms[pos].path_kind,
+                    "objective_marker": objective_marker,
                     "door_kinds": {
                         direction: self.door_kind(pos, direction)
                         for direction in _ALL_DIRS
@@ -150,8 +189,17 @@ class Dungeon:
             return None  # should never happen (door suppressed)
 
         if (nx, ny) not in self.rooms:
-            opp = OPPOSITE_DIR[direction]
-            self._generate_room((nx, ny), forced_doors={opp: True})
+            planned_room = self._topology_plan.rooms.get((nx, ny))
+            if planned_room is None:
+                return None
+            self._room_depths[(nx, ny)] = planned_room.depth
+            self._create_room(
+                planned_room.position,
+                fixed_doors=planned_room.doors,
+                is_exit=planned_room.is_exit,
+                depth=planned_room.depth,
+                path_kind=planned_room.path_kind,
+            )
 
         # save chest looted state before leaving
         self._save_chest_state()
@@ -169,56 +217,70 @@ class Dungeon:
                  spawn[1] + inward[1] * TILE_SIZE)
         return spawn
 
-    # ── exit path generation ────────────────────────────
-    def _generate_exit_path(self):
-        """Random walk of _path_length steps from (0,0), no revisits."""
-        path = [(0, 0)]
-        visited = {(0, 0)}
-        cx, cy = 0, 0
-        for _ in range(self._path_length):
-            candidates = []
-            for d in _ALL_DIRS:
-                ox, oy = DIR_OFFSETS[d]
-                nx, ny = cx + ox, cy + oy
-                if _in_bounds(nx, ny, self._radius) and (nx, ny) not in visited:
-                    candidates.append((d, nx, ny))
-            if not candidates:
-                break
-            d, cx, cy = random.choice(candidates)
-            path.append((cx, cy))
-            visited.add((cx, cy))
-        return path
-
-    def _path_doors(self, path_index):
-        """Return forced doors dict for the room at exit-path[path_index]."""
-        doors = {}
-        pos = self._exit_path[path_index]
-        # door toward the previous room
-        if path_index > 0:
-            prev = self._exit_path[path_index - 1]
-            for d, (ox, oy) in DIR_OFFSETS.items():
-                if (pos[0] + ox, pos[1] + oy) == prev:
-                    doors[d] = True
-        # door toward the next room
-        if path_index < len(self._exit_path) - 1:
-            nxt = self._exit_path[path_index + 1]
-            for d, (ox, oy) in DIR_OFFSETS.items():
-                if (pos[0] + ox, pos[1] + oy) == nxt:
-                    doors[d] = True
-        return doors
+    def _ordered_topology_rooms(self):
+        return sorted(
+            self._topology_plan.rooms.values(),
+            key=lambda room: (
+                room.depth,
+                0 if room.path_kind == "main_path" else 1,
+                room.position[1],
+                room.position[0],
+            ),
+        )
 
     # ── room creation / generation ──────────────────────
-    def _create_room(self, pos, forced_doors=None, is_exit=False):
-        doors = self._random_doors(pos, forced_doors)
-        room = Room(doors, is_exit=is_exit,
-                    terrain_type=self._terrain_type,
-                    enemy_count_range=self._enemy_count_range,
-                    enemy_type_weights=self._enemy_type_weights)
+    def _create_room(
+        self,
+        pos,
+        forced_doors=None,
+        fixed_doors=None,
+        is_exit=False,
+        depth=0,
+        path_kind="main_path",
+    ):
+        if fixed_doors is not None:
+            doors = dict(fixed_doors)
+        else:
+            doors = self._random_doors(pos, forced_doors)
+        topology_room = self._topology_plan.rooms.get(pos)
+        room_plan = self._room_selector.build_room_plan(
+            pos,
+            depth,
+            path_kind,
+            is_exit=is_exit,
+            path_id=topology_room.path_id if topology_room is not None else None,
+            path_index=topology_room.path_index if topology_room is not None else None,
+            path_length=topology_room.path_length if topology_room is not None else None,
+            path_progress=topology_room.path_progress if topology_room is not None else None,
+            difficulty_band=topology_room.difficulty_band if topology_room is not None else None,
+            is_path_terminal=topology_room.is_path_terminal if topology_room is not None else False,
+            reward_tier=topology_room.reward_tier if topology_room is not None else "standard",
+        )
+        room = Room(
+            doors,
+            is_exit=is_exit,
+            terrain_type=self._terrain_type,
+            enemy_count_range=self._enemy_count_range,
+            enemy_type_weights=self._enemy_type_weights,
+            room_plan=room_plan,
+        )
         self.rooms[pos] = room
+        self.room_plans[pos] = room_plan
         return room
 
-    def _generate_room(self, pos, forced_doors=None):
+    def _generate_room(self, pos, forced_doors=None, depth=0):
         """Lazily generate a non-path room at *pos*."""
+        planned_room = self._topology_plan.rooms.get(pos)
+        if planned_room is not None:
+            self._room_depths[pos] = planned_room.depth
+            return self._create_room(
+                pos,
+                fixed_doors=planned_room.doors,
+                is_exit=planned_room.is_exit,
+                depth=planned_room.depth,
+                path_kind=planned_room.path_kind,
+            )
+
         # also force doors toward any existing neighbor that has a door toward us
         if forced_doors is None:
             forced_doors = {}
@@ -228,7 +290,8 @@ class Dungeon:
                 opp = OPPOSITE_DIR[d]
                 if self.rooms[neighbor_pos].doors.get(opp):
                     forced_doors[d] = True
-        return self._create_room(pos, forced_doors)
+        self._room_depths[pos] = depth
+        return self._create_room(pos, forced_doors=forced_doors, depth=depth, path_kind="branch")
 
     def _random_doors(self, pos, forced=None):
         """Pick random doors, suppressing any that lead out of bounds."""
@@ -257,6 +320,7 @@ class Dungeon:
         self.enemy_group.empty()
         self.item_group.empty()
         self.chest_group.empty()
+        self.objective_group.empty()
         self.hitbox_group.empty()
 
         room = self.current_room
@@ -269,8 +333,21 @@ class Dungeon:
         # chest
         if room.chest_pos:
             chest = Chest(room.chest_pos[0], room.chest_pos[1],
-                          looted=room.chest_looted)
+                          looted=room.chest_looted,
+                          reward_tier=room.room_plan.reward_tier if room.room_plan else "standard")
             self.chest_group.add(chest)
+
+        for config in room.objective_entity_configs:
+            if config["kind"] == "altar" and not config["destroyed"]:
+                self.objective_group.add(AltarAnchor(config))
+            elif config["kind"] == "holdout_zone":
+                self.objective_group.add(HoldoutZone(config))
+            elif config["kind"] == "pressure_plate":
+                self.objective_group.add(PressurePlate(config))
+            elif config["kind"] == "alarm_beacon":
+                self.objective_group.add(AlarmBeacon(config))
+            elif config["kind"] == "escort_npc" and not config["destroyed"]:
+                self.objective_group.add(EscortNPC(config))
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

@@ -27,10 +27,11 @@ class _PlayerStub:
             }
         )
         self.compass_uses = 2
+        self.compass_target_label = "Relic"
         self.speed_boost_until = 12000
         self.attack_boost_until = 0
-        self.compass_direction = "NE"
-        self.compass_arrow = "↗"
+        self.compass_direction = "E"
+        self.compass_arrow = "→"
         self._compass_display_until = 9000
 
     def weapon_upgrade_tier(self, weapon_id):
@@ -41,12 +42,19 @@ class HUDViewProjectionTests(unittest.TestCase):
     def test_build_hud_view_projects_player_and_minimap_state(self):
         player = _PlayerStub()
         dungeon = SimpleNamespace(
+            current_room=SimpleNamespace(
+                objective_hud_state=lambda _now_ticks: {
+                    "visible": True,
+                    "label": "Objective: Hold out 2.0s",
+                }
+            ),
             minimap_snapshot=lambda: {
                 "radius": 3,
                 "rooms": [
                     {
                         "pos": (0, 0),
                         "kind": "current",
+                        "objective_marker": ("relic", "Cache"),
                         "door_kinds": {
                             "top": "two_way",
                             "bottom": "none",
@@ -57,6 +65,7 @@ class HUDViewProjectionTests(unittest.TestCase):
                     {
                         "pos": (1, 0),
                         "kind": "exit",
+                        "objective_marker": None,
                         "door_kinds": {
                             "top": "none",
                             "bottom": "two_way",
@@ -82,11 +91,14 @@ class HUDViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.quick_bar.compass_uses, 2)
         self.assertEqual(view.minimap.radius, 3)
         self.assertEqual(view.minimap.rooms[0].kind, "current")
+        self.assertEqual(view.minimap.rooms[0].objective_marker, ("relic", "Cache"))
         self.assertEqual(view.minimap.rooms[1].kind, "exit")
         self.assertEqual(len(view.active_effects), 1)
         self.assertEqual(view.active_effects[0].name, "Speed Boost")
         self.assertTrue(view.compass.visible)
-        self.assertEqual(view.compass.label, "Portal: NE ↗")
+        self.assertEqual(view.compass.label, "Relic: E →")
+        self.assertTrue(view.objective.visible)
+        self.assertEqual(view.objective.label, "Objective: Hold out 2.0s")
 
     def test_overlay_views_project_static_overlay_state(self):
         game_over = build_game_over_overlay_view()

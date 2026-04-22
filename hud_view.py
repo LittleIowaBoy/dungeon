@@ -19,6 +19,7 @@ class WeaponHUDView:
 class MinimapRoomHUDView:
     position: tuple[int, int]
     kind: str
+    objective_marker: tuple[str, str] | None
     door_kinds: dict[str, str]
 
 
@@ -51,6 +52,12 @@ class CompassHUDView:
 
 
 @dataclass(frozen=True)
+class ObjectiveHUDView:
+    visible: bool
+    label: str
+
+
+@dataclass(frozen=True)
 class OverlayHUDView:
     title: str
     title_color: tuple[int, int, int]
@@ -71,6 +78,7 @@ class HUDView:
     quick_bar: QuickBarHUDView
     active_effects: tuple[ActiveEffectHUDView, ...]
     compass: CompassHUDView
+    objective: ObjectiveHUDView
 
 
 def build_hud_view(player, dungeon, now_ticks=None):
@@ -87,6 +95,7 @@ def build_hud_view(player, dungeon, now_ticks=None):
         quick_bar=_build_quick_bar_view(player),
         active_effects=_build_active_effects(player, now_ticks),
         compass=_build_compass_view(player, now_ticks),
+        objective=_build_objective_view(dungeon, now_ticks),
     )
 
 
@@ -133,6 +142,7 @@ def _build_minimap_view(dungeon):
         MinimapRoomHUDView(
             position=room["pos"],
             kind=room["kind"],
+            objective_marker=room.get("objective_marker"),
             door_kinds=dict(room["door_kinds"]),
         )
         for room in snapshot["rooms"]
@@ -179,7 +189,20 @@ def _build_compass_view(player, now_ticks):
     if not visible:
         return CompassHUDView(visible=False, label="")
 
+    prefix = getattr(player, "compass_target_label", "Portal")
     label_suffix = " ".join(
         part for part in (player.compass_direction or "", player.compass_arrow or "") if part
     )
-    return CompassHUDView(visible=True, label=f"Portal: {label_suffix}".strip())
+    return CompassHUDView(visible=True, label=f"{prefix}: {label_suffix}".strip())
+
+
+def _build_objective_view(dungeon, now_ticks):
+    room = getattr(dungeon, "current_room", None)
+    if room is None or not hasattr(room, "objective_hud_state"):
+        return ObjectiveHUDView(visible=False, label="")
+
+    state = room.objective_hud_state(now_ticks)
+    return ObjectiveHUDView(
+        visible=bool(state.get("visible")),
+        label=state.get("label", ""),
+    )

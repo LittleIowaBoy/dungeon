@@ -35,6 +35,7 @@ class HUD:
         self._draw_quick_bar(surface, view.quick_bar)
         self._draw_active_effects(surface, view)
         self._draw_compass(surface, view.compass)
+        self._draw_objective(surface, view.objective, view.compass)
 
     # ── health bar ──────────────────────────────────────
     def _draw_health_bar(self, surface, view):
@@ -101,11 +102,14 @@ class HUD:
             color = self._minimap_room_color(room.kind)
             pygame.draw.rect(surface, color, (px, py, cell - 1, cell - 1))
             self._draw_minimap_wall_indicators(surface, room, px, py, cell)
+            self._draw_minimap_objective_marker(surface, room.objective_marker, px, py, cell)
 
     @staticmethod
     def _minimap_room_color(kind):
         if kind == "current":
             return COLOR_PLAYER
+        if kind == "objective":
+            return COLOR_COMPASS
         if kind == "exit":
             return COLOR_PORTAL
         return COLOR_DARK_GRAY
@@ -144,6 +148,29 @@ class HUD:
         if kind == "one_way":
             return COLOR_DOOR_ONE_WAY
         return COLOR_DOOR_NONE
+
+    @staticmethod
+    def _draw_minimap_objective_marker(surface, marker, px, py, cell):
+        if marker is None:
+            return
+
+        kind, _label = marker
+        if kind == "altar":
+            color = (230, 110, 240)
+        elif kind == "holdout":
+            color = (245, 210, 120)
+        elif kind == "relic":
+            color = COLOR_COIN
+        elif kind == "puzzle":
+            color = (120, 220, 255)
+        elif kind == "escort":
+            color = (245, 220, 140)
+        else:
+            color = COLOR_PORTAL
+
+        center = (px + (cell - 1) // 2, py + (cell - 1) // 2)
+        pygame.draw.circle(surface, COLOR_BLACK, center, 2)
+        pygame.draw.circle(surface, color, center, 1)
 
     # ── consumable quick-bar ────────────────────────────
     def _draw_quick_bar(self, surface, quick_bar_view):
@@ -196,6 +223,13 @@ class HUD:
         txt = self._font.render(compass_view.label, True, COLOR_COMPASS)
         surface.blit(txt, txt.get_rect(
             center=(SCREEN_WIDTH // 2, 30)))
+
+    def _draw_objective(self, surface, objective_view, compass_view):
+        if not objective_view.visible:
+            return
+        y = 54 if compass_view.visible else 30
+        txt = self._small_font.render(objective_view.label, True, COLOR_WHITE)
+        surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2, y)))
 
     # ── game over / victory screens ─────────────────────
     def draw_game_over(self, surface, overlay_view):

@@ -30,8 +30,15 @@ class Camera:
                 )
 
         # sprites
+        overlay_sprites = []
         for group in sprite_groups:
             group.draw(surface)
+            overlay_sprites.extend(
+                sprite for sprite in group if hasattr(sprite, "draw_overlay")
+            )
+
+        for sprite in overlay_sprites:
+            sprite.draw_overlay(surface)
 
         # one-way door overlays (drawn on top so they are clearly visible)
         if dungeon is not None:
