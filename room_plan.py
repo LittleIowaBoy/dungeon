@@ -36,6 +36,8 @@ class RoomTemplate:
     objective_entity_count: int = 0
     scripted_wave_sizes: str = ""
     holdout_zone_radius: int = 0
+    holdout_relief_count: int = 0
+    holdout_relief_delay_ms: int = 0
     ritual_role_script: str = ""
     ritual_reinforcement_count: int = 0
     ritual_link_mode: str = ""
@@ -51,6 +53,8 @@ class RoomTemplate:
     objective_guide_radius: int = 0
     objective_exit_radius: int = 0
     objective_damage_cooldown_ms: int = 0
+    puzzle_reinforcement_count: int = 0
+    puzzle_stall_duration_ms: int = 0
     notes: str = ""
 
     @classmethod
@@ -87,6 +91,8 @@ class RoomTemplate:
             objective_entity_count=row.get("objective_entity_count", 0),
             scripted_wave_sizes=row.get("scripted_wave_sizes", ""),
             holdout_zone_radius=row.get("holdout_zone_radius", 0),
+            holdout_relief_count=row.get("holdout_relief_count", 0),
+            holdout_relief_delay_ms=row.get("holdout_relief_delay_ms", 0),
             ritual_role_script=row.get("ritual_role_script", ""),
             ritual_reinforcement_count=row.get("ritual_reinforcement_count", 0),
             ritual_link_mode=row.get("ritual_link_mode", ""),
@@ -102,6 +108,8 @@ class RoomTemplate:
             objective_guide_radius=row.get("objective_guide_radius", 0),
             objective_exit_radius=row.get("objective_exit_radius", 0),
             objective_damage_cooldown_ms=row.get("objective_damage_cooldown_ms", 0),
+            puzzle_reinforcement_count=row.get("puzzle_reinforcement_count", 0),
+            puzzle_stall_duration_ms=row.get("puzzle_stall_duration_ms", 0),
             notes=row["notes"],
         )
 
@@ -134,6 +142,8 @@ class RoomPlan:
     objective_entity_count: int = 0
     scripted_wave_sizes: tuple[int, ...] = ()
     holdout_zone_radius: int = 0
+    holdout_relief_count: int = 0
+    holdout_relief_delay_ms: int = 0
     ritual_role_script: tuple[str, ...] = ()
     ritual_reinforcement_count: int = 0
     ritual_link_mode: str = ""
@@ -149,6 +159,8 @@ class RoomPlan:
     objective_guide_radius: int = 0
     objective_exit_radius: int = 0
     objective_damage_cooldown_ms: int = 0
+    puzzle_reinforcement_count: int = 0
+    puzzle_stall_duration_ms: int = 0
 
     @property
     def room_id(self):

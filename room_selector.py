@@ -122,6 +122,44 @@ class RoomSelector:
             return row
         return RoomTemplate.from_mapping(row)
 
+    def build_room_plan_for_template(
+        self,
+        template,
+        *,
+        pos=(0, 0),
+        depth=0,
+        path_kind="main_path",
+        is_exit=True,
+        path_id=None,
+        path_index=0,
+        path_length=1,
+        path_progress=1.0,
+        difficulty_band=None,
+        is_path_terminal=True,
+        reward_tier=None,
+    ):
+        template = self._coerce_template(template)
+        if path_id is None:
+            path_id = "main" if path_kind == "main_path" else "branch"
+        if difficulty_band is None:
+            difficulty_band = depth
+        if reward_tier is None:
+            reward_tier = "finale_bonus" if path_kind == "main_path" else "branch_bonus"
+        return self._build_plan_from_template(
+            template,
+            pos=pos,
+            depth=depth,
+            path_kind=path_kind,
+            is_exit=is_exit,
+            path_id=path_id,
+            path_index=path_index,
+            path_length=path_length,
+            path_progress=path_progress,
+            difficulty_band=difficulty_band,
+            is_path_terminal=is_path_terminal,
+            reward_tier=reward_tier,
+        )
+
     def build_room_plan(
         self,
         pos,
@@ -343,6 +381,8 @@ class RoomSelector:
         objective_entity_count = max(0, int(template.objective_entity_count or 0))
         scripted_wave_sizes = _parse_int_script(template.scripted_wave_sizes)
         holdout_zone_radius = max(0, int(template.holdout_zone_radius or 0))
+        holdout_relief_count = max(0, int(template.holdout_relief_count or 0))
+        holdout_relief_delay_ms = max(0, int(template.holdout_relief_delay_ms or 0))
         ritual_role_script = _parse_text_script(template.ritual_role_script)
         ritual_reinforcement_count = max(0, int(template.ritual_reinforcement_count or 0))
         ritual_link_mode = template.ritual_link_mode or ""
@@ -358,6 +398,14 @@ class RoomSelector:
         objective_guide_radius = max(0, int(template.objective_guide_radius or 0))
         objective_exit_radius = max(0, int(template.objective_exit_radius or 0))
         objective_damage_cooldown_ms = max(0, int(template.objective_damage_cooldown_ms or 0))
+        puzzle_reinforcement_count = max(0, int(template.puzzle_reinforcement_count or 0))
+        puzzle_stall_duration_ms = max(0, int(template.puzzle_stall_duration_ms or 0))
+
+        if objective_rule == "charge_plates":
+            if puzzle_reinforcement_count <= 0:
+                puzzle_reinforcement_count = 1
+            if puzzle_stall_duration_ms <= 0:
+                puzzle_stall_duration_ms = 2500
 
         if self._enemy_count_range is not None and (
             template.enemy_minimum_bonus or template.enemy_scale_factor != 1.0
@@ -375,6 +423,10 @@ class RoomSelector:
                 scripted_wave_sizes = scripted_wave_sizes + (scripted_wave_sizes[-1] + 1,)
             if holdout_zone_radius <= 0:
                 holdout_zone_radius = 96
+            if holdout_relief_count <= 0:
+                holdout_relief_count = 1
+            if holdout_relief_delay_ms <= 0:
+                holdout_relief_delay_ms = 1500
         elif objective_rule == "destroy_altars":
             if objective_entity_count <= 0:
                 objective_entity_count = max(3, len(ritual_role_script) or 3)
@@ -420,6 +472,8 @@ class RoomSelector:
             objective_entity_count=objective_entity_count,
             scripted_wave_sizes=scripted_wave_sizes,
             holdout_zone_radius=holdout_zone_radius,
+            holdout_relief_count=holdout_relief_count,
+            holdout_relief_delay_ms=holdout_relief_delay_ms,
             ritual_role_script=ritual_role_script,
             ritual_reinforcement_count=ritual_reinforcement_count,
             ritual_link_mode=ritual_link_mode,
@@ -435,4 +489,6 @@ class RoomSelector:
             objective_guide_radius=objective_guide_radius,
             objective_exit_radius=objective_exit_radius,
             objective_damage_cooldown_ms=objective_damage_cooldown_ms,
+            puzzle_reinforcement_count=puzzle_reinforcement_count,
+            puzzle_stall_duration_ms=puzzle_stall_duration_ms,
         )

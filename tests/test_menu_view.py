@@ -1,16 +1,20 @@
 import unittest
 
+import pygame
+
 from dungeon_config import DUNGEONS
-from menu import CharacterCustomizeScreen, DungeonSelectScreen, LevelCompleteScreen, MainMenuScreen, PauseScreen, ShopScreen
+from menu import CharacterCustomizeScreen, DungeonSelectScreen, LevelCompleteScreen, MainMenuScreen, PauseScreen, RoomTestSelectScreen, ShopScreen
 from menu_view import (
     build_character_customize_view,
     build_dungeon_select_view,
     build_level_complete_screen_view,
     build_main_menu_view,
     build_pause_screen_view,
+    build_room_test_select_view,
     build_shop_view,
 )
 from progress import PlayerProgress
+from room_test_catalog import load_room_test_entries
 
 
 class MenuViewProjectionTests(unittest.TestCase):
@@ -21,19 +25,60 @@ class MenuViewProjectionTests(unittest.TestCase):
         view = build_main_menu_view(screen)
 
         self.assertEqual(view.title, "Dungeon Crawler")
-        self.assertEqual(view.options, ("Play", "Character", "Shop", "Quit"))
+        self.assertEqual(view.options, ("Play", "Room Tests", "Character", "Shop", "Quit"))
         self.assertEqual(view.selected_index, 2)
 
+    def test_build_room_test_select_view_projects_visible_rows_and_selected_details(self):
+        screen = RoomTestSelectScreen(
+            tuple(
+                entry
+                for entry in load_room_test_entries()
+                if entry.room_id == "ritual_disruption"
+            )
+        )
+        screen.selected = 2
+
+        view = build_room_test_select_view(screen)
+
+        self.assertEqual(view.title, "Room Tests")
+        self.assertEqual(len(view.rows), 4)
+        self.assertTrue(view.rows[2].selected)
+        self.assertTrue(view.rows[2].line_text.startswith("> Frost Obelisk Break"))
+        self.assertEqual(view.rows[2].detail_text, "Frozen Depths | Ritual")
+        self.assertEqual(view.selected_label, "Frost Obelisk Break")
+        self.assertEqual(
+            view.detail_lines,
+            (
+                "Family: Ritual Disruption",
+                "Context: Frozen Depths",
+                "Variant: frost_obelisk",
+            ),
+        )
+        self.assertEqual(view.footer_hint, "Enter: start room  Esc: back")
+
     def test_build_pause_screen_view_projects_selected_option_and_warning(self):
-        screen = PauseScreen()
+        screen = PauseScreen(room_identifier_enabled=False)
         screen.selected = 1
 
         view = build_pause_screen_view(screen)
 
         self.assertEqual(view.title, "Paused")
-        self.assertEqual(view.options, ("Resume", "Quit Level"))
+        self.assertEqual(
+            view.options,
+            ("Resume", "Room Identifier: Off", "Quit Level"),
+        )
         self.assertEqual(view.selected_index, 1)
-        self.assertIn("lose all progress", view.warning_text)
+        self.assertIn("toggles the room identifier", view.warning_text)
+
+    def test_pause_screen_returns_toggle_choice_for_room_identifier_option(self):
+        screen = PauseScreen(room_identifier_enabled=True)
+        screen.selected = 1
+
+        choice = screen.handle_events(
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)]
+        )
+
+        self.assertEqual(choice, "Toggle Room Identifier")
 
     def test_build_level_complete_screen_view_clamps_selection_for_final_level(self):
         screen = LevelCompleteScreen("Mud Caves", 5, is_final_level=True)

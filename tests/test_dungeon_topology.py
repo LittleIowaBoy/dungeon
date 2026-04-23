@@ -1,12 +1,14 @@
 import os
 import random
 import unittest
+from types import SimpleNamespace
 
 import pygame
 
 from dungeon import Dungeon
 from dungeon_config import get_dungeon
 from dungeon_topology import TopologyPlanner
+from objective_entities import TrapLaneSwitch
 
 
 class TopologyPlannerTests(unittest.TestCase):
@@ -114,6 +116,34 @@ class DungeonTopologyIntegrationTests(unittest.TestCase):
         for pos in terminal_positions:
             self.assertIsNotNone(dungeon.rooms[pos].chest_pos)
             self.assertNotEqual(dungeon.room_plans[pos].reward_tier, "standard")
+
+    def test_trap_gauntlet_reward_upgrade_persists_across_room_reload(self):
+        dungeon = Dungeon(get_dungeon("mud_caverns"), level_index=2)
+        trap_position = next(
+            pos
+            for pos, plan in dungeon.room_plans.items()
+            if plan.room_id == "trap_gauntlet"
+        )
+        dungeon.current_pos = trap_position
+        dungeon._load_room_sprites()
+
+        room = dungeon.current_room
+        starting_tier = room.chest_reward_tier()
+        challenge_switch = next(
+            config
+            for config in room.objective_entity_configs
+            if config["kind"] == "trap_lane_switch" and config["lane_index"] == 2
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(challenge_switch).rect.copy())
+        TrapLaneSwitch(challenge_switch).sync_player_overlap(player)
+        room.update_objective(1000, [])
+
+        dungeon._load_room_sprites()
+
+        expected_tier = "finale_bonus" if starting_tier == "branch_bonus" else "branch_bonus"
+        self.assertEqual(room.chest_reward_tier(), expected_tier)
+        chest = next(iter(dungeon.chest_group))
+        self.assertEqual(chest.reward_tier, expected_tier)
 
     def test_minimap_marks_locked_exit_as_objective_room(self):
         dungeon = Dungeon(get_dungeon("mud_caverns"), level_index=4)

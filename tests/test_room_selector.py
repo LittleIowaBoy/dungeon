@@ -15,7 +15,7 @@ _ROOM_PLAN_DEFAULTS = {
         "terminal_chest_lock": True,
         "objective_label": "Escort",
         "objective_spawn_offset": "-6,0",
-        "objective_max_hp": 22,
+        "objective_max_hp": 26,
         "objective_move_speed": 1.2,
         "objective_guide_radius": 92,
         "objective_exit_radius": 24,
@@ -31,13 +31,14 @@ _ROOM_PLAN_DEFAULTS = {
         "terminal_chest_lock": True,
         "objective_label": "Carrier",
         "objective_spawn_offset": "-6,0",
-        "objective_max_hp": 26,
+        "objective_max_hp": 30,
         "objective_move_speed": 1.0,
         "objective_guide_radius": 92,
         "objective_exit_radius": 24,
         "objective_damage_cooldown_ms": 500,
     },
     "puzzle_gated_doors": {
+        "objective_variant": "ordered_plates",
         "objective_rule": "charge_plates",
         "terrain_patch_count_range": "2,4",
         "terrain_patch_size_range": "2,3",
@@ -47,6 +48,8 @@ _ROOM_PLAN_DEFAULTS = {
         "objective_label": "Seal",
         "objective_layout_offsets": "-5,-3;5,-3;0,4",
         "objective_trigger_padding": 10,
+        "puzzle_reinforcement_count": 1,
+        "puzzle_stall_duration_ms": 2500,
     },
     "survival_holdout": {
         "objective_rule": "holdout_timer",
@@ -59,6 +62,8 @@ _ROOM_PLAN_DEFAULTS = {
         "terminal_chest_lock": True,
         "scripted_wave_sizes": "1,2,3",
         "holdout_zone_radius": 96,
+        "holdout_relief_count": 1,
+        "holdout_relief_delay_ms": 1500,
     },
     "ritual_disruption": {
         "objective_rule": "destroy_altars",
@@ -85,17 +90,24 @@ _ROOM_PLAN_DEFAULTS = {
         "terrain_patch_count_range": "2,4",
         "terrain_patch_size_range": "2,4",
         "clear_center": True,
+        "scripted_wave_sizes": "1,2",
     },
     "trap_gauntlet": {
+        "objective_variant": "crusher_corridors",
         "objective_rule": "immediate",
         "enemy_scale_factor": 0.0,
         "guaranteed_chest": True,
         "chest_spawn_chance": 1.0,
         "terrain_patch_count_range": "6,9",
         "terrain_patch_size_range": "3,6",
+        "clear_center": True,
+        "objective_entity_count": 3,
+        "objective_label": "Lane Switch",
+        "objective_trigger_padding": 18,
     },
     "stealth_passage": {
         "objective_rule": "avoid_alarm_zones",
+        "objective_duration_ms": 2200,
         "enemy_scale_factor": 0.0,
         "terrain_patch_count_range": "1,3",
         "terrain_patch_size_range": "2,3",
@@ -115,6 +127,7 @@ _ROOM_PLAN_DEFAULTS = {
         "terrain_patch_count_range": "3,5",
         "terrain_patch_size_range": "2,4",
         "clear_center": True,
+        "scripted_wave_sizes": "1,2",
     },
 }
 
@@ -150,7 +163,7 @@ def _template(
         "generation_weight": generation_weight,
         "enabled": enabled,
         "implementation_status": "prototype" if enabled else "planned",
-        "objective_variant": "",
+        "objective_variant": room_defaults.get("objective_variant", ""),
         "path_stage_min": path_stage_min,
         "path_stage_max": path_stage_max,
         "terminal_preference": terminal_preference,
@@ -169,6 +182,8 @@ def _template(
         "objective_entity_count": room_defaults.get("objective_entity_count", 0),
         "scripted_wave_sizes": room_defaults.get("scripted_wave_sizes", ""),
         "holdout_zone_radius": room_defaults.get("holdout_zone_radius", 0),
+        "holdout_relief_count": room_defaults.get("holdout_relief_count", 0),
+        "holdout_relief_delay_ms": room_defaults.get("holdout_relief_delay_ms", 0),
         "ritual_role_script": room_defaults.get("ritual_role_script", ""),
         "ritual_reinforcement_count": room_defaults.get("ritual_reinforcement_count", 0),
         "ritual_link_mode": room_defaults.get("ritual_link_mode", ""),
@@ -184,6 +199,8 @@ def _template(
         "objective_guide_radius": room_defaults.get("objective_guide_radius", 0),
         "objective_exit_radius": room_defaults.get("objective_exit_radius", 0),
         "objective_damage_cooldown_ms": room_defaults.get("objective_damage_cooldown_ms", 0),
+        "puzzle_reinforcement_count": room_defaults.get("puzzle_reinforcement_count", 0),
+        "puzzle_stall_duration_ms": room_defaults.get("puzzle_stall_duration_ms", 0),
         "notes": "",
     }
 
@@ -265,6 +282,27 @@ class RoomSelectorTests(unittest.TestCase):
         self.assertTrue(plan.clear_center)
         self.assertEqual(plan.scripted_wave_sizes, (1, 2, 3))
         self.assertEqual(plan.holdout_zone_radius, 96)
+        self.assertEqual(plan.holdout_relief_count, 1)
+        self.assertEqual(plan.holdout_relief_delay_ms, 1500)
+
+    def test_holdout_room_can_emit_relief_metadata(self):
+        selector = self.make_selector(
+            (
+                _template(
+                    "survival_holdout",
+                    topology_role="finale",
+                    min_depth=4,
+                    holdout_relief_count=2,
+                    holdout_relief_delay_ms=900,
+                ),
+            )
+        )
+
+        plan = selector.build_room_plan((4, 0), 4, "main_path", is_exit=True)
+
+        self.assertEqual(plan.room_id, "survival_holdout")
+        self.assertEqual(plan.holdout_relief_count, 2)
+        self.assertEqual(plan.holdout_relief_delay_ms, 900)
 
     def test_exit_room_can_emit_escort_protection_rule(self):
         selector = self.make_selector(
@@ -283,7 +321,7 @@ class RoomSelectorTests(unittest.TestCase):
         self.assertTrue(plan.clear_center)
         self.assertEqual(plan.objective_label, "Escort")
         self.assertEqual(plan.objective_spawn_offset, (-6, 0))
-        self.assertEqual(plan.objective_max_hp, 22)
+        self.assertEqual(plan.objective_max_hp, 26)
 
     def test_exit_room_can_emit_escort_bomb_carrier_rule(self):
         selector = self.make_selector(
@@ -320,6 +358,52 @@ class RoomSelectorTests(unittest.TestCase):
         self.assertEqual(plan.enemy_count_range, (0, 0))
         self.assertTrue(plan.guaranteed_chest)
         self.assertEqual(plan.chest_spawn_chance, 1.0)
+        self.assertTrue(plan.clear_center)
+        self.assertEqual(plan.objective_variant, "crusher_corridors")
+        self.assertEqual(plan.objective_entity_count, 3)
+        self.assertEqual(plan.objective_label, "Lane Switch")
+        self.assertEqual(plan.objective_trigger_padding, 18)
+
+    def test_branch_room_can_emit_trap_variant_metadata(self):
+        selector = self.make_selector(
+            (
+                _template(
+                    "trap_gauntlet",
+                    topology_role="branch",
+                    branch_preference="branch",
+                    objective_variant="vent_lanes",
+                ),
+            )
+        )
+
+        plan = selector.build_room_plan((1, 1), 2, "branch")
+
+        self.assertEqual(plan.room_id, "trap_gauntlet")
+        self.assertEqual(plan.objective_variant, "vent_lanes")
+
+    def test_puzzle_room_can_emit_paired_variant_metadata(self):
+        selector = self.make_selector(
+            (
+                _template(
+                    "puzzle_gated_doors",
+                    topology_role="wildcard",
+                    objective_variant="paired_runes",
+                    objective_entity_count=4,
+                    objective_label="Rune",
+                    puzzle_reinforcement_count=2,
+                    puzzle_stall_duration_ms=1800,
+                ),
+            )
+        )
+
+        plan = selector.build_room_plan((2, 1), 2, "main_path")
+
+        self.assertEqual(plan.room_id, "puzzle_gated_doors")
+        self.assertEqual(plan.objective_variant, "paired_runes")
+        self.assertEqual(plan.objective_entity_count, 4)
+        self.assertEqual(plan.objective_label, "Rune")
+        self.assertEqual(plan.puzzle_reinforcement_count, 2)
+        self.assertEqual(plan.puzzle_stall_duration_ms, 1800)
 
     def test_early_branch_prefers_trap_or_stealth_over_mid_run_objectives(self):
         selector = self.make_selector(
@@ -457,6 +541,7 @@ class RoomSelectorTests(unittest.TestCase):
         else:
             self.assertEqual(plan.objective_rule, "loot_then_timer")
             self.assertEqual(plan.objective_duration_ms, 8000)
+            self.assertEqual(plan.scripted_wave_sizes, (1, 2))
             self.assertTrue(plan.guaranteed_chest)
 
     def test_terminal_ritual_plan_scales_altar_count_and_role_script(self):
@@ -485,6 +570,25 @@ class RoomSelectorTests(unittest.TestCase):
         self.assertEqual(plan.ritual_link_mode, "ward_shields_others")
         self.assertEqual(plan.ritual_payoff_kind, "reveal_reliquary")
         self.assertEqual(plan.ritual_payoff_label, "Reliquary")
+
+    def test_ritual_room_can_emit_pulse_window_link_mode(self):
+        selector = self.make_selector(
+            (
+                _template(
+                    "ritual_disruption",
+                    topology_role="mid_run",
+                    min_depth=2,
+                    objective_variant="frost_obelisk",
+                    ritual_link_mode="pulse_gates_damage",
+                ),
+            )
+        )
+
+        plan = selector.build_room_plan((2, 0), 3, "main_path")
+
+        self.assertEqual(plan.room_id, "ritual_disruption")
+        self.assertEqual(plan.objective_variant, "frost_obelisk")
+        self.assertEqual(plan.ritual_link_mode, "pulse_gates_damage")
 
     def test_late_main_path_prefers_heavier_objective_rooms(self):
         selector = self.make_selector(
@@ -601,6 +705,7 @@ class RoomSelectorTests(unittest.TestCase):
         self.assertEqual(plan.room_id, "resource_race")
         self.assertEqual(plan.objective_rule, "claim_relic_before_lockdown")
         self.assertEqual(plan.objective_duration_ms, 7000)
+        self.assertEqual(plan.scripted_wave_sizes, (1, 2))
         self.assertTrue(plan.guaranteed_chest)
         self.assertTrue(plan.clear_center)
 
@@ -616,6 +721,7 @@ class RoomSelectorTests(unittest.TestCase):
 
         self.assertEqual(plan.room_id, "stealth_passage")
         self.assertEqual(plan.objective_rule, "avoid_alarm_zones")
+        self.assertEqual(plan.objective_duration_ms, 2200)
         self.assertEqual(plan.enemy_count_range, (0, 0))
         self.assertTrue(plan.clear_center)
         self.assertEqual(plan.objective_label, "Alarm")

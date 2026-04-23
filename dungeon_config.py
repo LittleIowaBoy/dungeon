@@ -40,19 +40,19 @@ _MUD_LEVELS = [
 ]
 
 _ICE_LEVELS = [
-    _level(3, (1, 2), [50, 35, 15], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
-    _level(5, (1, 3), [40, 35, 25], branch_count_range=(1, 1), branch_length_range=(1, 1), pacing_profile="balanced"),
-    _level(7, (2, 3), [30, 35, 35], branch_count_range=(1, 2), branch_length_range=(1, 2), pacing_profile="balanced"),
-    _level(9, (2, 4), [25, 30, 45], branch_count_range=(2, 2), branch_length_range=(1, 2), pacing_profile="backloaded"),
-    _level(12, (3, 5), [20, 25, 55], branch_count_range=(2, 3), branch_length_range=(2, 3), pacing_profile="backloaded"),
+    _level(3, (1, 2), [45, 25, 30], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(5, (1, 3), [35, 25, 40], branch_count_range=(1, 1), branch_length_range=(1, 2), pacing_profile="frontloaded"),
+    _level(7, (2, 3), [25, 30, 45], branch_count_range=(1, 2), branch_length_range=(2, 2), pacing_profile="frontloaded"),
+    _level(9, (2, 4), [20, 30, 50], branch_count_range=(1, 2), branch_length_range=(2, 3), pacing_profile="balanced"),
+    _level(12, (3, 5), [15, 25, 60], branch_count_range=(2, 2), branch_length_range=(2, 4), pacing_profile="backloaded"),
 ]
 
 _WATER_LEVELS = [
-    _level(3, (1, 2), [50, 35, 15], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
-    _level(5, (1, 3), [40, 35, 25], branch_count_range=(1, 1), branch_length_range=(1, 1), pacing_profile="balanced"),
-    _level(7, (2, 3), [30, 35, 35], branch_count_range=(1, 2), branch_length_range=(1, 2), pacing_profile="balanced"),
-    _level(9, (2, 4), [25, 30, 45], branch_count_range=(2, 2), branch_length_range=(1, 2), pacing_profile="backloaded"),
-    _level(12, (3, 5), [20, 25, 55], branch_count_range=(2, 3), branch_length_range=(2, 3), pacing_profile="backloaded"),
+    _level(3, (1, 2), [45, 40, 15], branch_count_range=(0, 0), branch_length_range=(1, 1), pacing_profile="balanced"),
+    _level(5, (1, 3), [35, 40, 25], branch_count_range=(1, 2), branch_length_range=(1, 2), pacing_profile="balanced"),
+    _level(7, (2, 3), [25, 45, 30], branch_count_range=(2, 2), branch_length_range=(1, 2), pacing_profile="backloaded"),
+    _level(9, (2, 4), [20, 45, 35], branch_count_range=(2, 3), branch_length_range=(2, 3), pacing_profile="backloaded"),
+    _level(12, (3, 5), [15, 40, 45], branch_count_range=(3, 3), branch_length_range=(2, 4), pacing_profile="backloaded"),
 ]
 
 

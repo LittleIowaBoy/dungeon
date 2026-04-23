@@ -59,7 +59,10 @@ _ALTAR_VARIANTS = {
 _RELIC_VARIANTS = {
     DEFAULT_RELIC_VARIANT: {"label": "Relic"},
     "mire_cache": {"label": "Cache"},
+    "heartstone_shard": {"label": "Heartstone"},
+    "glacier_core": {"label": "Core"},
     "glacier_reliquary": {"label": "Reliquary"},
+    "tide_pearl": {"label": "Pearl"},
     "sunken_sarcophagus": {"label": "Sarcophagus"},
 }
 

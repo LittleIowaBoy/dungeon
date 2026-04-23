@@ -5,7 +5,7 @@ from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     COLOR_HEALTH_BAR, COLOR_HEALTH_BG, COLOR_HUD_TEXT,
     COLOR_WHITE, COLOR_BLACK, COLOR_COIN, COLOR_PORTAL,
-    COLOR_PLAYER, COLOR_DARK_GRAY, COLOR_GRAY,
+    COLOR_PLAYER, COLOR_DARK_GRAY, COLOR_GRAY, COLOR_LIGHT_GRAY,
     COLOR_ARMOR_BAR, COLOR_ARMOR_BG,
     COLOR_SPEED_GLOW, COLOR_COMPASS,
     COLOR_DOOR_TWO_WAY, COLOR_DOOR_ONE_WAY, COLOR_DOOR_NONE,
@@ -36,6 +36,12 @@ class HUD:
         self._draw_active_effects(surface, view)
         self._draw_compass(surface, view.compass)
         self._draw_objective(surface, view.objective, view.compass)
+        self._draw_room_identifier(
+            surface,
+            view.room_identifier,
+            view.compass,
+            view.objective,
+        )
 
     # ── health bar ──────────────────────────────────────
     def _draw_health_bar(self, surface, view):
@@ -230,6 +236,37 @@ class HUD:
         y = 54 if compass_view.visible else 30
         txt = self._small_font.render(objective_view.label, True, COLOR_WHITE)
         surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2, y)))
+
+    def _draw_room_identifier(self, surface, room_identifier_view, compass_view, objective_view):
+        if not room_identifier_view.visible:
+            return
+
+        title = self._small_font.render(room_identifier_view.title, True, COLOR_WHITE)
+        detail = self._small_font.render(room_identifier_view.detail, True, COLOR_LIGHT_GRAY)
+
+        padding_x = 10
+        padding_y = 6
+        line_gap = 3
+        width = max(title.get_width(), detail.get_width()) + padding_x * 2
+        height = title.get_height() + detail.get_height() + padding_y * 2 + line_gap
+
+        top = 28
+        if compass_view.visible:
+            top += 24
+        if objective_view.visible:
+            top += 22
+
+        rect = pygame.Rect((SCREEN_WIDTH - width) // 2, top, width, height)
+        panel = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        panel.fill((0, 0, 0, 170))
+        surface.blit(panel, rect.topleft)
+        pygame.draw.rect(surface, COLOR_GRAY, rect, 1)
+
+        surface.blit(title, (rect.x + padding_x, rect.y + padding_y))
+        surface.blit(
+            detail,
+            (rect.x + padding_x, rect.y + padding_y + title.get_height() + line_gap),
+        )
 
     # ── game over / victory screens ─────────────────────
     def draw_game_over(self, surface, overlay_view):

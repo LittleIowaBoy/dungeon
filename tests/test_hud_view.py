@@ -46,7 +46,12 @@ class HUDViewProjectionTests(unittest.TestCase):
                 objective_hud_state=lambda _now_ticks: {
                     "visible": True,
                     "label": "Objective: Hold out 2.0s",
-                }
+                },
+                playtest_identifier_state=lambda _now_ticks: {
+                    "visible": True,
+                    "title": "Room: Survival Holdout",
+                    "detail": "Solve: Stay inside the holdout circle until the timer ends.",
+                },
             ),
             minimap_snapshot=lambda: {
                 "radius": 3,
@@ -77,7 +82,7 @@ class HUDViewProjectionTests(unittest.TestCase):
             }
         )
 
-        view = build_hud_view(player, dungeon, now_ticks=7000)
+        view = build_hud_view(player, dungeon, now_ticks=7000, show_room_identifier=True)
 
         self.assertEqual(view.current_hp, 40)
         self.assertEqual(view.coins, 17)
@@ -99,6 +104,12 @@ class HUDViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.compass.label, "Relic: E →")
         self.assertTrue(view.objective.visible)
         self.assertEqual(view.objective.label, "Objective: Hold out 2.0s")
+        self.assertTrue(view.room_identifier.visible)
+        self.assertEqual(view.room_identifier.title, "Room: Survival Holdout")
+        self.assertEqual(
+            view.room_identifier.detail,
+            "Solve: Stay inside the holdout circle until the timer ends.",
+        )
 
     def test_overlay_views_project_static_overlay_state(self):
         game_over = build_game_over_overlay_view()

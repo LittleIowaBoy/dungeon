@@ -58,6 +58,13 @@ class ObjectiveHUDView:
 
 
 @dataclass(frozen=True)
+class RoomIdentifierHUDView:
+    visible: bool
+    title: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class OverlayHUDView:
     title: str
     title_color: tuple[int, int, int]
@@ -79,9 +86,10 @@ class HUDView:
     active_effects: tuple[ActiveEffectHUDView, ...]
     compass: CompassHUDView
     objective: ObjectiveHUDView
+    room_identifier: RoomIdentifierHUDView
 
 
-def build_hud_view(player, dungeon, now_ticks=None):
+def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
     if now_ticks is None:
         now_ticks = pygame.time.get_ticks()
 
@@ -96,6 +104,11 @@ def build_hud_view(player, dungeon, now_ticks=None):
         active_effects=_build_active_effects(player, now_ticks),
         compass=_build_compass_view(player, now_ticks),
         objective=_build_objective_view(dungeon, now_ticks),
+        room_identifier=_build_room_identifier_view(
+            dungeon,
+            now_ticks,
+            show_room_identifier,
+        ),
     )
 
 
@@ -205,4 +218,20 @@ def _build_objective_view(dungeon, now_ticks):
     return ObjectiveHUDView(
         visible=bool(state.get("visible")),
         label=state.get("label", ""),
+    )
+
+
+def _build_room_identifier_view(dungeon, now_ticks, show_room_identifier):
+    if not show_room_identifier:
+        return RoomIdentifierHUDView(visible=False, title="", detail="")
+
+    room = getattr(dungeon, "current_room", None)
+    if room is None or not hasattr(room, "playtest_identifier_state"):
+        return RoomIdentifierHUDView(visible=False, title="", detail="")
+
+    state = room.playtest_identifier_state(now_ticks)
+    return RoomIdentifierHUDView(
+        visible=bool(state.get("visible")),
+        title=state.get("title", ""),
+        detail=state.get("detail", ""),
     )

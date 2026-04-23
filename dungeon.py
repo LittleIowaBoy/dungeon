@@ -9,8 +9,19 @@ from settings import (
 from room import Room
 from chest import Chest
 from enemies import Enemy
-from dungeon_topology import TopologyPlanner
-from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutZone, PressurePlate
+from dungeon_topology import TopologyPlan, TopologyPlanner, TopologyRoom
+from objective_entities import (
+    AlarmBeacon,
+    AltarAnchor,
+    EscortNPC,
+    HoldoutStabilizer,
+    HoldoutZone,
+    PressurePlate,
+    TrapCrusher,
+    TrapLaneSwitch,
+    TrapSweeper,
+    TrapVentLane,
+)
 from room_selector import RoomSelector
 
 
@@ -87,14 +98,77 @@ class Dungeon:
         self.visited: set[tuple[int, int]] = {(0, 0)}
 
         # runtime sprite groups (populated when entering a room)
+        self._initialize_runtime_groups()
+
+        # load starting room
+        self._load_room_sprites()
+
+    @classmethod
+    def from_room_plan(cls, dungeon_id, room_plan):
+        """Build a deterministic single-room dungeon for room-test mode."""
+        dungeon = cls.__new__(cls)
+        dungeon.rooms = {}
+        dungeon.room_plans = {}
+        dungeon.current_pos = (0, 0)
+
+        dungeon._config = None
+        dungeon._level_index = 0
+        dungeon._dungeon_id = dungeon_id
+        dungeon._path_length = 1
+        dungeon._terrain_type = room_plan.terrain_type
+        dungeon._enemy_count_range = room_plan.enemy_count_range
+        dungeon._enemy_type_weights = room_plan.enemy_type_weights
+        dungeon._branch_count_range = None
+        dungeon._branch_length_range = None
+        dungeon._pacing_profile = "room_test"
+        dungeon._radius = 1
+        dungeon._room_depths = {(0, 0): room_plan.depth}
+        dungeon._room_selector = None
+
+        doors = {direction: False for direction in _ALL_DIRS}
+        topology_room = TopologyRoom(
+            position=(0, 0),
+            depth=room_plan.depth,
+            path_kind=room_plan.path_kind,
+            path_id=room_plan.path_id,
+            path_index=room_plan.path_index,
+            path_length=room_plan.path_length,
+            path_progress=room_plan.path_progress,
+            difficulty_band=room_plan.difficulty_band,
+            is_path_terminal=room_plan.is_path_terminal,
+            reward_tier=room_plan.reward_tier,
+            is_exit=room_plan.is_exit,
+            doors=doors,
+        )
+        dungeon._topology_plan = TopologyPlan(
+            rooms={(0, 0): topology_room},
+            main_path=((0, 0),),
+            branch_paths=(),
+            exit_pos=(0, 0),
+        )
+        dungeon._exit_path = dungeon._topology_plan.main_path
+        dungeon._exit_pos = dungeon._topology_plan.exit_pos
+
+        dungeon.rooms[(0, 0)] = Room(
+            doors,
+            is_exit=room_plan.is_exit,
+            terrain_type=room_plan.terrain_type,
+            enemy_count_range=room_plan.enemy_count_range,
+            enemy_type_weights=room_plan.enemy_type_weights,
+            room_plan=room_plan,
+        )
+        dungeon.room_plans[(0, 0)] = room_plan
+        dungeon.visited = {(0, 0)}
+        dungeon._initialize_runtime_groups()
+        dungeon._load_room_sprites()
+        return dungeon
+
+    def _initialize_runtime_groups(self):
         self.enemy_group: pygame.sprite.Group = pygame.sprite.Group()
         self.item_group: pygame.sprite.Group = pygame.sprite.Group()
         self.chest_group: pygame.sprite.Group = pygame.sprite.Group()
         self.objective_group: pygame.sprite.Group = pygame.sprite.Group()
         self.hitbox_group: pygame.sprite.Group = pygame.sprite.Group()
-
-        # load starting room
-        self._load_room_sprites()
 
     # ── public API ──────────────────────────────────────
     @property
@@ -334,7 +408,7 @@ class Dungeon:
         if room.chest_pos:
             chest = Chest(room.chest_pos[0], room.chest_pos[1],
                           looted=room.chest_looted,
-                          reward_tier=room.room_plan.reward_tier if room.room_plan else "standard")
+                          reward_tier=room.chest_reward_tier() if hasattr(room, "chest_reward_tier") else (room.room_plan.reward_tier if room.room_plan else "standard"))
             self.chest_group.add(chest)
 
         for config in room.objective_entity_configs:
@@ -342,12 +416,22 @@ class Dungeon:
                 self.objective_group.add(AltarAnchor(config))
             elif config["kind"] == "holdout_zone":
                 self.objective_group.add(HoldoutZone(config))
+            elif config["kind"] == "holdout_stabilizer":
+                self.objective_group.add(HoldoutStabilizer(config))
             elif config["kind"] == "pressure_plate":
                 self.objective_group.add(PressurePlate(config))
             elif config["kind"] == "alarm_beacon":
                 self.objective_group.add(AlarmBeacon(config))
             elif config["kind"] == "escort_npc" and not config["destroyed"]:
                 self.objective_group.add(EscortNPC(config))
+            elif config["kind"] == "trap_lane_switch":
+                self.objective_group.add(TrapLaneSwitch(config))
+            elif config["kind"] == "trap_sweeper":
+                self.objective_group.add(TrapSweeper(config))
+            elif config["kind"] == "trap_vent_lane":
+                self.objective_group.add(TrapVentLane(config))
+            elif config["kind"] == "trap_crusher":
+                self.objective_group.add(TrapCrusher(config))
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

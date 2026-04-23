@@ -1,4 +1,4 @@
-"""Menu screens: MainMenu, DungeonSelect, CharacterCustomize, Shop, Pause, LevelComplete."""
+"""Menu screens: MainMenu, RoomTestSelect, DungeonSelect, CharacterCustomize, Shop, Pause, LevelComplete."""
 import pygame
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -33,7 +33,7 @@ def _draw_options(surface, font, options, selected, x, y, spacing=40):
 #  Main Menu
 # ═════════════════════════════════════════════════════════
 class MainMenuScreen:
-    OPTIONS = ["Play", "Character", "Shop", "Quit"]
+    OPTIONS = ["Play", "Room Tests", "Character", "Shop", "Quit"]
 
     def __init__(self):
         self.selected = 0
@@ -58,6 +58,8 @@ class MainMenuScreen:
                 choice = self.OPTIONS[self.selected]
                 if choice == "Play":
                     return GameState.DUNGEON_SELECT
+                elif choice == "Room Tests":
+                    return GameState.ROOM_TEST_SELECT
                 elif choice == "Character":
                     return GameState.CHARACTER_CUSTOMIZE
                 elif choice == "Shop":
@@ -75,6 +77,117 @@ class MainMenuScreen:
             surface, self._font, view.options, view.selected_index,
             SCREEN_WIDTH // 2 - 80, 240,
         )
+
+
+# ═════════════════════════════════════════════════════════
+#  Room Test Select
+# ═════════════════════════════════════════════════════════
+class RoomTestSelectScreen:
+    def __init__(self, entries=()):
+        self.entries = tuple(entries)
+        self.selected = 0
+        self.scroll_offset = 0
+        self._font = None
+        self._title_font = None
+        self._small_font = None
+
+    def set_entries(self, entries):
+        self.entries = tuple(entries)
+        if not self.entries:
+            self.selected = 0
+            self.scroll_offset = 0
+            return
+        self.selected = min(self.selected, len(self.entries) - 1)
+        self._ensure_selection_visible()
+
+    @staticmethod
+    def _row_height():
+        return 46
+
+    def _visible_entry_count(self):
+        top_y = 120
+        bottom_padding = 190
+        available_height = SCREEN_HEIGHT - top_y - bottom_padding
+        return max(1, available_height // self._row_height())
+
+    def _ensure_selection_visible(self):
+        if not self.entries:
+            self.scroll_offset = 0
+            return
+        visible_count = self._visible_entry_count()
+        max_offset = max(0, len(self.entries) - visible_count)
+        if self.selected < self.scroll_offset:
+            self.scroll_offset = self.selected
+        elif self.selected >= self.scroll_offset + visible_count:
+            self.scroll_offset = self.selected - visible_count + 1
+        self.scroll_offset = max(0, min(self.scroll_offset, max_offset))
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 36)
+            self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def handle_events(self, events):
+        """Returns (GameState, entry) or (GameState, None) or None."""
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return (GameState.MAIN_MENU, None)
+            if not self.entries:
+                continue
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.selected = (self.selected - 1) % len(self.entries)
+                self._ensure_selection_visible()
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected = (self.selected + 1) % len(self.entries)
+                self._ensure_selection_visible()
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                return (GameState.PLAYING, self.entries[self.selected])
+        return None
+
+    def draw(self, surface, view):
+        self._ensure_fonts()
+        surface.fill(COLOR_BLACK)
+
+        title = self._title_font.render(view.title, True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 48)))
+
+        if not view.rows:
+            msg = self._font.render(view.empty_message, True, COLOR_GRAY)
+            surface.blit(msg, msg.get_rect(center=(SCREEN_WIDTH // 2, 220)))
+        else:
+            y = 120
+            row_height = self._row_height()
+            for draw_index, row in enumerate(view.rows):
+                row_y = y + draw_index * row_height
+                line = self._font.render(row.line_text, True, row.line_color)
+                surface.blit(line, (60, row_y))
+
+                detail = self._small_font.render(row.detail_text, True, COLOR_GRAY)
+                surface.blit(detail, (88, row_y + 24))
+
+            if view.show_more_above:
+                up_hint = self._small_font.render("More above...", True, COLOR_GRAY)
+                surface.blit(up_hint, (60, y - 22))
+            if view.show_more_below:
+                down_hint = self._small_font.render("More below...", True, COLOR_GRAY)
+                surface.blit(down_hint, (60, y + len(view.rows) * row_height))
+
+        info_box_y = SCREEN_HEIGHT - 150
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (40, info_box_y, 720, 95))
+        pygame.draw.rect(surface, COLOR_GRAY, (40, info_box_y, 720, 95), 1)
+
+        selected_label = self._font.render(view.selected_label, True, COLOR_WHITE)
+        surface.blit(selected_label, (54, info_box_y + 12))
+
+        for index, detail_line in enumerate(view.detail_lines):
+            detail = self._small_font.render(detail_line, True, COLOR_WHITE)
+            surface.blit(detail, (54, info_box_y + 42 + index * 18))
+
+        hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
+        surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
 
 
 # ═════════════════════════════════════════════════════════
@@ -445,13 +558,20 @@ class ShopScreen:
 #  Pause Screen
 # ═════════════════════════════════════════════════════════
 class PauseScreen:
-    OPTIONS = ["Resume", "Quit Level"]
-
-    def __init__(self):
+    def __init__(self, room_identifier_enabled=True):
         self.selected = 0
+        self.room_identifier_enabled = room_identifier_enabled
         self._font = None
         self._title_font = None
         self._small_font = None
+
+    def option_labels(self):
+        toggle_state = "On" if self.room_identifier_enabled else "Off"
+        return (
+            "Resume",
+            f"Room Identifier: {toggle_state}",
+            "Quit Level",
+        )
 
     def _ensure_fonts(self):
         if self._font is None:
@@ -461,17 +581,22 @@ class PauseScreen:
 
     def handle_events(self, events):
         """Returns a choice string or None."""
+        options = self.option_labels()
         for event in events:
             if event.type != pygame.KEYDOWN:
                 continue
             if event.key == pygame.K_ESCAPE:
                 return "Resume"
+            if event.key == pygame.K_F3:
+                return "Toggle Room Identifier"
             if event.key in (pygame.K_UP, pygame.K_w):
-                self.selected = (self.selected - 1) % len(self.OPTIONS)
+                self.selected = (self.selected - 1) % len(options)
             elif event.key in (pygame.K_DOWN, pygame.K_s):
-                self.selected = (self.selected + 1) % len(self.OPTIONS)
+                self.selected = (self.selected + 1) % len(options)
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                return self.OPTIONS[self.selected]
+                if self.selected == 1:
+                    return "Toggle Room Identifier"
+                return options[self.selected]
         return None
 
     def draw(self, surface, view):

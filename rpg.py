@@ -6,7 +6,9 @@ from chest import Chest
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
+    OPPOSITE_DIR,
     COLOR_BLACK,
+    PLAYTEST_ROOM_IDENTIFIER_ENABLED,
 )
 from hud_view import (
     build_game_over_overlay_view,
@@ -17,7 +19,7 @@ from player import Player
 from dungeon import Dungeon
 from camera import Camera
 from hud import HUD
-from room import PORTAL
+from room import DOOR, PORTAL, WALL
 from items import LootDrop
 from game_states import GameState
 from content_db import ensure_room_content_db
@@ -26,6 +28,7 @@ from progress import PlayerProgress
 from save_system import save_progress, load_progress
 from menu import (
     MainMenuScreen,
+    RoomTestSelectScreen,
     DungeonSelectScreen,
     CharacterCustomizeScreen,
     ShopScreen,
@@ -38,8 +41,10 @@ from menu_view import (
     build_dungeon_select_view,
     build_level_complete_screen_view,
     build_pause_screen_view,
+    build_room_test_select_view,
     build_shop_view,
 )
+from room_test_catalog import build_room_test_plan, load_room_test_entries
 from shop import Shop
 
 
@@ -63,14 +68,19 @@ class Game:
         self.player = None
         self.player_group = None
         self._current_dungeon_id = None
+        self._show_room_identifier = PLAYTEST_ROOM_IDENTIFIER_ENABLED
+        self._room_test_entry = None
 
         # menu screens
         self._main_menu = MainMenuScreen()
+        self._room_test_select = RoomTestSelectScreen(load_room_test_entries())
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
         self._level_complete = None  # created on level complete
-        self._pause_screen = PauseScreen()
+        self._pause_screen = PauseScreen(
+            room_identifier_enabled=self._show_room_identifier,
+        )
 
         # snapshot of progress before entering a level (for quit-revert)
         self._pre_level_progress_snapshot = None
@@ -81,6 +91,7 @@ class Game:
     # ── start / resume a dungeon level ──────────────────
     def _start_dungeon(self, dungeon_id):
         """Generate a dungeon level and create the player."""
+        self._room_test_entry = None
         self._current_dungeon_id = dungeon_id
         config = get_dungeon(dungeon_id)
         dp = self.progress.get_dungeon(dungeon_id)
@@ -96,6 +107,50 @@ class Game:
         self.player_group = pygame.sprite.GroupSingle(self.player)
         self._enter_current_room()
         self.state = GameState.PLAYING
+
+    def _start_room_test(self, entry):
+        """Build a single-room test run without mutating persistent progress."""
+        self._room_test_entry = entry
+        self._current_dungeon_id = entry.profile_dungeon_id
+        self._pre_level_progress_snapshot = None
+
+        room_plan = build_room_test_plan(entry)
+        self.dungeon = Dungeon.from_room_plan(entry.profile_dungeon_id, room_plan)
+
+        start_x, start_y = self._room_test_spawn_position()
+        self.player = Player(start_x, start_y)
+        self.player.reset_for_dungeon(self.progress)
+        self.player_group = pygame.sprite.GroupSingle(self.player)
+        self._level_complete = None
+        self._enter_current_room()
+        self.state = GameState.PLAYING
+
+    def _room_test_spawn_position(self):
+        """Return a deterministic non-portal spawn point for single-room tests."""
+        center_col = ROOM_COLS // 2
+        center_row = ROOM_ROWS // 2
+        default_spawn = (
+            center_col * TILE_SIZE + TILE_SIZE // 2,
+            center_row * TILE_SIZE + TILE_SIZE // 2,
+        )
+        if self.dungeon is None:
+            return default_spawn
+
+        room = self.dungeon.current_room
+        for radius in range(2, max(ROOM_COLS, ROOM_ROWS)):
+            for col, row in (
+                (center_col, center_row + radius),
+                (center_col, center_row - radius),
+                (center_col - radius, center_row),
+                (center_col + radius, center_row),
+            ):
+                tile = room.tile_at(col, row)
+                if tile not in {WALL, PORTAL, DOOR}:
+                    return (
+                        col * TILE_SIZE + TILE_SIZE // 2,
+                        row * TILE_SIZE + TILE_SIZE // 2,
+                    )
+        return default_spawn
 
     def _advance_level(self):
         """Move to the next level in the current dungeon."""
@@ -127,19 +182,48 @@ class Game:
         if self.player:
             self.progress.sync_runtime_state(self.player)
 
+    def _reset_runtime_state(self):
+        self.dungeon = None
+        self.player = None
+        self.player_group = None
+        self._current_dungeon_id = None
+        self._pre_level_progress_snapshot = None
+        self._level_complete = None
+        self._room_test_entry = None
+
+    def _is_room_test_active(self):
+        return self._room_test_entry is not None
+
     def _return_to_menu(self, sync_player_state=True):
         """Save and go back to main menu."""
         if sync_player_state:
             self._sync_player_state_to_progress()
         save_progress(self.progress)
+        self._reset_runtime_state()
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
         self.state = GameState.MAIN_MENU
 
+    def _return_to_room_tests(self):
+        """Drop the current room-test runtime and reopen the selector."""
+        self._reset_runtime_state()
+        self.state = GameState.ROOM_TEST_SELECT
+
     def _enter_current_room(self):
         if self.dungeon is not None:
-            self.dungeon.current_room.on_enter(pygame.time.get_ticks())
+            player_position = None
+            if self.player is not None:
+                player_position = self.player.rect.center
+            self.dungeon.current_room.on_enter(
+                pygame.time.get_ticks(),
+                player_position=player_position,
+                room_test=self._is_room_test_active(),
+            )
+
+    def _toggle_room_identifier(self):
+        self._show_room_identifier = not self._show_room_identifier
+        self._pause_screen.room_identifier_enabled = self._show_room_identifier
 
     def _apply_room_objective_update(self, update_result):
         if not update_result:
@@ -150,6 +234,13 @@ class Game:
         elif update_result.get("kind") == "forfeit_chest":
             for chest in self.dungeon.chest_group:
                 chest.mark_looted()
+        elif update_result.get("kind") == "restore_chest":
+            for chest in self.dungeon.chest_group:
+                chest.restore_for_reclaim()
+        elif update_result.get("kind") == "upgrade_reward_chest":
+            reward_tier = update_result.get("reward_tier", "standard")
+            for chest in self.dungeon.chest_group:
+                chest.set_reward_tier(reward_tier)
         elif update_result.get("kind") == "spawn_reward_chest":
             x, y = update_result.get("position", (None, None))
             if x is not None and y is not None and not self.dungeon.chest_group:
@@ -171,13 +262,16 @@ class Game:
             # global quit
             for event in events:
                 if event.type == pygame.QUIT:
-                    self._sync_player_state_to_progress()
+                    if not self._is_room_test_active():
+                        self._sync_player_state_to_progress()
                     save_progress(self.progress)
                     pygame.quit()
                     sys.exit()
 
             if self.state == GameState.MAIN_MENU:
                 self._handle_main_menu(events)
+            elif self.state == GameState.ROOM_TEST_SELECT:
+                self._handle_room_test_select(events)
             elif self.state == GameState.DUNGEON_SELECT:
                 self._handle_dungeon_select(events)
             elif self.state == GameState.CHARACTER_CUSTOMIZE:
@@ -205,8 +299,21 @@ class Game:
             save_progress(self.progress)
             pygame.quit()
             sys.exit()
+        elif result == GameState.ROOM_TEST_SELECT:
+            self._room_test_select.set_entries(load_room_test_entries())
+            self.state = result
         elif result is not None:
             self.state = result
+
+    def _handle_room_test_select(self, events):
+        result = self._room_test_select.handle_events(events)
+        if result is None:
+            return
+        next_state, entry = result
+        if next_state == GameState.PLAYING and entry is not None:
+            self._start_room_test(entry)
+        else:
+            self.state = next_state
 
     def _handle_dungeon_select(self, events):
         result = self._dungeon_select.handle_events(events)
@@ -274,6 +381,9 @@ class Game:
             elif event.key == pygame.K_7:
                 self.player.use_compass(self.dungeon)
 
+            elif event.key == pygame.K_F3:
+                self._toggle_room_identifier()
+
             # pause menu
             if event.key == pygame.K_ESCAPE:
                 self._pause_screen.selected = 0
@@ -293,7 +403,12 @@ class Game:
             spawn = self.dungeon.move_to(direction)
             if spawn:
                 self.player.place(*spawn)
-                self._enter_current_room()
+                self.dungeon.current_room.on_enter(
+                    pygame.time.get_ticks(),
+                    entry_direction=OPPOSITE_DIR[direction],
+                    player_position=self.player.rect.center,
+                    room_test=self._is_room_test_active(),
+                )
             return
 
         for objective in self.dungeon.objective_group:
@@ -380,6 +495,10 @@ class Game:
 
     def _on_level_complete(self):
         """Player reached the portal — show level complete screen."""
+        if self._is_room_test_active():
+            self._return_to_room_tests()
+            return
+
         config = get_dungeon(self._current_dungeon_id)
         dp = self.progress.get_dungeon(self._current_dungeon_id)
         level_num = dp.current_level + 1  # 1-based for display
@@ -395,6 +514,10 @@ class Game:
 
     def _on_death(self):
         """Player died — reset dungeon progress and save."""
+        if self._is_room_test_active():
+            self._return_to_room_tests()
+            return
+
         self.progress.resolve_dungeon_death(self._current_dungeon_id, self.player)
         save_progress(self.progress)
         self.state = GameState.GAME_OVER
@@ -429,11 +552,17 @@ class Game:
         choice = self._pause_screen.handle_events(events)
         if choice == "Resume":
             self.state = GameState.PLAYING
+        elif choice == "Toggle Room Identifier":
+            self._toggle_room_identifier()
         elif choice == "Quit Level":
             self._quit_level()
 
     def _quit_level(self):
         """Quit the current level — revert progress to pre-level snapshot."""
+        if self._is_room_test_active():
+            self._return_to_room_tests()
+            return
+
         if self._pre_level_progress_snapshot is not None:
             self.progress.abandon_dungeon_run(self._pre_level_progress_snapshot)
         self._return_to_menu(sync_player_state=False)
@@ -444,6 +573,12 @@ class Game:
 
         if self.state == GameState.MAIN_MENU:
             self._main_menu.draw(self.screen, build_main_menu_view(self._main_menu))
+
+        elif self.state == GameState.ROOM_TEST_SELECT:
+            self._room_test_select.draw(
+                self.screen,
+                build_room_test_select_view(self._room_test_select),
+            )
 
         elif self.state == GameState.DUNGEON_SELECT:
             self._dungeon_select.draw(
@@ -478,7 +613,11 @@ class Game:
                     ],
                     self.dungeon,
                 )
-                hud_view = build_hud_view(self.player, self.dungeon)
+                hud_view = build_hud_view(
+                    self.player,
+                    self.dungeon,
+                    show_room_identifier=self._show_room_identifier,
+                )
                 self.hud.draw(self.screen, hud_view)
 
             if self.state == GameState.PAUSED:

@@ -31,6 +31,26 @@ class DungeonSelectView:
 
 
 @dataclass(frozen=True)
+class RoomTestRowView:
+    line_text: str
+    detail_text: str
+    selected: bool
+    line_color: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class RoomTestSelectView:
+    title: str
+    rows: tuple[RoomTestRowView, ...]
+    selected_label: str
+    detail_lines: tuple[str, ...]
+    empty_message: str
+    show_more_above: bool
+    show_more_below: bool
+    footer_hint: str
+
+
+@dataclass(frozen=True)
 class CharacterSlotView:
     label: str
     value: str
@@ -131,6 +151,65 @@ def build_dungeon_select_view(screen):
         cards=tuple(cards),
         selected_index=min(max(screen.selected, 0), len(cards)),
         back_label="Back",
+    )
+
+
+def build_room_test_select_view(screen):
+    entries = screen.entries
+    if not entries:
+        return RoomTestSelectView(
+            title="Room Tests",
+            rows=(),
+            selected_label="No rooms available",
+            detail_lines=("Playable rooms are not available yet.",),
+            empty_message="No playable room tests available",
+            show_more_above=False,
+            show_more_below=False,
+            footer_hint="Press ESC to return",
+        )
+
+    visible_count = screen._visible_entry_count()
+    start_index = screen.scroll_offset
+    end_index = min(len(entries), start_index + visible_count)
+    selected_entry = entries[min(screen.selected, len(entries) - 1)]
+    row_views = []
+
+    for index in range(start_index, end_index):
+        entry = entries[index]
+        selected = index == screen.selected
+        line_color = (255, 255, 255) if selected else (160, 160, 160)
+        prefix = "> " if selected else "  "
+        row_views.append(
+            RoomTestRowView(
+                line_text=f"{prefix}{entry.display_name}",
+                detail_text=f"{entry.context_label} | {entry.objective_kind.replace('_', ' ').title()}",
+                selected=selected,
+                line_color=line_color,
+            )
+        )
+
+    if selected_entry.is_biome_variant:
+        context_line = f"Context: {selected_entry.context_label}"
+    else:
+        context_line = (
+            f"Context: {selected_entry.context_label}"
+            f" (launch profile: {selected_entry.profile_dungeon_name})"
+        )
+    variant_label = selected_entry.objective_variant or "Base rules"
+
+    return RoomTestSelectView(
+        title="Room Tests",
+        rows=tuple(row_views),
+        selected_label=selected_entry.display_name,
+        detail_lines=(
+            f"Family: {selected_entry.base_display_name}",
+            context_line,
+            f"Variant: {variant_label}",
+        ),
+        empty_message="No playable room tests available",
+        show_more_above=start_index > 0,
+        show_more_below=end_index < len(entries),
+        footer_hint="Enter: start room  Esc: back",
     )
 
 
@@ -247,9 +326,9 @@ def build_shop_view(screen):
 def build_pause_screen_view(screen):
     return PauseScreenView(
         title="Paused",
-        options=tuple(screen.OPTIONS),
+        options=tuple(screen.option_labels()),
         selected_index=screen.selected,
-        warning_text="Quitting will lose all progress in this level.",
+        warning_text="F3 or the pause menu toggles the room identifier. Quitting loses level progress.",
     )
 
 
