@@ -1,6 +1,6 @@
 import unittest
 
-from dungeon_config import get_dungeon, get_level
+from dungeon_config import get_dungeon, get_difficulty_preset, DIFFICULTY_PRESETS
 
 
 class DungeonConfigTests(unittest.TestCase):
@@ -12,14 +12,21 @@ class DungeonConfigTests(unittest.TestCase):
         self.assertEqual(get_dungeon("frozen_depths")["name"], "Frozen Depths")
         self.assertEqual(get_dungeon("sunken_ruins")["name"], "Sunken Ruins")
 
-    def test_biomes_use_distinct_progression_profiles(self):
-        ice_mid = get_level("frozen_depths", 2)
-        water_late = get_level("sunken_ruins", 3)
-        mud_late = get_level("mud_caverns", 3)
+    def test_dungeons_expose_run_profile_with_required_fields(self):
+        for dungeon_id in ("mud_caverns", "frozen_depths", "sunken_ruins"):
+            profile = get_dungeon(dungeon_id)["run_profile"]
+            self.assertIn("enemy_count_range", profile)
+            self.assertIn("enemy_type_weights", profile)
+            self.assertIn("pacing_profile", profile)
 
-        self.assertEqual(ice_mid["pacing_profile"], "frontloaded")
-        self.assertEqual(ice_mid["branch_length_range"], (2, 2))
-        self.assertEqual(water_late["branch_count_range"], (2, 3))
-        self.assertEqual(water_late["pacing_profile"], "backloaded")
-        self.assertEqual(mud_late["branch_count_range"], (2, 2))
-        self.assertNotEqual(ice_mid["enemy_type_weights"], water_late["enemy_type_weights"])
+    def test_difficulty_presets_expose_required_fields(self):
+        for difficulty in ("default", "medium", "hard"):
+            preset = get_difficulty_preset(difficulty)
+            self.assertIn("grid_size", preset)
+            self.assertIn("min_distance", preset)
+            self.assertIn("enemy_count_scale", preset)
+
+    def test_difficulty_preset_grid_sizes_increase_with_difficulty(self):
+        sizes = [get_difficulty_preset(d)["grid_size"] for d in ("default", "medium", "hard")]
+        self.assertLess(sizes[0], sizes[1])
+        self.assertLess(sizes[1], sizes[2])

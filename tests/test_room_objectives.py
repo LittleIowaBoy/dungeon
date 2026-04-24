@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pygame
 
-from objective_entities import AltarAnchor, EscortNPC, HoldoutStabilizer, PressurePlate, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
+from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, PressurePlate, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
 from room import FLOOR, PORTAL, WALL, Room
 from room_plan import RoomPlan, RoomTemplate
 from settings import ROOM_COLS, ROOM_ROWS, TILE_SIZE
@@ -62,6 +62,7 @@ def _plan(
     objective_label="",
     objective_layout_offsets=(),
     objective_spawn_offset=None,
+    objective_patrol_offset=None,
     objective_radius=0,
     objective_trigger_padding=0,
     objective_max_hp=0,
@@ -107,6 +108,7 @@ def _plan(
         objective_label=objective_label,
         objective_layout_offsets=objective_layout_offsets,
         objective_spawn_offset=objective_spawn_offset,
+        objective_patrol_offset=objective_patrol_offset,
         objective_radius=objective_radius,
         objective_trigger_padding=objective_trigger_padding,
         objective_max_hp=objective_max_hp,
@@ -1147,6 +1149,7 @@ class RoomObjectiveTests(unittest.TestCase):
 
     def test_stealth_passage_uses_metadata_layout_and_radius(self):
         offsets = ((-3, 0), (3, 0))
+        patrol_offset = (0, 3)
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
             is_exit=True,
@@ -1157,6 +1160,7 @@ class RoomObjectiveTests(unittest.TestCase):
                 objective_label="Ward",
                 objective_entity_count=2,
                 objective_layout_offsets=offsets,
+                objective_patrol_offset=patrol_offset,
                 objective_radius=48,
             ),
         )
@@ -1165,6 +1169,42 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual([config["pos"] for config in room.objective_entity_configs], list(_offsets_to_pixels(offsets)))
         self.assertTrue(all(config["label"] == "Ward" for config in room.objective_entity_configs))
         self.assertTrue(all(config["radius"] == 48 for config in room.objective_entity_configs))
+        first_pos = _offsets_to_pixels((offsets[0],))[0]
+        self.assertEqual(
+            room.objective_entity_configs[0]["patrol_points"],
+            (
+                first_pos,
+                (first_pos[0], first_pos[1] + 3 * TILE_SIZE),
+                (first_pos[0], first_pos[1] - 3 * TILE_SIZE),
+            ),
+        )
+
+    def test_alarm_beacon_patrols_and_uses_forward_vision_cone(self):
+        beacon = AlarmBeacon(
+            {
+                "kind": "alarm_beacon",
+                "label": "Alarm",
+                "pos": (100, 100),
+                "radius": 60,
+                "triggered": False,
+                "patrol_points": ((100, 100), (160, 100)),
+                "patrol_cycle_ms": 2000,
+                "vision_angle_deg": 70,
+            }
+        )
+
+        beacon.update(500)
+        self.assertGreater(beacon.rect.centerx, 100)
+
+        behind_player = SimpleNamespace(rect=pygame.Rect(0, 0, 16, 16))
+        behind_player.rect.center = (90, beacon.rect.centery)
+        self.assertFalse(beacon.sync_player_overlap(behind_player))
+        self.assertFalse(beacon._config["triggered"])
+
+        ahead_player = SimpleNamespace(rect=pygame.Rect(0, 0, 16, 16))
+        ahead_player.rect.center = (170, beacon.rect.centery)
+        self.assertTrue(beacon.sync_player_overlap(ahead_player))
+        self.assertTrue(beacon._config["triggered"])
 
     def test_stealth_passage_search_phase_grants_brief_escape_window_before_lockdown(self):
         room = Room(
@@ -1201,6 +1241,121 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(len(update["enemy_configs"]), 2)
         self.assertNotEqual(center_col, PORTAL)
         self.assertEqual(room.objective_status, "alarm")
+
+    def test_stealth_passage_spawns_bonus_cache_when_undetected(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "stealth_passage",
+                objective_rule="avoid_alarm_zones",
+                enemy_count_range=(0, 0),
+                chest_spawn_chance=0.0,
+                reward_tier="standard",
+            ),
+        )
+
+        room.chest_pos = None
+        update = room.update_objective(1500, [])
+
+        self.assertEqual(update["kind"], "spawn_reward_chest")
+        self.assertEqual(update["reward_tier"], "branch_bonus")
+        self.assertIsNotNone(room.chest_pos)
+        self.assertEqual(room.chest_reward_tier(), "branch_bonus")
+        self.assertIn("Bonus cache armed", room.objective_hud_state(1500)["label"])
+        self.assertEqual(
+            room._playtest_identifier_detail(1500),
+            "Solve: Avoid the alarm beacons, claim the bonus cache, and slip through unseen.",
+        )
+
+    def test_stealth_passage_forfeits_bonus_cache_after_alarm(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "stealth_passage",
+                objective_rule="avoid_alarm_zones",
+                enemy_count_range=(0, 0),
+                duration=2000,
+                guaranteed_chest=True,
+                reward_tier="branch_bonus",
+            ),
+        )
+
+        room.update_objective(1200, [])
+        room.objective_entity_configs[0]["triggered"] = True
+
+        update = room.update_objective(2000, [])
+
+        self.assertEqual(update["kind"], "forfeit_chest")
+        self.assertTrue(room.chest_looted)
+        self.assertEqual(room.objective_status, "search")
+
+    def test_stealth_passage_escape_variant_keeps_portal_open_after_alarm(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "stealth_passage",
+                objective_rule="avoid_alarm_zones",
+                objective_variant="escape_on_alarm",
+                enemy_count_range=(0, 0),
+            ),
+        )
+
+        room.on_enter(1000)
+        room.objective_entity_configs[0]["triggered"] = True
+        update = room.update_objective(2000, [])
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+
+        self.assertEqual(update["kind"], "spawn_reinforcements")
+        self.assertEqual(center_col, PORTAL)
+        self.assertEqual(room.objective_status, "alarm")
+        self.assertEqual(
+            room.objective_hud_state(2000)["label"],
+            "Objective: Alarm raised, escape or clear pursuit",
+        )
+        self.assertEqual(
+            room._playtest_identifier_detail(2000),
+            "Solve: Stealth failed. Break through the pursuit or sprint for the exit while it stays open.",
+        )
+
+    def test_stealth_passage_release_variant_reopens_portal_after_alarm_delay(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "stealth_passage",
+                objective_rule="avoid_alarm_zones",
+                objective_variant="release_on_alarm",
+                enemy_count_range=(0, 0),
+                duration=2000,
+            ),
+        )
+
+        room.on_enter(1000)
+        room.objective_entity_configs[0]["triggered"] = True
+        room.objective_entity_configs[1]["triggered"] = True
+
+        update = room.update_objective(2000, [object()])
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertEqual(update["kind"], "spawn_reinforcements")
+        self.assertNotEqual(center_col, PORTAL)
+        self.assertEqual(room.objective_hud_state(2000)["label"], "Objective: Alarm raised 2.0s | Hold out")
+        self.assertEqual(
+            room._playtest_identifier_detail(2000),
+            "Solve: Stealth failed. Hold out until the seals release, or clear the room early.",
+        )
+
+        room.update_objective(4100, [object()])
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertEqual(center_col, PORTAL)
+        self.assertEqual(room.objective_status, "escape")
+        self.assertEqual(room.objective_hud_state(4100)["label"], "Objective: Alarm raised, seals broken | Escape")
+        self.assertEqual(
+            room._playtest_identifier_detail(4100),
+            "Solve: Stealth failed. The seals broke. Escape before pursuit corners you, or clear the room.",
+        )
 
     def test_ritual_objective_unlocks_portal_after_altars_are_destroyed(self):
         room = Room(
@@ -1420,8 +1575,98 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertIn("Route closing", room.objective_hud_state(4000)["label"])
         self.assertEqual(
             room._playtest_identifier_detail(4000),
-            "Solve: Reach the exit with the relic while pursuit waves close the route behind you.",
+            "Solve: Reach the exit with the relic while pursuit waves close the route behind you and preserve the payout.",
         )
+
+    def test_timed_extraction_seals_portal_during_collapse_until_pursuit_is_cleared(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "timed_extraction",
+                objective_rule="loot_then_timer",
+                duration=6000,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                scripted_wave_sizes=(1, 2),
+            ),
+        )
+
+        room.on_enter(1000)
+        room.chest_looted = True
+        room.notify_chest_opened(2000)
+
+        update = room.update_objective(4000, [])
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+
+        self.assertEqual(update["kind"], "spawn_enemies")
+        self.assertEqual(room.objective_status, "collapse")
+        self.assertNotEqual(center_col, PORTAL)
+
+        room.update_objective(4500, [object()])
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertEqual(room.objective_status, "collapse")
+        self.assertNotEqual(center_col, PORTAL)
+
+        room.update_objective(5000, [])
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertEqual(room.objective_status, "escape")
+        self.assertEqual(center_col, PORTAL)
+
+    def test_timed_extraction_clean_clear_exposes_completion_bonus(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "timed_extraction",
+                objective_rule="loot_then_timer",
+                duration=6000,
+                guaranteed_chest=True,
+                reward_tier="branch_bonus",
+            ),
+        )
+
+        room.on_enter(1000)
+        room.chest_looted = True
+        room.notify_chest_opened(2000)
+
+        room.update_objective(3000, [])
+
+        self.assertIn("Preserve payout", room.objective_hud_state(3000)["label"])
+        self.assertEqual(
+            room._playtest_identifier_detail(3000),
+            "Solve: Reach the exit with the relic before time runs out to preserve the bonus payout.",
+        )
+        self.assertEqual(room.claim_timed_extraction_completion_bonus(), 14)
+        self.assertEqual(room.claim_timed_extraction_completion_bonus(), 0)
+
+    def test_timed_extraction_overtime_cuts_completion_bonus(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "timed_extraction",
+                objective_rule="loot_then_timer",
+                duration=5000,
+                guaranteed_chest=True,
+                reward_tier="finale_bonus",
+            ),
+        )
+
+        room.on_enter(1000)
+        room.chest_looted = True
+        room.notify_chest_opened(2000)
+        room.update_objective(8001, [])
+
+        self.assertEqual(
+            room.objective_hud_state(8001)["label"],
+            "Objective: Escape under pressure | Payout reduced",
+        )
+        self.assertEqual(
+            room._playtest_identifier_detail(8001),
+            "Solve: Escape under pressure before reinforcements overwhelm you. Overtime cuts the extraction payout.",
+        )
+        self.assertEqual(room.claim_timed_extraction_completion_bonus(), 0)
 
     def test_objective_compass_hint_reflects_pending_room_goal(self):
         room = Room(

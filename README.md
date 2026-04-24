@@ -97,8 +97,8 @@ The current room families now expose more of their mechanics directly in runtime
 - holdout rooms can spawn stabilizers that delay future reinforcement waves and add clearer target guidance
 - ritual rooms can gate altar damage behind pulse windows for biome-specific timing play
 - resource race rooms now escalate claimant pressure, allow steal-back/reclaim loops, and rename relic objectives per biome
-- stealth rooms use a short search phase before full lockdown when alarms are triggered
-- timed extraction rooms can escalate with pursuit waves before overtime cleanup begins
+- stealth rooms use patrolling alarm beacons, forward vision cones, a short search phase, bonus caches that are lost when alarms trip, and biome-specific failure responses including escape and delayed seal-release variants
+- timed extraction rooms can escalate with pursuit waves, temporarily seal the exit during collapse phases, preserve a clean-clear payout bonus, roll into overtime cleanup pressure, and explain the clean-vs-overtime result on the level-complete screen
 - escort rooms have higher escort durability, spawn the escort next to the player on entry, and highlight the exit destination in-room
 
 ## Architecture
@@ -125,7 +125,7 @@ Phase E widened biome identity beyond trap, puzzle, ritual, and extraction. The 
 - escort rooms have biome-specific labels and escort tuning per dungeon
 - holdout rooms have biome-specific zone labels and pressure tuning
 - resource race rooms use biome-specific relic variants and claimant-pressure timing
-- stealth rooms use biome-specific beacon layouts, labels, and search windows
+- stealth rooms use biome-specific beacon layouts, patrol sweeps, labels, search windows, and failure responses
 - frozen and water dungeon progression profiles now diverge from the mud baseline instead of sharing identical level pacing
 
 ## Roadmap Status
@@ -146,10 +146,9 @@ Breadth-first roadmap work completed so far:
 
 Deferred follow-up after the initial breadth-first roadmap sweep:
 
-1. Resource Race C2: interrupt and steal-back interactions
-2. Stealth Passage S1/S2: patrol routes, vision cones, and partial-detection escalation
-3. Timed Extraction T1/T2: route-closing events and stronger pursuit scripting
-4. Puzzle P1 follow-up: additional anti-camping and alternate-solve variants beyond ordered, staggered, and paired rule sets
+1. Stealth Passage S4: broader biome-specific failure gimmicks and stealth-only twists beyond the current escape and seal-release variants
+2. Timed Extraction T2/T3: stronger pursuit scripting and additional clean-vs-overtime reward depth beyond the current completion bonus and result messaging
+3. Puzzle P1 follow-up: additional anti-camping and alternate-solve variants beyond ordered, staggered, and paired rule sets
 
 ## Project Layout
 

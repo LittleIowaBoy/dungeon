@@ -115,6 +115,7 @@ _ROOM_PLAN_DEFAULTS = {
         "objective_entity_count": 3,
         "objective_label": "Alarm",
         "objective_layout_offsets": "-4,-2;4,-2;0,4",
+        "objective_patrol_offset": "0,2",
         "objective_radius": 34,
     },
     "timed_extraction": {
@@ -192,6 +193,7 @@ def _template(
         "objective_label": room_defaults.get("objective_label", ""),
         "objective_layout_offsets": room_defaults.get("objective_layout_offsets", ""),
         "objective_spawn_offset": room_defaults.get("objective_spawn_offset", ""),
+        "objective_patrol_offset": room_defaults.get("objective_patrol_offset", ""),
         "objective_radius": room_defaults.get("objective_radius", 0),
         "objective_trigger_padding": room_defaults.get("objective_trigger_padding", 0),
         "objective_max_hp": room_defaults.get("objective_max_hp", 0),
@@ -496,6 +498,31 @@ class RoomSelectorTests(unittest.TestCase):
         self.assertTrue(plan.guaranteed_chest)
         self.assertEqual(plan.reward_tier, "finale_bonus")
         self.assertTrue(plan.chest_locked_until_complete)
+
+    def test_stealth_plan_parses_authored_patrol_offset(self):
+        selector = self.make_selector(
+            (
+                _template("standard_combat", topology_role="opener", max_depth=1),
+                _template("stealth_passage", topology_role="wildcard", min_depth=2),
+            )
+        )
+
+        plan = selector.build_room_plan(
+            (2, 0),
+            2,
+            "branch",
+            is_exit=True,
+            path_id="branch_1",
+            path_index=1,
+            path_length=2,
+            path_progress=1.0,
+            difficulty_band=2,
+            is_path_terminal=True,
+            reward_tier="branch_bonus",
+        )
+
+        self.assertEqual(plan.room_id, "stealth_passage")
+        self.assertEqual(plan.objective_patrol_offset, (0, 2))
 
     def test_late_holdout_terminal_gains_an_extra_scripted_wave(self):
         selector = self.make_selector(

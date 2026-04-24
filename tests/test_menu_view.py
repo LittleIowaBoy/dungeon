@@ -54,7 +54,8 @@ class MenuViewProjectionTests(unittest.TestCase):
                 "Variant: Frost Obelisk",
             ),
         )
-        self.assertEqual(view.footer_hint, "Enter: start room  Esc: back")
+        self.assertEqual(view.footer_hint, "Enter: start room  ←/→: entry side  Esc: back")
+        self.assertIn("left", view.spawn_direction_label.lower())
 
     def test_build_pause_screen_view_projects_selected_option_and_warning(self):
         screen = PauseScreen(room_identifier_enabled=False)
@@ -80,16 +81,26 @@ class MenuViewProjectionTests(unittest.TestCase):
 
         self.assertEqual(choice, "Toggle Room Identifier")
 
-    def test_build_level_complete_screen_view_clamps_selection_for_final_level(self):
-        screen = LevelCompleteScreen("Mud Caves", 5, is_final_level=True)
-        screen.selected = 1
+    def test_build_level_complete_screen_view_includes_all_options(self):
+        screen = LevelCompleteScreen("Mud Caves")
+        screen.selected = 0
 
         view = build_level_complete_screen_view(screen)
 
-        self.assertEqual(view.heading, "Level 5 Complete!")
         self.assertEqual(view.dungeon_name, "Mud Caves")
-        self.assertEqual(view.options, ("Return to Dungeon Select",))
+        self.assertEqual(view.detail_lines, ())
+        self.assertEqual(view.options, ("Play Again", "Return to Dungeon Select"))
         self.assertEqual(view.selected_index, 0)
+
+    def test_build_level_complete_screen_view_projects_reward_details(self):
+        screen = LevelCompleteScreen(
+            "Mud Caves",
+            detail_lines=("Clean extraction bonus: +14 coins",),
+        )
+
+        view = build_level_complete_screen_view(screen)
+
+        self.assertEqual(view.detail_lines, ("Clean extraction bonus: +14 coins",))
 
     def test_build_dungeon_select_view_projects_cards_and_back_selection(self):
         progress = PlayerProgress()
@@ -105,7 +116,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.back_label, "Back")
         self.assertEqual(view.cards[0].name, DUNGEONS[0]["name"])
         self.assertEqual(view.cards[0].status_text, "Completed")
-        self.assertEqual(view.cards[0].completed_levels, len(DUNGEONS[0]["levels"]))
+        self.assertIsNotNone(view.difficulty_label)
 
     def test_build_character_customize_view_projects_slots_and_item_options(self):
         progress = PlayerProgress()

@@ -27,23 +27,18 @@ class PlayerProgressTransitionTests(unittest.TestCase):
         self.assertEqual(snapshot["armor_hp"], 6)
         self.assertEqual(snapshot["compass_uses"], 1)
 
-    def test_advance_dungeon_level_from_runtime_syncs_and_snapshots(self):
+    def test_complete_dungeon_from_runtime_marks_completed(self):
         progress = PlayerProgress()
         progress.begin_dungeon_run("mud_caves")
         player = self.make_player(coins=25, armor_hp=9, compass_uses=2)
 
-        completed, snapshot = progress.advance_dungeon_level_from_runtime(
-            "mud_caves", 5, player
-        )
+        progress.complete_dungeon_from_runtime("mud_caves", player)
 
-        self.assertFalse(completed)
-        self.assertEqual(progress.get_dungeon("mud_caves").current_level, 1)
+        dungeon = progress.get_dungeon("mud_caves")
+        self.assertTrue(dungeon.completed)
         self.assertEqual(progress.coins, 25)
         self.assertEqual(progress.armor_hp, 9)
         self.assertEqual(progress.compass_uses, 2)
-        self.assertEqual(snapshot["coins"], 25)
-        self.assertEqual(snapshot["armor_hp"], 9)
-        self.assertEqual(snapshot["compass_uses"], 2)
 
     def test_abandon_dungeon_run_restores_snapshot_without_aliasing_inventory(self):
         progress = PlayerProgress()
@@ -76,7 +71,6 @@ class PlayerProgressTransitionTests(unittest.TestCase):
 
         dungeon = progress.get_dungeon("mud_caves")
         self.assertFalse(dungeon.is_alive)
-        self.assertEqual(dungeon.current_level, 0)
         self.assertEqual(progress.coins, 31)
         self.assertEqual(progress.armor_hp, 0)
         self.assertEqual(progress.compass_uses, 0)

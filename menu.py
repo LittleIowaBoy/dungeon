@@ -83,13 +83,26 @@ class MainMenuScreen:
 #  Room Test Select
 # ═════════════════════════════════════════════════════════
 class RoomTestSelectScreen:
+    SPAWN_DIRECTIONS = ("left", "right", "top", "bottom")
+    SPAWN_DIRECTION_LABELS = {
+        "left":   "Left door  (→)",
+        "right":  "Right door (←)",
+        "top":    "Top door   (↓)",
+        "bottom": "Bottom door(↑)",
+    }
+
     def __init__(self, entries=()):
         self.entries = tuple(entries)
         self.selected = 0
         self.scroll_offset = 0
+        self.spawn_direction_index = 0  # index into SPAWN_DIRECTIONS
         self._font = None
         self._title_font = None
         self._small_font = None
+
+    @property
+    def spawn_direction(self):
+        return self.SPAWN_DIRECTIONS[self.spawn_direction_index]
 
     def set_entries(self, entries):
         self.entries = tuple(entries)
@@ -129,12 +142,20 @@ class RoomTestSelectScreen:
             self._small_font = pygame.font.SysFont("consolas", 16)
 
     def handle_events(self, events):
-        """Returns (GameState, entry) or (GameState, None) or None."""
+        """Returns (GameState, entry, spawn_direction) or (GameState, None, None) or None."""
         for event in events:
             if event.type != pygame.KEYDOWN:
                 continue
             if event.key == pygame.K_ESCAPE:
-                return (GameState.MAIN_MENU, None)
+                return (GameState.MAIN_MENU, None, None)
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self.spawn_direction_index = (
+                    self.spawn_direction_index - 1
+                ) % len(self.SPAWN_DIRECTIONS)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self.spawn_direction_index = (
+                    self.spawn_direction_index + 1
+                ) % len(self.SPAWN_DIRECTIONS)
             if not self.entries:
                 continue
             if event.key in (pygame.K_UP, pygame.K_w):
@@ -144,7 +165,7 @@ class RoomTestSelectScreen:
                 self.selected = (self.selected + 1) % len(self.entries)
                 self._ensure_selection_visible()
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                return (GameState.PLAYING, self.entries[self.selected])
+                return (GameState.PLAYING, self.entries[self.selected], self.spawn_direction)
         return None
 
     def draw(self, surface, view):
@@ -175,16 +196,22 @@ class RoomTestSelectScreen:
                 down_hint = self._small_font.render("More below...", True, COLOR_GRAY)
                 surface.blit(down_hint, (60, y + len(view.rows) * row_height))
 
-        info_box_y = SCREEN_HEIGHT - 150
-        pygame.draw.rect(surface, COLOR_DARK_GRAY, (40, info_box_y, 720, 95))
-        pygame.draw.rect(surface, COLOR_GRAY, (40, info_box_y, 720, 95), 1)
+        info_box_y = SCREEN_HEIGHT - 168
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (40, info_box_y, 720, 113))
+        pygame.draw.rect(surface, COLOR_GRAY, (40, info_box_y, 720, 113), 1)
 
         selected_label = self._font.render(view.selected_label, True, COLOR_WHITE)
-        surface.blit(selected_label, (54, info_box_y + 12))
+        surface.blit(selected_label, (54, info_box_y + 10))
 
         for index, detail_line in enumerate(view.detail_lines):
             detail = self._small_font.render(detail_line, True, COLOR_WHITE)
-            surface.blit(detail, (54, info_box_y + 42 + index * 18))
+            surface.blit(detail, (54, info_box_y + 38 + index * 18))
+
+        if view.spawn_direction_label:
+            dir_surf = self._small_font.render(
+                f"Spawn from: {view.spawn_direction_label}", True, (100, 200, 255)
+            )
+            surface.blit(dir_surf, (54, info_box_y + 38 + len(view.detail_lines) * 18 + 2))
 
         hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
@@ -194,6 +221,9 @@ class RoomTestSelectScreen:
 #  Dungeon Select
 # ═════════════════════════════════════════════════════════
 class DungeonSelectScreen:
+    DIFFICULTIES = ("default", "medium", "hard")
+    DIFFICULTY_LABELS = {"default": "Default (5×5)", "medium": "Medium (7×7)", "hard": "Hard (10×10)"}
+
     def __init__(self, player_progress):
         self.progress = player_progress
         self.selected = 0
@@ -207,6 +237,16 @@ class DungeonSelectScreen:
             self._font = pygame.font.SysFont("consolas", 22)
             self._small_font = pygame.font.SysFont("consolas", 16)
 
+    def _cycle_difficulty(self, direction):
+        """Advance difficulty preference by +1 or -1 and persist immediately."""
+        idx = self.DIFFICULTIES.index(
+            self.progress.difficulty_preference
+            if self.progress.difficulty_preference in self.DIFFICULTIES
+            else "default"
+        )
+        idx = (idx + direction) % len(self.DIFFICULTIES)
+        self.progress.difficulty_preference = self.DIFFICULTIES[idx]
+
     def handle_events(self, events):
         """Returns (GameState, dungeon_id) or (GameState, None) or None."""
         for event in events:
@@ -216,6 +256,10 @@ class DungeonSelectScreen:
                 self.selected = (self.selected - 1) % (len(DUNGEONS) + 1)
             elif event.key in (pygame.K_DOWN, pygame.K_s):
                 self.selected = (self.selected + 1) % (len(DUNGEONS) + 1)
+            elif event.key in (pygame.K_LEFT, pygame.K_a):
+                self._cycle_difficulty(-1)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self._cycle_difficulty(1)
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                 if self.selected == len(DUNGEONS):
                     return (GameState.MAIN_MENU, None)
@@ -231,39 +275,34 @@ class DungeonSelectScreen:
         title = self._title_font.render(view.title, True, COLOR_WHITE)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 50)))
 
-        card_w, card_h = 220, 140
+        # difficulty row
+        diff_label = view.difficulty_label
+        diff_y = 85
+        diff_txt = self._small_font.render(
+            f"Difficulty  ← {diff_label} →", True, COLOR_COIN
+        )
+        surface.blit(diff_txt, diff_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y)))
+
+        card_w, card_h = 220, 120
         start_x = (SCREEN_WIDTH - len(view.cards) * (card_w + 20) + 20) // 2
         y = 110
 
         for i, card in enumerate(view.cards):
             x = start_x + i * (card_w + 20)
 
-            # card background
             border_color = COLOR_WHITE if i == view.selected_index else COLOR_GRAY
             card_color = _TERRAIN_CARD_COLORS.get(card.terrain_type, COLOR_GRAY)
             pygame.draw.rect(surface, card_color, (x, y, card_w, card_h))
             pygame.draw.rect(surface, border_color, (x, y, card_w, card_h), 3)
 
-            # dungeon name
             name = self._font.render(card.name, True, COLOR_WHITE)
-            surface.blit(name, name.get_rect(center=(x + card_w // 2, y + 30)))
+            surface.blit(name, name.get_rect(center=(x + card_w // 2, y + 28)))
 
-            # status line
             st = self._small_font.render(card.status_text, True, COLOR_WHITE)
-            surface.blit(st, st.get_rect(center=(x + card_w // 2, y + 65)))
+            surface.blit(st, st.get_rect(center=(x + card_w // 2, y + 60)))
 
-            # terrain label
             terrain = self._small_font.render(card.terrain_label, True, COLOR_WHITE)
-            surface.blit(terrain,
-                         terrain.get_rect(center=(x + card_w // 2, y + 95)))
-
-            # levels bar (filled squares)
-            bar_x = x + 30
-            bar_y = y + 115
-            for lvl in range(card.total_levels):
-                color = COLOR_WHITE if lvl < card.completed_levels else (60, 60, 60)
-                pygame.draw.rect(surface, color,
-                                 (bar_x + lvl * 34, bar_y, 24, 8))
+            surface.blit(terrain, terrain.get_rect(center=(x + card_w // 2, y + 88)))
 
         # "Back" option
         back_y = y + card_h + 40
@@ -272,6 +311,12 @@ class DungeonSelectScreen:
         back_color = COLOR_WHITE if back_selected else COLOR_GRAY
         txt = self._font.render(back_label, True, back_color)
         surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2, back_y)))
+
+        hint = self._small_font.render(
+            "Up/Down: select dungeon  Left/Right: change difficulty  Enter: launch",
+            True, COLOR_GRAY,
+        )
+        surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
 
 
 # ═════════════════════════════════════════════════════════
@@ -624,20 +669,22 @@ class PauseScreen:
 #  Level Complete
 # ═════════════════════════════════════════════════════════
 class LevelCompleteScreen:
-    OPTIONS = ["Continue to Next Level", "Return to Dungeon Select"]
+    OPTIONS = ["Play Again", "Return to Dungeon Select"]
 
-    def __init__(self, dungeon_name, level_number, is_final_level=False):
+    def __init__(self, dungeon_name, is_final_level=False, detail_lines=()):
         self.dungeon_name = dungeon_name
-        self.level_number = level_number
         self.is_final_level = is_final_level
+        self.detail_lines = tuple(detail_lines)
         self.selected = 0
         self._font = None
         self._title_font = None
+        self._small_font = None
 
     def _ensure_fonts(self):
         if self._font is None:
             self._title_font = pygame.font.SysFont("consolas", 40)
             self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 16)
 
     def handle_events(self, events):
         """Returns a choice string or None."""
@@ -654,8 +701,6 @@ class LevelCompleteScreen:
         return None
 
     def _active_options(self):
-        if self.is_final_level:
-            return ["Return to Dungeon Select"]
         return list(self.OPTIONS)
 
     def draw(self, surface, view):
@@ -664,7 +709,7 @@ class LevelCompleteScreen:
         overlay.fill((0, 0, 0, 180))
         surface.blit(overlay, (0, 0))
 
-        title = self._title_font.render(view.heading, True, COLOR_PORTAL)
+        title = self._title_font.render("Dungeon Complete!", True, COLOR_PORTAL)
         surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2,
                                                     SCREEN_HEIGHT // 2 - 60)))
 
@@ -672,7 +717,15 @@ class LevelCompleteScreen:
         surface.blit(sub, sub.get_rect(center=(SCREEN_WIDTH // 2,
                                                 SCREEN_HEIGHT // 2 - 20)))
 
+        detail_y = SCREEN_HEIGHT // 2 + 8
+        for index, line in enumerate(view.detail_lines):
+            detail = self._small_font.render(line, True, COLOR_COIN)
+            surface.blit(detail, detail.get_rect(center=(SCREEN_WIDTH // 2,
+                                                         detail_y + index * 18)))
+
+        options_y = SCREEN_HEIGHT // 2 + 30 + len(view.detail_lines) * 18
+
         _draw_options(
             surface, self._font, view.options, view.selected_index,
-            SCREEN_WIDTH // 2 - 160, SCREEN_HEIGHT // 2 + 30,
+            SCREEN_WIDTH // 2 - 160, options_y,
         )

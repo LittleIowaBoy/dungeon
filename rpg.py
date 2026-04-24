@@ -6,7 +6,7 @@ from chest import Chest
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
-    OPPOSITE_DIR,
+    DIR_OFFSETS, OPPOSITE_DIR,
     COLOR_BLACK,
     PLAYTEST_ROOM_IDENTIFIER_ENABLED,
 )
@@ -23,7 +23,7 @@ from room import DOOR, PORTAL, WALL
 from items import LootDrop
 from game_states import GameState
 from content_db import ensure_room_content_db
-from dungeon_config import get_dungeon, DUNGEONS
+from dungeon_config import get_dungeon, get_difficulty_preset, DUNGEONS
 from progress import PlayerProgress
 from save_system import save_progress, load_progress
 from menu import (
@@ -70,6 +70,7 @@ class Game:
         self._current_dungeon_id = None
         self._show_room_identifier = PLAYTEST_ROOM_IDENTIFIER_ENABLED
         self._room_test_entry = None
+        self._room_test_spawn_direction = "left"
 
         # menu screens
         self._main_menu = MainMenuScreen()
@@ -90,15 +91,14 @@ class Game:
 
     # ── start / resume a dungeon level ──────────────────
     def _start_dungeon(self, dungeon_id):
-        """Generate a dungeon level and create the player."""
+        """Generate a dungeon and create the player."""
         self._room_test_entry = None
         self._current_dungeon_id = dungeon_id
         config = get_dungeon(dungeon_id)
-        dp = self.progress.get_dungeon(dungeon_id)
         self._pre_level_progress_snapshot = self.progress.begin_dungeon_run(dungeon_id)
 
-        self.dungeon = Dungeon(dungeon_config=config,
-                               level_index=dp.current_level)
+        difficulty = self.progress.difficulty_preference
+        self.dungeon = Dungeon(dungeon_config=config, difficulty=difficulty)
 
         start_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
         start_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
@@ -108,74 +108,44 @@ class Game:
         self._enter_current_room()
         self.state = GameState.PLAYING
 
-    def _start_room_test(self, entry):
+    def _start_room_test(self, entry, spawn_direction="left"):
         """Build a single-room test run without mutating persistent progress."""
         self._room_test_entry = entry
+        self._room_test_spawn_direction = spawn_direction
         self._current_dungeon_id = entry.profile_dungeon_id
         self._pre_level_progress_snapshot = None
 
         room_plan = build_room_test_plan(entry)
-        self.dungeon = Dungeon.from_room_plan(entry.profile_dungeon_id, room_plan)
+        self.dungeon = Dungeon.from_room_plan(
+            entry.profile_dungeon_id, room_plan, entry_direction=spawn_direction
+        )
 
-        start_x, start_y = self._room_test_spawn_position()
+        start_x, start_y = self._room_test_spawn_position(spawn_direction)
         self.player = Player(start_x, start_y)
         self.player.reset_for_dungeon(self.progress)
         self.player_group = pygame.sprite.GroupSingle(self.player)
         self._level_complete = None
-        self._enter_current_room()
+        self._enter_current_room(entry_direction=spawn_direction)
         self.state = GameState.PLAYING
 
-    def _room_test_spawn_position(self):
-        """Return a deterministic non-portal spawn point for single-room tests."""
-        center_col = ROOM_COLS // 2
-        center_row = ROOM_ROWS // 2
-        default_spawn = (
-            center_col * TILE_SIZE + TILE_SIZE // 2,
-            center_row * TILE_SIZE + TILE_SIZE // 2,
-        )
+    def _room_test_spawn_position(self, spawn_direction="left"):
+        """Return the spawn point just inside the entry door for room-test mode."""
         if self.dungeon is None:
-            return default_spawn
+            center_col = ROOM_COLS // 2
+            center_row = ROOM_ROWS // 2
+            return (
+                center_col * TILE_SIZE + TILE_SIZE // 2,
+                center_row * TILE_SIZE + TILE_SIZE // 2,
+            )
 
         room = self.dungeon.current_room
-        for radius in range(2, max(ROOM_COLS, ROOM_ROWS)):
-            for col, row in (
-                (center_col, center_row + radius),
-                (center_col, center_row - radius),
-                (center_col - radius, center_row),
-                (center_col + radius, center_row),
-            ):
-                tile = room.tile_at(col, row)
-                if tile not in {WALL, PORTAL, DOOR}:
-                    return (
-                        col * TILE_SIZE + TILE_SIZE // 2,
-                        row * TILE_SIZE + TILE_SIZE // 2,
-                    )
-        return default_spawn
-
-    def _advance_level(self):
-        """Move to the next level in the current dungeon."""
-        config = get_dungeon(self._current_dungeon_id)
-        dp = self.progress.get_dungeon(self._current_dungeon_id)
-        completed, next_snapshot = self.progress.advance_dungeon_level_from_runtime(
-            self._current_dungeon_id,
-            len(config["levels"]),
-            self.player,
+        # Spawn at the entry door and step one tile inward.
+        door_px, door_py = room.door_pixel_pos(spawn_direction)
+        inward_dx, inward_dy = DIR_OFFSETS[OPPOSITE_DIR[spawn_direction]]
+        return (
+            door_px + inward_dx * TILE_SIZE,
+            door_py + inward_dy * TILE_SIZE,
         )
-
-        if completed:
-            # entire dungeon cleared
-            save_progress(self.progress)
-            self.state = GameState.GAME_WIN
-        else:
-            self._pre_level_progress_snapshot = next_snapshot
-            # generate next level, keep player HP/coins as-is
-            self.dungeon = Dungeon(dungeon_config=config,
-                                   level_index=dp.current_level)
-            start_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
-            start_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
-            self.player.place(start_x, start_y)
-            self._enter_current_room()
-            self.state = GameState.PLAYING
 
     def _sync_player_state_to_progress(self):
         """Copy the player's in-game state back to persistent progress."""
@@ -210,13 +180,14 @@ class Game:
         self._reset_runtime_state()
         self.state = GameState.ROOM_TEST_SELECT
 
-    def _enter_current_room(self):
+    def _enter_current_room(self, entry_direction=None):
         if self.dungeon is not None:
             player_position = None
             if self.player is not None:
                 player_position = self.player.rect.center
             self.dungeon.current_room.on_enter(
                 pygame.time.get_ticks(),
+                entry_direction=entry_direction,
                 player_position=player_position,
                 room_test=self._is_room_test_active(),
             )
@@ -228,9 +199,11 @@ class Game:
     def _apply_room_objective_update(self, update_result):
         if not update_result:
             return
+        room = self.dungeon.current_room
         if update_result.get("kind") in {"spawn_reinforcements", "spawn_enemies"}:
-            for cls, (px, py) in update_result.get("enemy_configs", ()): 
-                self.dungeon.enemy_group.add(cls(px, py))
+            if not room.enemies_cleared:
+                for cls, (px, py) in update_result.get("enemy_configs", ()):
+                    self.dungeon.enemy_group.add(cls(px, py))
         elif update_result.get("kind") == "forfeit_chest":
             for chest in self.dungeon.chest_group:
                 chest.mark_looted()
@@ -309,9 +282,9 @@ class Game:
         result = self._room_test_select.handle_events(events)
         if result is None:
             return
-        next_state, entry = result
+        next_state, entry, spawn_direction = result
         if next_state == GameState.PLAYING and entry is not None:
-            self._start_room_test(entry)
+            self._start_room_test(entry, spawn_direction)
         else:
             self.state = next_state
 
@@ -493,22 +466,42 @@ class Game:
         if not self.player.alive:
             self._on_death()
 
+        # mark room cleared when all enemies are gone after combat started
+        room = self.dungeon.current_room
+        if (
+            not room.enemies_cleared
+            and not self.dungeon.enemy_group
+            and room.enemy_configs
+        ):
+            room.enemies_cleared = True
+
     def _on_level_complete(self):
-        """Player reached the portal — show level complete screen."""
+        """Player reached the portal — dungeon complete."""
         if self._is_room_test_active():
             self._return_to_room_tests()
             return
 
         config = get_dungeon(self._current_dungeon_id)
-        dp = self.progress.get_dungeon(self._current_dungeon_id)
-        level_num = dp.current_level + 1  # 1-based for display
-        total = len(config["levels"])
-        is_final = (dp.current_level >= total - 1)
+        detail_lines = ()
 
+        if self.dungeon is not None and self.player is not None:
+            room = self.dungeon.current_room
+            bonus_coins = room.claim_timed_extraction_completion_bonus()
+            if bonus_coins:
+                self.player.coins += bonus_coins
+                detail_lines = (f"Clean extraction bonus: +{bonus_coins} coins",)
+            elif (
+                room.room_plan is not None
+                and room.room_plan.objective_rule == "loot_then_timer"
+                and room.objective_status == "overtime"
+            ):
+                detail_lines = ("Overtime escape: clean extraction bonus lost",)
+
+        self.progress.complete_dungeon_from_runtime(self._current_dungeon_id, self.player)
         self._level_complete = LevelCompleteScreen(
-            config["name"], level_num, is_final_level=is_final,
+            config["name"],
+            detail_lines=detail_lines,
         )
-        self.progress.sync_dungeon_run(self.player)
         save_progress(self.progress)
         self.state = GameState.LEVEL_COMPLETE
 
@@ -525,15 +518,9 @@ class Game:
     # ── level complete handler ──────────────────────────
     def _handle_level_complete(self, events):
         choice = self._level_complete.handle_events(events)
-        if choice == "Continue to Next Level":
-            self._advance_level()
+        if choice == "Play Again":
+            self._start_dungeon(self._current_dungeon_id)
         elif choice == "Return to Dungeon Select":
-            config = get_dungeon(self._current_dungeon_id)
-            dp = self.progress.get_dungeon(self._current_dungeon_id)
-            self.progress.advance_in_dungeon(
-                self._current_dungeon_id, len(config["levels"])
-            )
-            save_progress(self.progress)
             self._return_to_menu()
 
     # ── game over / win handlers ────────────────────────

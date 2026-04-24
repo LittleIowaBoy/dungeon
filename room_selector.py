@@ -391,6 +391,7 @@ class RoomSelector:
         objective_label = template.objective_label or ""
         objective_layout_offsets = _parse_offset_script(template.objective_layout_offsets)
         objective_spawn_offset = _parse_optional_offset(template.objective_spawn_offset)
+        objective_patrol_offset = _parse_optional_offset(template.objective_patrol_offset)
         objective_radius = max(0, int(template.objective_radius or 0))
         objective_trigger_padding = max(0, int(template.objective_trigger_padding or 0))
         objective_max_hp = max(0, int(template.objective_max_hp or 0))
@@ -482,6 +483,7 @@ class RoomSelector:
             objective_label=objective_label,
             objective_layout_offsets=objective_layout_offsets,
             objective_spawn_offset=objective_spawn_offset,
+            objective_patrol_offset=objective_patrol_offset,
             objective_radius=objective_radius,
             objective_trigger_padding=objective_trigger_padding,
             objective_max_hp=objective_max_hp,

@@ -47,15 +47,115 @@ _DEFAULT_ALARM_BEACON_OFFSETS = ((-4, -2), (4, -2), (0, 4), (0, -4))
 _DEFAULT_ESCORT_SPAWN_OFFSET = (-6, 0)
 _DEFAULT_ESCORT_PLAYER_OFFSETS = ((1, 0), (0, 1), (0, -1), (-1, 0))
 _DEFAULT_HOLDOUT_RELIEF_OFFSETS = ((-6, 0), (6, 0), (0, -6), (0, 6))
+# ── Trap safe-spot helpers ───────────────────────────────────────────────────
+# Player base speed in px/ms (3.0 px/frame × 60 fps = 0.18 px/ms).
+_PLAYER_SPEED_PX_PER_MS = 0.18
+# Safe-spot size in the travel direction (wide enough for a 28 px player sprite).
+_SAFE_SPOT_TRAVEL_SIZE = TILE_SIZE + TILE_SIZE // 2   # 60 px
+# Minimum gap between the start of the travel range and the first safe spot.
+_SAFE_SPOT_FIRST_OFFSET = TILE_SIZE * 2               # 80 px
+
+
+def _compute_timed_safe_spots(
+    orientation, travel_min, travel_max, lane_center_px, lane_thickness,
+    cycle_ms, active_ms,
+):
+    """Return a list of ``(x, y, w, h)`` safe-spot rects for a timed hazard.
+
+    Safe spots are spaced along the travel axis so that a player moving at
+    base speed can reach each spot during a single inactive window.
+    """
+    inactive_ms = cycle_ms - active_ms
+    spacing = int(_PLAYER_SPEED_PX_PER_MS * inactive_ms)   # max reachable distance
+    spacing = max(TILE_SIZE * 3, spacing)                   # floor at 3 tiles
+    spots = []
+    pos = travel_min + _SAFE_SPOT_FIRST_OFFSET
+    while pos + _SAFE_SPOT_TRAVEL_SIZE <= travel_max - TILE_SIZE:
+        half_thick = lane_thickness // 2
+        if orientation == "horizontal":
+            # Travel axis is X; safe spot is a band across the lane at this X.
+            spots.append((
+                pos,
+                lane_center_px - half_thick,
+                _SAFE_SPOT_TRAVEL_SIZE,
+                lane_thickness,
+            ))
+        else:
+            # Travel axis is Y; safe spot is a band across the lane at this Y.
+            spots.append((
+                lane_center_px - half_thick,
+                pos,
+                lane_thickness,
+                _SAFE_SPOT_TRAVEL_SIZE,
+            ))
+        pos += spacing
+    return spots
+
+
+def _compute_sweeper_safe_spots(
+    orientation, travel_min, travel_max, lane_center_px, lane_thickness,
+):
+    """Return safe-spot rects for a sweeper lane.
+
+    For sweepers the hazard is always present but moves.  Safe spots are
+    short recesses in the travel axis where the player can wait while the
+    sweeper passes on the next cycle.
+    """
+    # At speed 1.5 px/frame × 60 fps the sweeper traverses the whole lane in
+    # roughly 4-5 seconds.  Place spots every 4 tiles so the player always has
+    # a nearby refuge even with varying lane lengths.
+    spacing = TILE_SIZE * 4   # 160 px
+    half_thick = lane_thickness // 2
+    half_spot = _SAFE_SPOT_TRAVEL_SIZE // 2
+    spots = []
+    pos = travel_min + _SAFE_SPOT_FIRST_OFFSET
+    while pos + _SAFE_SPOT_TRAVEL_SIZE <= travel_max - TILE_SIZE:
+        if orientation == "horizontal":
+            spots.append((
+                pos,
+                lane_center_px - half_thick,
+                _SAFE_SPOT_TRAVEL_SIZE,
+                lane_thickness,
+            ))
+        else:
+            spots.append((
+                lane_center_px - half_thick,
+                pos,
+                lane_thickness,
+                _SAFE_SPOT_TRAVEL_SIZE,
+            ))
+        pos += spacing
+    return spots
+
+
 _DEFAULT_TRAP_LANE_OFFSETS = {
     2: (-3, 3),
     3: (-4, 0, 4),
     4: (-5, -2, 2, 5),
 }
+
+
+def _safe_spot_configs(hazard_config, lane_index):
+    """Return ``trap_safe_spot`` display configs for every safe spot in a hazard config."""
+    return [
+        {
+            "kind": "trap_safe_spot",
+            "lane_index": lane_index,
+            "rect": rect,
+        }
+        for rect in hazard_config.get("safe_spots", ())
+    ]
+_GAUNTLET_ENTRY_DEPTH = 2   # columns/rows for the entry lobby at the player-entry side
+_GAUNTLET_REWARD_DEPTH = 3  # columns/rows for the reward arena at the far end
 _REWARD_TIER_UPGRADES = {
     "standard": "branch_bonus",
     "branch_bonus": "finale_bonus",
     "finale_bonus": "finale_bonus",
+}
+_TIMED_EXTRACTION_CLEAN_BONUS_COINS = {
+    "standard": 10,
+    "branch_bonus": 14,
+    "finale_bonus": 18,
 }
 _DEFAULT_HOLDOUT_RELIEF_COUNT = 1
 _DEFAULT_HOLDOUT_RELIEF_DELAY_MS = 1500
@@ -94,6 +194,7 @@ class Room:
         self._enemy_count_range = enemy_count_range
         self._enemy_type_weights = enemy_type_weights
         self.room_plan = room_plan
+        self.enemies_cleared: bool = False  # persists across re-entries
         if self.room_plan is not None:
             if self.room_plan.terrain_type is not None:
                 self._terrain_type = self.room_plan.terrain_type
@@ -115,8 +216,13 @@ class Room:
         self._resource_race_claimed_once = False
         self._resource_race_reclaim_started_at = None
         self._stealth_search_started_at = None
+        self._stealth_alarm_started_at = None
         self._stealth_lockdown_started = False
+        self._stealth_bonus_cache_armed = False
+        self._stealth_bonus_cache_forfeited = False
         self._timed_extraction_wave_index = 0
+        self._timed_extraction_route_sealed = False
+        self._timed_extraction_bonus_awarded = False
         self._ritual_reaction_ids = set()
         self.objective_entity_configs = []
         self._chest_reward_tier = room_plan.reward_tier if room_plan is not None else "standard"
@@ -430,8 +536,12 @@ class Room:
         if rule == "avoid_alarm_zones":
             if not self._has_triggered_alarm_beacon():
                 self._stealth_search_started_at = None
+                self._stealth_alarm_started_at = None
                 self.objective_status = "active"
                 self._set_portal_active(True)
+                stealth_reward_update = self._maybe_prepare_stealth_bonus_cache()
+                if stealth_reward_update is not None:
+                    return stealth_reward_update
                 return None
 
             search_window_ms = self._stealth_search_window_ms()
@@ -442,11 +552,24 @@ class Room:
                 if triggered_count < 2 and now_ticks - self._stealth_search_started_at < search_window_ms:
                     self.objective_status = "search"
                     self._set_portal_active(True)
+                    stealth_reward_update = self._maybe_forfeit_stealth_bonus_cache()
+                    if stealth_reward_update is not None:
+                        return stealth_reward_update
                     return None
                 self._stealth_lockdown_started = True
 
             self.objective_status = "alarm"
-            self._set_portal_active(False)
+            portal_should_stay_active = self._stealth_uses_escape_variant()
+            if self._stealth_uses_release_variant():
+                if self._stealth_alarm_started_at is None:
+                    self._stealth_alarm_started_at = now_ticks
+                if self._stealth_release_remaining_ms(now_ticks) == 0:
+                    self.objective_status = "escape"
+                    portal_should_stay_active = True
+            self._set_portal_active(portal_should_stay_active)
+            stealth_reward_update = self._maybe_forfeit_stealth_bonus_cache()
+            if stealth_reward_update is not None:
+                return stealth_reward_update
             if not self._reinforcement_spawned:
                 reinforcements = self._spawn_reinforcement_wave()
                 self._reinforcement_spawned = True
@@ -534,6 +657,7 @@ class Room:
             elapsed_ms = max(0, now_ticks - self.objective_started_at)
             duration = self.room_plan.objective_duration_ms or 0
             if duration and elapsed_ms > duration:
+                self._timed_extraction_route_sealed = False
                 self.objective_status = "overtime"
                 if not self._reinforcement_spawned:
                     reinforcements = self._spawn_reinforcement_wave()
@@ -543,10 +667,19 @@ class Room:
                     return {"kind": "spawn_reinforcements", "enemy_configs": reinforcements}
             else:
                 extraction_update = self._maybe_spawn_timed_extraction_wave(elapsed_ms)
-                self.objective_status = "collapse" if self._timed_extraction_wave_index else "escape"
-                self._set_portal_active(True)
                 if extraction_update is not None:
+                    self.objective_status = "collapse"
+                    self._set_portal_active(False)
                     return extraction_update
+                if self._timed_extraction_route_sealed and len(enemy_group) > 0:
+                    self.objective_status = "collapse"
+                    self._set_portal_active(False)
+                    return None
+                else:
+                    self._timed_extraction_route_sealed = False
+                    self.objective_status = "escape"
+                    self._set_portal_active(True)
+                    return None
             self._set_portal_active(True)
         return None
 
@@ -740,8 +873,19 @@ class Room:
                     "label": f"Objective: Search phase {remaining_ms / 1000:.1f}s | Avoid more alarms",
                 }
             if self._has_triggered_alarm_beacon() and self.objective_status != "completed":
+                if self._stealth_uses_release_variant():
+                    remaining_ms = self._stealth_release_remaining_ms(now_ticks)
+                    if remaining_ms > 0:
+                        return {
+                            "visible": True,
+                            "label": f"Objective: Alarm raised {remaining_ms / 1000:.1f}s | Hold out",
+                        }
+                    return {"visible": True, "label": "Objective: Alarm raised, seals broken | Escape"}
+                if self._stealth_uses_escape_variant():
+                    return {"visible": True, "label": "Objective: Alarm raised, escape or clear pursuit"}
                 return {"visible": True, "label": "Objective: Alarm raised, clear the room"}
-            return {"visible": True, "label": "Objective: Slip through unseen"}
+            bonus_suffix = " | Bonus cache armed" if self._stealth_bonus_cache_available() else ""
+            return {"visible": True, "label": f"Objective: Slip through unseen{bonus_suffix}"}
 
         if rule == "claim_relic_before_lockdown" and self.is_exit:
             relic_label = self._relic_label().lower()
@@ -826,12 +970,14 @@ class Room:
                         pressure_suffix = f" | Pursuit {self._timed_extraction_wave_index}/{total_waves}"
                     if self.objective_status == "collapse":
                         pressure_suffix += " | Route closing"
+                    if self._timed_extraction_clean_bonus_pending():
+                        pressure_suffix += " | Preserve payout"
                     return {
                         "visible": True,
                         "label": f"Objective: Escape {remaining_ms / 1000:.1f}s{pressure_suffix}",
                     }
             if self.objective_status == "overtime":
-                return {"visible": True, "label": "Objective: Escape under pressure"}
+                return {"visible": True, "label": "Objective: Escape under pressure | Payout reduced"}
             return {"visible": True, "label": f"Objective: Escape with the {relic_label}"}
 
         if self.is_exit and rule == "immediate" and self.room_plan.room_id != "standard_combat":
@@ -887,7 +1033,15 @@ class Room:
             if self.objective_status == "search":
                 return "Solve: Detection is rising. Reach the exit or avoid any more alarms before lockdown starts."
             if self._has_triggered_alarm_beacon() and self.objective_status != "completed":
+                if self._stealth_uses_release_variant():
+                    if self._stealth_release_remaining_ms(now_ticks) > 0:
+                        return "Solve: Stealth failed. Hold out until the seals release, or clear the room early."
+                    return "Solve: Stealth failed. The seals broke. Escape before pursuit corners you, or clear the room."
+                if self._stealth_uses_escape_variant():
+                    return "Solve: Stealth failed. Break through the pursuit or sprint for the exit while it stays open."
                 return "Solve: Stealth failed. Clear the room to proceed."
+            if self._stealth_bonus_cache_available():
+                return "Solve: Avoid the alarm beacons, claim the bonus cache, and slip through unseen."
             return "Solve: Avoid the alarm beacons and slip through unseen."
 
         if rule == "claim_relic_before_lockdown":
@@ -926,9 +1080,13 @@ class Room:
             if not self.chest_looted:
                 return f"Solve: Secure the {relic_label}, then prepare to escape."
             if self.objective_status == "collapse":
+                if self._timed_extraction_clean_bonus_pending():
+                    return f"Solve: Reach the exit with the {relic_label} while pursuit waves close the route behind you and preserve the payout."
                 return f"Solve: Reach the exit with the {relic_label} while pursuit waves close the route behind you."
             if self.objective_status == "overtime":
-                return "Solve: Escape under pressure before reinforcements overwhelm you."
+                return "Solve: Escape under pressure before reinforcements overwhelm you. Overtime cuts the extraction payout."
+            if self._timed_extraction_clean_bonus_pending():
+                return f"Solve: Reach the exit with the {relic_label} before time runs out to preserve the bonus payout."
             return f"Solve: Reach the exit with the {relic_label} before time runs out."
 
         if rule == "clear_enemies":
@@ -1082,6 +1240,7 @@ class Room:
         enemy_configs = self._gen_enemy_configs_for_range((wave_size, wave_size))
         self.enemy_configs.extend(enemy_configs)
         self._timed_extraction_wave_index += 1
+        self._timed_extraction_route_sealed = True
         return {
             "kind": "spawn_enemies",
             "source": "timed_extraction",
@@ -1103,6 +1262,95 @@ class Room:
 
     def _has_triggered_alarm_beacon(self):
         return any(config.get("triggered") for config in self.objective_entity_configs)
+
+    def _stealth_uses_escape_variant(self):
+        return bool(
+            self.room_plan is not None
+            and self.room_plan.objective_rule == "avoid_alarm_zones"
+            and self.room_plan.objective_variant == "escape_on_alarm"
+        )
+
+    def _stealth_uses_release_variant(self):
+        return bool(
+            self.room_plan is not None
+            and self.room_plan.objective_rule == "avoid_alarm_zones"
+            and self.room_plan.objective_variant == "release_on_alarm"
+        )
+
+    def _stealth_release_window_ms(self):
+        if self.room_plan is None or self.room_plan.objective_rule != "avoid_alarm_zones":
+            return 0
+        return max(1000, int(self.room_plan.objective_duration_ms or _STEALTH_SEARCH_WINDOW_MS))
+
+    def _stealth_release_remaining_ms(self, now_ticks):
+        if self._stealth_alarm_started_at is None:
+            return 0
+        return max(0, self._stealth_release_window_ms() - (now_ticks - self._stealth_alarm_started_at))
+
+    def _stealth_bonus_cache_available(self):
+        return (
+            self.room_plan is not None
+            and self.room_plan.objective_rule == "avoid_alarm_zones"
+            and self._stealth_bonus_cache_armed
+            and self.chest_pos is not None
+            and not self.chest_looted
+            and not self._stealth_bonus_cache_forfeited
+            and not self._has_triggered_alarm_beacon()
+        )
+
+    def _maybe_prepare_stealth_bonus_cache(self):
+        if self.room_plan is None or self.room_plan.objective_rule != "avoid_alarm_zones":
+            return None
+        if self.chest_looted or self._stealth_bonus_cache_forfeited:
+            return None
+
+        reward_tier = _REWARD_TIER_UPGRADES.get(self._chest_reward_tier, self._chest_reward_tier)
+        self._stealth_bonus_cache_armed = True
+
+        if self.chest_pos is None:
+            self.chest_pos = self._random_floor_pos(margin=3)
+            self.chest_looted = False
+            self._chest_reward_tier = reward_tier
+            return {
+                "kind": "spawn_reward_chest",
+                "position": self.chest_pos,
+                "reward_tier": reward_tier,
+            }
+
+        if reward_tier != self._chest_reward_tier:
+            self._chest_reward_tier = reward_tier
+            return {"kind": "upgrade_reward_chest", "reward_tier": reward_tier}
+        return None
+
+    def _maybe_forfeit_stealth_bonus_cache(self):
+        if (
+            self.room_plan is None
+            or self.room_plan.objective_rule != "avoid_alarm_zones"
+            or self._stealth_bonus_cache_forfeited
+            or self.chest_looted
+            or self.chest_pos is None
+            or not self._stealth_bonus_cache_armed
+        ):
+            return None
+
+        self._stealth_bonus_cache_forfeited = True
+        self.chest_looted = True
+        return {"kind": "forfeit_chest"}
+
+    def _timed_extraction_clean_bonus_pending(self):
+        return (
+            self.room_plan is not None
+            and self.room_plan.objective_rule == "loot_then_timer"
+            and self.chest_looted
+            and self.objective_status != "overtime"
+            and not self._timed_extraction_bonus_awarded
+        )
+
+    def claim_timed_extraction_completion_bonus(self):
+        if not self._timed_extraction_clean_bonus_pending():
+            return 0
+        self._timed_extraction_bonus_awarded = True
+        return _TIMED_EXTRACTION_CLEAN_BONUS_COINS.get(self.room_plan.reward_tier, 0)
 
     def _escort_config(self):
         for config in self.objective_entity_configs:
@@ -1451,8 +1699,14 @@ class Room:
                     "pos": pos,
                     "radius": self.room_plan.objective_radius or 34,
                     "triggered": False,
+                    "patrol_points": self._stealth_patrol_points(
+                        pos,
+                        self.room_plan.objective_patrol_offset,
+                    ),
+                    "patrol_cycle_ms": 1800 + index * 250,
+                    "vision_angle_deg": 75,
                 }
-                for pos in beacon_positions
+                for index, pos in enumerate(beacon_positions)
             ]
 
     def _build_trap_gauntlet_configs(self):
@@ -1483,33 +1737,40 @@ class Room:
         for index, offset in enumerate(lane_offsets):
             lane_hazard = self._trap_lane_hazard_kind(trap_variant, index)
             if lane_hazard == "vent_lanes":
-                configs.append(
-                    self._trap_vent_config(
-                        controller,
-                        orientation,
-                        offset,
-                        lane_count,
-                        index,
-                    )
+                hazard_config = self._trap_vent_config(
+                    controller,
+                    orientation,
+                    offset,
+                    lane_count,
+                    index,
+                )
+                configs.append(hazard_config)
+                configs.extend(
+                    _safe_spot_configs(hazard_config, index)
                 )
             elif lane_hazard == "crusher_corridors":
-                configs.extend(
-                    self._trap_crusher_configs(
-                        controller,
-                        orientation,
-                        offset,
-                        index,
-                    )
+                crusher_configs = self._trap_crusher_configs(
+                    controller,
+                    orientation,
+                    offset,
+                    index,
                 )
-            else:
-                configs.append(
-                    self._trap_sweeper_config(
-                        controller,
-                        orientation,
-                        offset,
-                        lane_count,
-                        index,
+                for crusher_cfg in crusher_configs:
+                    configs.append(crusher_cfg)
+                    configs.extend(
+                        _safe_spot_configs(crusher_cfg, index)
                     )
+            else:
+                hazard_config = self._trap_sweeper_config(
+                    controller,
+                    orientation,
+                    offset,
+                    lane_count,
+                    index,
+                )
+                configs.append(hazard_config)
+                configs.extend(
+                    _safe_spot_configs(hazard_config, index)
                 )
             for active_switch_bank in self._trap_switch_banks(trap_variant, switch_bank):
                 configs.append(
@@ -1614,12 +1875,18 @@ class Room:
             center = self._offset_to_pixel((0, offset))
             start_x = self._trap_travel_start(travel_min, travel_max, lane_count, lane_index)
             position = (start_x, center[1])
+            lane_center_px = center[1]
         else:
             travel_max = (ROOM_ROWS - 5) * TILE_SIZE + TILE_SIZE // 2
             center = self._offset_to_pixel((offset, 0))
             start_y = self._trap_travel_start(travel_min, travel_max, lane_count, lane_index)
             position = (center[0], start_y)
+            lane_center_px = center[0]
 
+        lane_thickness = 3 * TILE_SIZE
+        safe_spots = _compute_sweeper_safe_spots(
+            orientation, travel_min, travel_max, lane_center_px, lane_thickness,
+        )
         return {
             "kind": "trap_sweeper",
             "lane_index": lane_index,
@@ -1629,12 +1896,13 @@ class Room:
             "travel_min": travel_min,
             "travel_max": travel_max,
             "direction": 1 if lane_index % 2 == 0 else -1,
-            "speed": 2.6,
-            "challenge_speed": 1.5,
+            "speed": 1.5,
+            "challenge_speed": 0.9,
             "damage": 8,
             "damage_cooldown_ms": 350,
             "damage_cooldown_until": 0,
-            "lane_thickness": 22,
+            "lane_thickness": lane_thickness,
+            "safe_spots": safe_spots,
             "active": lane_index != controller["safe_lane"],
         }
 
@@ -1651,6 +1919,13 @@ class Room:
             emitter_row = 3 if controller["switch_bank"] == "top" else ROOM_ROWS - 4
             emitter_pos = (center, emitter_row * TILE_SIZE + TILE_SIZE // 2)
 
+        lane_thickness = 3 * TILE_SIZE
+        cycle_ms = 2800
+        active_ms = 1800
+        safe_spots = _compute_timed_safe_spots(
+            orientation, travel_min, travel_max, center, lane_thickness,
+            cycle_ms, active_ms,
+        )
         return {
             "kind": "trap_vent_lane",
             "lane_index": lane_index,
@@ -1660,15 +1935,16 @@ class Room:
             "emitter_pos": emitter_pos,
             "travel_min": travel_min,
             "travel_max": travel_max,
-            "cycle_ms": 1000,
-            "active_ms": 700,
-            "challenge_cycle_ms": 800,
-            "challenge_active_ms": 260,
-            "phase_offset_ms": lane_index * 120,
+            "cycle_ms": cycle_ms,
+            "active_ms": active_ms,
+            "challenge_cycle_ms": 2200,
+            "challenge_active_ms": 1700,
+            "phase_offset_ms": lane_index * 200,
             "damage": 7,
             "damage_cooldown_ms": 280,
             "damage_cooldown_until": 0,
-            "lane_thickness": 20,
+            "lane_thickness": lane_thickness,
+            "safe_spots": safe_spots,
             "active": lane_index != controller["safe_lane"],
         }
 
@@ -1704,21 +1980,26 @@ class Room:
             emitter_y = 2 * TILE_SIZE if offset < 0 else (ROOM_ROWS - 3) * TILE_SIZE
             for phase_index, col in enumerate((ROOM_COLS // 2 - 3, ROOM_COLS // 2 + 3)):
                 center_x = col * TILE_SIZE + TILE_SIZE // 2
+                lane_thickness = 3 * TILE_SIZE
+                cycle_ms = 2400
+                active_ms = 1300
+                zone_w = lane_thickness
                 configs.append(
                     {
                         "kind": "trap_crusher",
                         "lane_index": lane_index,
                         "controller": controller,
                         "emitter_pos": (center_x, emitter_y),
-                        "zone_rect": (center_x - 11, lane_center - TILE_SIZE, 22, TILE_SIZE * 2),
-                        "cycle_ms": 1200,
-                        "active_ms": 700,
-                        "challenge_cycle_ms": 900,
-                        "challenge_active_ms": 320,
-                        "phase_offset_ms": phase_index * 220 + lane_index * 110,
+                        "zone_rect": (center_x - zone_w // 2, lane_center - lane_thickness // 2, zone_w, lane_thickness),
+                        "cycle_ms": cycle_ms,
+                        "active_ms": active_ms,
+                        "challenge_cycle_ms": 1800,
+                        "challenge_active_ms": 1200,
+                        "phase_offset_ms": phase_index * 350 + lane_index * 175,
                         "damage": 9,
                         "damage_cooldown_ms": 350,
                         "damage_cooldown_until": 0,
+                        "safe_spots": [],
                         "active": lane_index != controller["safe_lane"],
                     }
                 )
@@ -1727,21 +2008,26 @@ class Room:
             emitter_x = 2 * TILE_SIZE if offset < 0 else (ROOM_COLS - 3) * TILE_SIZE
             for phase_index, row in enumerate((ROOM_ROWS // 2 - 2, ROOM_ROWS // 2 + 2)):
                 center_y = row * TILE_SIZE + TILE_SIZE // 2
+                lane_thickness = 3 * TILE_SIZE
+                cycle_ms = 2400
+                active_ms = 1300
+                zone_h = lane_thickness
                 configs.append(
                     {
                         "kind": "trap_crusher",
                         "lane_index": lane_index,
                         "controller": controller,
                         "emitter_pos": (emitter_x, center_y),
-                        "zone_rect": (lane_center - TILE_SIZE, center_y - 11, TILE_SIZE * 2, 22),
-                        "cycle_ms": 1200,
-                        "active_ms": 700,
-                        "challenge_cycle_ms": 900,
-                        "challenge_active_ms": 320,
-                        "phase_offset_ms": phase_index * 220 + lane_index * 110,
+                        "zone_rect": (lane_center - lane_thickness // 2, center_y - zone_h // 2, lane_thickness, zone_h),
+                        "cycle_ms": cycle_ms,
+                        "active_ms": active_ms,
+                        "challenge_cycle_ms": 1800,
+                        "challenge_active_ms": 1200,
+                        "phase_offset_ms": phase_index * 350 + lane_index * 175,
                         "damage": 9,
                         "damage_cooldown_ms": 350,
                         "damage_cooldown_until": 0,
+                        "safe_spots": [],
                         "active": lane_index != controller["safe_lane"],
                     }
                 )
@@ -1752,21 +2038,75 @@ class Room:
         if controller is None:
             return
 
+        # Fill the entire interior with walls so only explicitly carved areas are walkable.
+        for r in range(1, ROOM_ROWS - 1):
+            for c in range(1, ROOM_COLS - 1):
+                if self.grid[r][c] not in {DOOR, PORTAL}:
+                    self.grid[r][c] = WALL
+
         if controller.get("variant") == "crusher_corridors":
             self._shape_crusher_corridors(controller)
-            return
-        if controller.get("variant") == "mixed_lanes":
+        elif controller.get("variant") == "mixed_lanes":
             self._shape_mixed_lanes(controller)
-            return
+        else:
+            # sweeper_lanes and vent_lanes share the same lane geometry
+            orientation = controller["orientation"]
+            for offset in controller["lane_offsets"]:
+                if orientation == "horizontal":
+                    row = ROOM_ROWS // 2 + offset
+                    for r in range(max(1, row - 1), min(ROOM_ROWS - 1, row + 2)):
+                        for c in range(1, ROOM_COLS - 1):
+                            if self.grid[r][c] not in {DOOR, PORTAL}:
+                                self.grid[r][c] = FLOOR
+                else:
+                    col = ROOM_COLS // 2 + offset
+                    for c in range(max(1, col - 1), min(ROOM_COLS - 1, col + 2)):
+                        for r in range(1, ROOM_ROWS - 1):
+                            if self.grid[r][c] not in {DOOR, PORTAL}:
+                                self.grid[r][c] = FLOOR
 
-        orientation = controller["orientation"]
-        for offset in controller["lane_offsets"]:
-            if orientation == "horizontal":
-                row = ROOM_ROWS // 2 + offset
-                for r in range(max(1, row - 1), min(ROOM_ROWS - 1, row + 2)):
-                    for c in range(1, ROOM_COLS - 1):
-                        if self.grid[r][c] not in {DOOR, PORTAL, WALL}:
-                            self.grid[r][c] = FLOOR
+        # Always carve the entry lobby and reward arena last so they override any wall
+        # placed by variant handlers (e.g. mixed_lanes separator logic).
+        self._carve_gauntlet_endpoints(controller)
+
+    def _carve_gauntlet_endpoints(self, controller):
+        """Open a small entry lobby (player-side) and a reward arena (chest-side).
+
+        This lets the player choose their lane from the entry and converge at the
+        chest from any lane once they reach the far end.
+        """
+        orientation = controller.get("orientation", "horizontal")
+        switch_bank = controller.get("switch_bank", "left")
+        lane_offsets = controller.get("lane_offsets", (0,))
+
+        if orientation == "horizontal":
+            center = ROOM_ROWS // 2
+            lane_min = max(1, center + min(lane_offsets) - 1)
+            lane_max = min(ROOM_ROWS - 2, center + max(lane_offsets) + 1)
+            if switch_bank == "left":
+                entry_cols = range(1, 1 + _GAUNTLET_ENTRY_DEPTH)
+                reward_cols = range(ROOM_COLS - 1 - _GAUNTLET_REWARD_DEPTH, ROOM_COLS - 1)
+            else:
+                entry_cols = range(ROOM_COLS - 1 - _GAUNTLET_ENTRY_DEPTH, ROOM_COLS - 1)
+                reward_cols = range(1, 1 + _GAUNTLET_REWARD_DEPTH)
+            for c in (*entry_cols, *reward_cols):
+                for r in range(lane_min, lane_max + 1):
+                    if self.grid[r][c] not in {DOOR, PORTAL}:
+                        self.grid[r][c] = FLOOR
+        else:
+            center = ROOM_COLS // 2
+            lane_min = max(1, center + min(lane_offsets) - 1)
+            lane_max = min(ROOM_COLS - 2, center + max(lane_offsets) + 1)
+            if switch_bank == "top":
+                entry_rows = range(1, 1 + _GAUNTLET_ENTRY_DEPTH)
+                reward_rows = range(ROOM_ROWS - 1 - _GAUNTLET_REWARD_DEPTH, ROOM_ROWS - 1)
+            else:
+                entry_rows = range(ROOM_ROWS - 1 - _GAUNTLET_ENTRY_DEPTH, ROOM_ROWS - 1)
+                reward_rows = range(1, 1 + _GAUNTLET_REWARD_DEPTH)
+            for r in (*entry_rows, *reward_rows):
+                for c in range(lane_min, lane_max + 1):
+                    if self.grid[r][c] not in {DOOR, PORTAL}:
+                        self.grid[r][c] = FLOOR
 
     def _shape_mixed_lanes(self, controller):
         orientation = controller["orientation"]
@@ -1777,7 +2117,7 @@ class Room:
                 row = ROOM_ROWS // 2 + offset
                 for current_row in range(max(1, row - 1), min(ROOM_ROWS - 1, row + 2)):
                     for col in range(1, ROOM_COLS - 1):
-                        if self.grid[current_row][col] not in {DOOR, PORTAL, WALL}:
+                        if self.grid[current_row][col] not in {DOOR, PORTAL}:
                             self.grid[current_row][col] = FLOOR
 
             separator_rows = [
@@ -1799,7 +2139,7 @@ class Room:
             col = ROOM_COLS // 2 + offset
             for current_col in range(max(1, col - 1), min(ROOM_COLS - 1, col + 2)):
                 for row in range(1, ROOM_ROWS - 1):
-                    if self.grid[row][current_col] not in {DOOR, PORTAL, WALL}:
+                    if self.grid[row][current_col] not in {DOOR, PORTAL}:
                         self.grid[row][current_col] = FLOOR
 
         separator_cols = [
@@ -1829,7 +2169,7 @@ class Room:
                 lane_row = ROOM_ROWS // 2 + offset
                 for row in range(max(1, lane_row - 1), min(ROOM_ROWS - 1, lane_row + 2)):
                     for col in range(1, ROOM_COLS - 1):
-                        if self.grid[row][col] not in {DOOR, PORTAL, WALL}:
+                        if self.grid[row][col] not in {DOOR, PORTAL}:
                             self.grid[row][col] = FLOOR
         else:
             for col in (ROOM_COLS // 2 - 1, ROOM_COLS // 2):
@@ -1840,14 +2180,8 @@ class Room:
                 lane_col = ROOM_COLS // 2 + offset
                 for col in range(max(1, lane_col - 1), min(ROOM_COLS - 1, lane_col + 2)):
                     for row in range(1, ROOM_ROWS - 1):
-                        if self.grid[row][col] not in {DOOR, PORTAL, WALL}:
+                        if self.grid[row][col] not in {DOOR, PORTAL}:
                             self.grid[row][col] = FLOOR
-            else:
-                col = ROOM_COLS // 2 + offset
-                for c in range(max(1, col - 1), min(ROOM_COLS - 1, col + 2)):
-                    for r in range(1, ROOM_ROWS - 1):
-                        if self.grid[r][c] not in {DOOR, PORTAL, WALL}:
-                            self.grid[r][c] = FLOOR
 
     @staticmethod
     def _trap_travel_start(travel_min, travel_max, lane_count, lane_index):
@@ -1943,6 +2277,37 @@ class Room:
         for offset in offsets:
             positions.append(self._offset_to_pixel(offset))
         return tuple(positions)
+
+    def _stealth_patrol_points(self, position, patrol_offset=None):
+        if patrol_offset is None:
+            center_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
+            center_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
+            delta_x = position[0] - center_x
+            delta_y = position[1] - center_y
+
+            if abs(delta_x) >= abs(delta_y):
+                patrol_offset = (0, 2)
+            else:
+                patrol_offset = (2, 0)
+
+        offset_x = patrol_offset[0] * TILE_SIZE
+        offset_y = patrol_offset[1] * TILE_SIZE
+        patrol_points = [
+            self._clamp_objective_pixel(position),
+            self._clamp_objective_pixel((position[0] + offset_x, position[1] + offset_y)),
+            self._clamp_objective_pixel((position[0] - offset_x, position[1] - offset_y)),
+        ]
+        return tuple(dict.fromkeys(patrol_points))
+
+    @staticmethod
+    def _clamp_objective_pixel(position):
+        min_px = TILE_SIZE + TILE_SIZE // 2
+        max_x = (ROOM_COLS - 2) * TILE_SIZE + TILE_SIZE // 2
+        max_y = (ROOM_ROWS - 2) * TILE_SIZE + TILE_SIZE // 2
+        return (
+            max(min_px, min(max_x, int(position[0]))),
+            max(min_px, min(max_y, int(position[1]))),
+        )
 
     def _spawn_position_from_offset(self, scripted_offset, default_offset):
         offset = scripted_offset or default_offset

@@ -47,7 +47,7 @@ class RoomTestCatalogTests(unittest.TestCase):
         self.assertEqual(plan.path_kind, "main_path")
         self.assertTrue(plan.is_exit)
         self.assertEqual(plan.reward_tier, "finale_bonus")
-        self.assertEqual(plan.enemy_type_weights, (20, 30, 50))
+        self.assertEqual(plan.enemy_type_weights, (25, 25, 50))
 
     def test_load_room_test_entries_includes_trap_biome_variants(self):
         entries = [

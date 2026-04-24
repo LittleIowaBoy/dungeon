@@ -19,32 +19,31 @@ from item_catalog import (
 
 
 class DungeonProgress:
-    """Tracks a single dungeon's run state."""
+    """Tracks a single dungeon's run state.
 
-    def __init__(self, dungeon_id, current_level=0, is_alive=True, completed=False):
+    Each dungeon is now a single generated floor.  There are no level indices —
+    a run is either in-progress, completed, or not yet attempted.
+    """
+
+    def __init__(self, dungeon_id, is_alive=True, completed=False):
         self.dungeon_id = dungeon_id
-        self.current_level = current_level
         self.is_alive = is_alive
         self.completed = completed
 
-    def advance_level(self, total_levels=5):
-        """Move to the next level. Returns True if dungeon is now complete."""
-        if self.current_level >= total_levels - 1:
-            self.completed = True
-            return True
-        self.current_level += 1
-        return False
+    def complete(self):
+        """Mark the dungeon as fully cleared."""
+        self.completed = True
+        self.is_alive = True
 
     def reset(self):
-        """Reset dungeon to the beginning (used on death)."""
-        self.current_level = 0
+        """Reset dungeon to a fresh unstarted state (used on death or restart)."""
         self.is_alive = True
         self.completed = False
 
     def die(self):
-        """Mark the player as dead in this dungeon and reset to level 0."""
+        """Mark the player as dead in this dungeon."""
         self.is_alive = False
-        self.current_level = 0
+        self.completed = False
 
 
 class PlayerProgress:
@@ -62,9 +61,13 @@ class PlayerProgress:
             weapon_id: 0 for weapon_id in UPGRADEABLE_WEAPON_IDS
         }
 
-        # Equipment state (persists across levels, lost on death)
+        # Equipment state (persists across runs, lost on death)
         self.armor_hp = 0        # current armor durability
         self.compass_uses = 0    # remaining compass uses
+
+        # Dungeon difficulty preference: "default", "medium", or "hard".
+        # Persisted across sessions.  Drives grid size during dungeon generation.
+        self.difficulty_preference: str = "default"
 
         # create an entry for every defined dungeon
         for d in DUNGEONS:
@@ -78,8 +81,8 @@ class PlayerProgress:
         return self.dungeons[dungeon_id]
 
     def can_resume(self, dungeon_id) -> bool:
-        dp = self.get_dungeon(dungeon_id)
-        return dp.is_alive and dp.current_level > 0 and not dp.completed
+        """Returns False — unfinished runs restart from scratch."""
+        return False
 
     def snapshot_run_state(self):
         """Capture progress that should revert when a level is abandoned."""
@@ -112,13 +115,11 @@ class PlayerProgress:
         """Persist the current dungeon-run resources from the live player."""
         self.sync_runtime_state(player)
 
-    def advance_dungeon_level_from_runtime(self, dungeon_id, total_levels, player):
-        """Advance after a cleared level and capture the next abandon snapshot."""
+    def complete_dungeon_from_runtime(self, dungeon_id, player):
+        """Mark the dungeon complete and persist run resources."""
         self.sync_dungeon_run(player)
-        completed = self.advance_in_dungeon(dungeon_id, total_levels)
-        if completed:
-            return True, None
-        return False, self.snapshot_run_state()
+        self.get_dungeon(dungeon_id).complete()
+        return True, None
 
     def abandon_dungeon_run(self, snapshot):
         """Restore the pre-level revert point for an abandoned run."""
@@ -204,9 +205,6 @@ class PlayerProgress:
         if self.equipped_slots.get("chest") == "armor":
             self.equipped_slots["chest"] = None
         self.ensure_loadout_state()
-
-    def advance_in_dungeon(self, dungeon_id, total_levels=5):
-        return self.get_dungeon(dungeon_id).advance_level(total_levels)
 
     def start_dungeon(self, dungeon_id):
         """Prepare a dungeon for a fresh start (or resume)."""

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from content_db import BASE_ROOM_TEMPLATES, load_room_catalog
-from dungeon_config import DUNGEONS, get_dungeon, get_level
+from dungeon_config import DUNGEONS, get_dungeon
 from room_plan import RoomTemplate
 from room_selector import RoomSelector
 
@@ -89,20 +89,16 @@ def build_room_test_plan(entry):
     if dungeon is None:
         raise ValueError(f"Unknown room-test dungeon profile: {entry.profile_dungeon_id!r}")
 
-    level_index = _representative_level_index(entry.template_row, len(dungeon["levels"]))
-    level = get_level(entry.profile_dungeon_id, level_index)
-    if level is None:
-        raise ValueError(
-            f"No level config for room-test profile {entry.profile_dungeon_id!r} at index {level_index}"
-        )
-
-    depth = _representative_depth(entry.template_row, len(dungeon["levels"]))
+    profile = dungeon.get("run_profile", {})
+    # Use a fixed depth scale of 5 (bands 0-4) for room-test depth derivation
+    _DEPTH_SCALE = 5
+    depth = _representative_depth(entry.template_row, _DEPTH_SCALE)
     path_kind = _path_kind(entry.template_row)
     selector = RoomSelector(
         entry.profile_dungeon_id,
         dungeon["terrain_type"],
-        level["enemy_count_range"],
-        level["enemy_type_weights"],
+        profile.get("enemy_count_range"),
+        profile.get("enemy_type_weights"),
         catalog=(),
     )
     template = RoomTemplate.from_mapping(entry.template_row)
@@ -160,8 +156,8 @@ def _is_distinct_variant(base_template, merged_template):
     )
 
 
-def _representative_depth(template_row, total_levels):
-    max_index = max(0, total_levels - 1)
+def _representative_depth(template_row, depth_scale=5):
+    max_index = max(0, depth_scale - 1)
     min_depth = max(0, int(template_row.get("min_depth") or 0))
     raw_max_depth = template_row.get("max_depth")
     max_depth = max_index if raw_max_depth is None else max(min_depth, int(raw_max_depth))

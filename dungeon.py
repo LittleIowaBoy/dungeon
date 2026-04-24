@@ -10,6 +10,7 @@ from room import Room
 from chest import Chest
 from enemies import Enemy
 from dungeon_topology import TopologyPlan, TopologyPlanner, TopologyRoom
+from dungeon_config import get_difficulty_preset
 from objective_entities import (
     AlarmBeacon,
     AltarAnchor,
@@ -19,6 +20,7 @@ from objective_entities import (
     PressurePlate,
     TrapCrusher,
     TrapLaneSwitch,
+    TrapSafeSpot,
     TrapSweeper,
     TrapVentLane,
 )
@@ -35,36 +37,38 @@ def _in_bounds(x, y, radius=MAX_DUNGEON_RADIUS):
 class Dungeon:
     """Manages the full dungeon graph of Room objects."""
 
-    def __init__(self, dungeon_config=None, level_index=0):
+    def __init__(self, dungeon_config=None, difficulty="default"):
         self.rooms: dict[tuple[int, int], Room] = {}
         self.room_plans = {}
         self.current_pos = (0, 0)
 
-        # ── extract level config (or use defaults) ──────
+        # ── extract run config ──────────────────────────
         self._config = dungeon_config
-        self._level_index = level_index
         self._dungeon_id = dungeon_config["id"] if dungeon_config else None
 
-        if dungeon_config and level_index < len(dungeon_config["levels"]):
-            lvl = dungeon_config["levels"][level_index]
-            self._path_length = lvl["path_length"]
+        # Difficulty preset drives grid size and min distance (used in Phase 6 topology rewrite)
+        preset = get_difficulty_preset(difficulty)
+        self._grid_size = preset["grid_size"]        # future use: Phase 6 topology planner
+        self._min_distance = preset["min_distance"]  # future use: Phase 6 topology planner
+        # For now, derive path_length and radius using the existing planner conventions
+        self._path_length = max(DEFAULT_PORTAL_DISTANCE, int(self._grid_size * 1.5))
+        self._radius = max(MAX_DUNGEON_RADIUS, self._path_length + 2)
+
+        if dungeon_config and "run_profile" in dungeon_config:
+            profile = dungeon_config["run_profile"]
             self._terrain_type = dungeon_config["terrain_type"]
-            self._enemy_count_range = lvl["enemy_count_range"]
-            self._enemy_type_weights = lvl["enemy_type_weights"]
-            self._branch_count_range = lvl.get("branch_count_range")
-            self._branch_length_range = lvl.get("branch_length_range")
-            self._pacing_profile = lvl.get("pacing_profile", "balanced")
+            self._enemy_count_range = profile["enemy_count_range"]
+            self._enemy_type_weights = profile["enemy_type_weights"]
+            self._branch_count_range = profile.get("branch_count_range")
+            self._branch_length_range = profile.get("branch_length_range")
+            self._pacing_profile = profile.get("pacing_profile", "balanced")
         else:
-            self._path_length = DEFAULT_PORTAL_DISTANCE
             self._terrain_type = None
             self._enemy_count_range = None
             self._enemy_type_weights = None
             self._branch_count_range = None
             self._branch_length_range = None
             self._pacing_profile = "balanced"
-
-        # dynamic radius: ensure the path can always fit
-        self._radius = max(MAX_DUNGEON_RADIUS, self._path_length + 2)
         self._room_depths: dict[tuple[int, int], int] = {}
         self._room_selector = RoomSelector(
             self._dungeon_id,
@@ -73,8 +77,8 @@ class Dungeon:
             self._enemy_type_weights,
         )
         self._topology_plan = TopologyPlanner(
-            self._path_length,
-            self._radius,
+            self._grid_size,
+            self._min_distance,
             branch_count_range=self._branch_count_range,
             branch_length_range=self._branch_length_range,
             pacing_profile=self._pacing_profile,
@@ -83,6 +87,8 @@ class Dungeon:
         # pre-seed the planned topology
         self._exit_path = self._topology_plan.main_path
         self._exit_pos = self._topology_plan.exit_pos
+        self.spawn_pos: tuple[int, int] = self._topology_plan.start_pos
+        self.current_pos = self._topology_plan.start_pos
 
         for room_node in self._ordered_topology_rooms():
             self._room_depths[room_node.position] = room_node.depth
@@ -95,7 +101,7 @@ class Dungeon:
             )
 
         # track which rooms the player has visited (for minimap fog-of-war)
-        self.visited: set[tuple[int, int]] = {(0, 0)}
+        self.visited: set[tuple[int, int]] = {self._topology_plan.start_pos}
 
         # runtime sprite groups (populated when entering a room)
         self._initialize_runtime_groups()
@@ -104,15 +110,19 @@ class Dungeon:
         self._load_room_sprites()
 
     @classmethod
-    def from_room_plan(cls, dungeon_id, room_plan):
-        """Build a deterministic single-room dungeon for room-test mode."""
+    def from_room_plan(cls, dungeon_id, room_plan, *, entry_direction=None):
+        """Build a deterministic single-room dungeon for room-test mode.
+
+        *entry_direction* ("left", "right", "top", or "bottom") opens a door
+        on that wall so the room geometry is generated as if the player arrived
+        from that direction in a real dungeon run.
+        """
         dungeon = cls.__new__(cls)
         dungeon.rooms = {}
         dungeon.room_plans = {}
         dungeon.current_pos = (0, 0)
 
         dungeon._config = None
-        dungeon._level_index = 0
         dungeon._dungeon_id = dungeon_id
         dungeon._path_length = 1
         dungeon._terrain_type = room_plan.terrain_type
@@ -126,6 +136,9 @@ class Dungeon:
         dungeon._room_selector = None
 
         doors = {direction: False for direction in _ALL_DIRS}
+        if entry_direction in doors:
+            doors[entry_direction] = True
+
         topology_room = TopologyRoom(
             position=(0, 0),
             depth=room_plan.depth,
@@ -139,12 +152,15 @@ class Dungeon:
             reward_tier=room_plan.reward_tier,
             is_exit=room_plan.is_exit,
             doors=doors,
+            distance_from_start=0,
+            distance_to_exit=0,
         )
         dungeon._topology_plan = TopologyPlan(
             rooms={(0, 0): topology_room},
             main_path=((0, 0),),
             branch_paths=(),
             exit_pos=(0, 0),
+            start_pos=(0, 0),
         )
         dungeon._exit_path = dungeon._topology_plan.main_path
         dungeon._exit_pos = dungeon._topology_plan.exit_pos
@@ -399,10 +415,11 @@ class Dungeon:
 
         room = self.current_room
 
-        # enemies: always re-instantiated (respawn)
-        for cls, (px, py) in room.enemy_configs:
-            enemy = cls(px, py)
-            self.enemy_group.add(enemy)
+        # enemies: skip if already cleared this run
+        if not room.enemies_cleared:
+            for cls, (px, py) in room.enemy_configs:
+                enemy = cls(px, py)
+                self.enemy_group.add(enemy)
 
         # chest
         if room.chest_pos:
@@ -432,6 +449,8 @@ class Dungeon:
                 self.objective_group.add(TrapVentLane(config))
             elif config["kind"] == "trap_crusher":
                 self.objective_group.add(TrapCrusher(config))
+            elif config["kind"] == "trap_safe_spot":
+                self.objective_group.add(TrapSafeSpot(config))
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

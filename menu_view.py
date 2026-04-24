@@ -18,8 +18,6 @@ class DungeonCardView:
     terrain_type: str
     status_text: str
     terrain_label: str
-    completed_levels: int
-    total_levels: int
 
 
 @dataclass(frozen=True)
@@ -27,6 +25,7 @@ class DungeonSelectView:
     title: str
     cards: tuple[DungeonCardView, ...]
     selected_index: int
+    difficulty_label: str
     back_label: str
 
 
@@ -48,6 +47,7 @@ class RoomTestSelectView:
     show_more_above: bool
     show_more_below: bool
     footer_hint: str
+    spawn_direction_label: str
 
 
 @dataclass(frozen=True)
@@ -107,8 +107,8 @@ class PauseScreenView:
 
 @dataclass(frozen=True)
 class LevelCompleteScreenView:
-    heading: str
     dungeon_name: str
+    detail_lines: tuple[str, ...]
     options: tuple[str, ...]
     selected_index: int
 
@@ -122,18 +122,14 @@ def build_main_menu_view(screen):
 
 
 def build_dungeon_select_view(screen):
+    from dungeon_config import DIFFICULTY_PRESETS
     cards = []
     for dungeon in DUNGEONS:
         progress = screen.progress.get_dungeon(dungeon["id"])
         if progress.completed:
             status_text = "Completed"
-            completed_levels = len(dungeon["levels"])
-        elif screen.progress.can_resume(dungeon["id"]):
-            status_text = f"Resume Level {progress.current_level + 1}"
-            completed_levels = progress.current_level
         else:
-            status_text = "Level 1"
-            completed_levels = 0
+            status_text = "Not started"
 
         cards.append(
             DungeonCardView(
@@ -141,15 +137,17 @@ def build_dungeon_select_view(screen):
                 terrain_type=dungeon["terrain_type"],
                 status_text=status_text,
                 terrain_label=f"Terrain: {dungeon['terrain_type'].capitalize()}",
-                completed_levels=completed_levels,
-                total_levels=len(dungeon["levels"]),
             )
         )
+
+    diff = screen.progress.difficulty_preference
+    diff_label = screen.DIFFICULTY_LABELS.get(diff, diff.capitalize())
 
     return DungeonSelectView(
         title="Select Dungeon",
         cards=tuple(cards),
         selected_index=min(max(screen.selected, 0), len(cards)),
+        difficulty_label=diff_label,
         back_label="Back",
     )
 
@@ -172,6 +170,7 @@ def build_room_test_select_view(screen):
             show_more_above=False,
             show_more_below=False,
             footer_hint="Press ESC to return",
+            spawn_direction_label="",
         )
 
     visible_count = screen._visible_entry_count()
@@ -215,7 +214,10 @@ def build_room_test_select_view(screen):
         empty_message="No playable room tests available",
         show_more_above=start_index > 0,
         show_more_below=end_index < len(entries),
-        footer_hint="Enter: start room  Esc: back",
+        footer_hint="Enter: start room  ←/→: entry side  Esc: back",
+        spawn_direction_label=screen.SPAWN_DIRECTION_LABELS.get(
+            screen.spawn_direction, screen.spawn_direction
+        ),
     )
 
 
@@ -342,8 +344,8 @@ def build_level_complete_screen_view(screen):
     options = tuple(screen._active_options())
     selected_index = min(screen.selected, max(0, len(options) - 1))
     return LevelCompleteScreenView(
-        heading=f"Level {screen.level_number} Complete!",
         dungeon_name=screen.dungeon_name,
+        detail_lines=tuple(screen.detail_lines),
         options=options,
         selected_index=selected_index,
     )

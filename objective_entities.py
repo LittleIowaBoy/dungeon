@@ -1,5 +1,7 @@
 """Objective-specific room entities such as altar anchors."""
 
+import math
+
 import pygame
 
 from objective_metadata import get_altar_variant
@@ -33,6 +35,17 @@ _TRAP_CRUSHER_ACTIVE_COLOR = (255, 150, 110)
 _TRAP_CRUSHER_IDLE_COLOR = (120, 120, 120)
 _TRAP_VENT_ACTIVE_COLOR = (120, 220, 255)
 _TRAP_VENT_IDLE_COLOR = (90, 120, 160)
+_TRAP_SAFE_SPOT_COLOR = (90, 200, 130, 140)   # muted green, semi-transparent
+
+
+def _player_in_safe_spot(player, safe_spots):
+    """Return True if the player's centre is inside any of the given safe spot rects."""
+    cx, cy = player.rect.center
+    for rect_tuple in safe_spots:
+        x, y, w, h = rect_tuple
+        if x <= cx <= x + w and y <= cy <= y + h:
+            return True
+    return False
 
 
 def _overlay_font(size=12):
@@ -330,13 +343,16 @@ class AlarmBeacon(pygame.sprite.Sprite):
     def __init__(self, config):
         super().__init__()
         self._config = config
+        self._patrol_route = self._build_patrol_route()
+        self._patrol_cycle_ms = max(1, int(config.get("patrol_cycle_ms", 1800)))
+        self._sync_patrol_state(0)
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=config["pos"])
 
     def update(self, now_ticks):
-        del now_ticks
+        self._sync_patrol_state(now_ticks)
         self.image = self._build_image()
-        self.rect = self.image.get_rect(center=self.rect.center)
+        self.rect = self.image.get_rect(center=self._config["pos"])
 
     def sync_player_overlap(self, player):
         if self._config.get("triggered"):
@@ -346,6 +362,8 @@ class AlarmBeacon(pygame.sprite.Sprite):
         dy = player.rect.centery - self.rect.centery
         radius = self._config.get("radius", 36)
         if dx * dx + dy * dy > radius * radius:
+            return False
+        if not self._player_inside_vision_cone(dx, dy):
             return False
 
         self._config["triggered"] = True
@@ -359,17 +377,95 @@ class AlarmBeacon(pygame.sprite.Sprite):
 
     def draw_overlay(self, surface):
         color = _ALARM_TRIGGERED_COLOR if self._config.get("triggered") else _ALARM_IDLE_COLOR
-        pygame.draw.circle(
-            surface,
-            color,
-            self.rect.center,
-            self._config.get("radius", 36),
-            2,
-        )
+        vision_angle = self._config.get("vision_angle_deg", 360)
+        if vision_angle >= 360:
+            pygame.draw.circle(
+                surface,
+                color,
+                self.rect.center,
+                self._config.get("radius", 36),
+                2,
+            )
+            return
+
+        points = self._vision_outline_points()
+        if len(points) >= 3:
+            pygame.draw.polygon(surface, color, points, 2)
 
     def _build_image(self):
         color = _ALARM_TRIGGERED_COLOR if self._config.get("triggered") else _ALARM_IDLE_COLOR
         return make_rect_surface(self.SIZE, self.SIZE, color)
+
+    def _build_patrol_route(self):
+        points = tuple(self._config.get("patrol_points") or ())
+        if len(points) < 2:
+            return (tuple(self._config.get("pos", (0, 0))),)
+
+        route = list(points)
+        route.extend(reversed(points[:-1]))
+        return tuple(route)
+
+    def _sync_patrol_state(self, now_ticks):
+        if len(self._patrol_route) < 2:
+            self._config.setdefault("facing", (0.0, 1.0))
+            return
+
+        segment_count = len(self._patrol_route) - 1
+        cycle_progress = ((now_ticks % self._patrol_cycle_ms) / self._patrol_cycle_ms) * segment_count
+        segment_index = min(segment_count - 1, int(cycle_progress))
+        segment_progress = cycle_progress - segment_index
+        start = self._patrol_route[segment_index]
+        end = self._patrol_route[segment_index + 1]
+
+        px = round(start[0] + (end[0] - start[0]) * segment_progress)
+        py = round(start[1] + (end[1] - start[1]) * segment_progress)
+        self._config["pos"] = (px, py)
+        self._config["facing"] = self._normalized_vector(
+            end[0] - start[0],
+            end[1] - start[1],
+            default=self._config.get("facing", (0.0, 1.0)),
+        )
+
+    def _player_inside_vision_cone(self, dx, dy):
+        vision_angle = float(self._config.get("vision_angle_deg", 360))
+        if vision_angle >= 360:
+            return True
+
+        distance = math.hypot(dx, dy)
+        if distance <= 0:
+            return True
+
+        facing_x, facing_y = self._normalized_vector(*self._config.get("facing", (0.0, 1.0)))
+        facing_dot = (dx * facing_x + dy * facing_y) / distance
+        min_dot = math.cos(math.radians(vision_angle / 2))
+        return facing_dot >= min_dot
+
+    def _vision_outline_points(self):
+        radius = self._config.get("radius", 36)
+        vision_angle = float(self._config.get("vision_angle_deg", 360))
+        center_x, center_y = self.rect.center
+        facing_x, facing_y = self._normalized_vector(*self._config.get("facing", (0.0, 1.0)))
+        facing_angle = math.atan2(facing_y, facing_x)
+        half_angle = math.radians(vision_angle / 2)
+        arc_points = 6
+        points = [(center_x, center_y)]
+
+        for step in range(arc_points + 1):
+            angle = facing_angle - half_angle + ((2 * half_angle) * step / arc_points)
+            points.append(
+                (
+                    round(center_x + math.cos(angle) * radius),
+                    round(center_y + math.sin(angle) * radius),
+                )
+            )
+        return points
+
+    @staticmethod
+    def _normalized_vector(dx, dy, default=(0.0, 1.0)):
+        magnitude = math.hypot(dx, dy)
+        if magnitude <= 0:
+            return default
+        return dx / magnitude, dy / magnitude
 
 
 class HoldoutZone(pygame.sprite.Sprite):
@@ -562,6 +658,8 @@ class TrapSweeper(pygame.sprite.Sprite):
             return False
         if not self.rect.colliderect(player.rect.inflate(6, 6)):
             return False
+        if _player_in_safe_spot(player, self._config.get("safe_spots", ())):
+            return False
 
         player.take_damage(self._config.get("damage", 8))
         self._config["damage_cooldown_until"] = (
@@ -605,10 +703,11 @@ class TrapSweeper(pygame.sprite.Sprite):
         )
 
     def _build_image(self):
+        lane_thickness = self._config.get("lane_thickness", 20)
         if self._config.get("orientation") == "horizontal":
-            size = (36, 14)
+            size = (36, lane_thickness)
         else:
-            size = (14, 36)
+            size = (lane_thickness, 36)
         color = (
             _TRAP_SWEEPER_ACTIVE_COLOR if self._active() else _TRAP_SWEEPER_IDLE_COLOR
         )
@@ -667,6 +766,8 @@ class TrapVentLane(pygame.sprite.Sprite):
         if self._last_now_ticks < self._config.get("damage_cooldown_until", 0):
             return False
         if not self._lane_rect().colliderect(player.rect):
+            return False
+        if _player_in_safe_spot(player, self._config.get("safe_spots", ())):
             return False
 
         player.take_damage(self._config.get("damage", 7))
@@ -749,6 +850,8 @@ class TrapCrusher(pygame.sprite.Sprite):
             return False
         if not self._active_rect().colliderect(player.rect):
             return False
+        if _player_in_safe_spot(player, self._config.get("safe_spots", ())):
+            return False
 
         player.take_damage(self._config.get("damage", 9))
         self._config["damage_cooldown_until"] = (
@@ -790,6 +893,30 @@ class TrapCrusher(pygame.sprite.Sprite):
 
     def _active_rect(self):
         return pygame.Rect(*self._config["zone_rect"])
+
+
+class TrapSafeSpot(pygame.sprite.Sprite):
+    """Visual marker for a safe spot inside a trap lane.
+
+    Safe spots are logical zones where hazard damage is suppressed even when
+    the hazard is active.  This sprite draws a subtle coloured overlay so the
+    player can identify them.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        x, y, w, h = config["rect"]
+        self.image = make_rect_surface(w, h, _TRAP_SAFE_SPOT_COLOR)
+        self.rect = self.image.get_rect(topleft=(x, y))
+
+    def update(self, now_ticks):
+        del now_ticks
+
+    def draw_overlay(self, surface):
+        x, y, w, h = self._config["rect"]
+        pygame.draw.rect(surface, _TRAP_SAFE_SPOT_COLOR, pygame.Rect(x, y, w, h))
+        pygame.draw.rect(surface, (120, 240, 160), pygame.Rect(x, y, w, h), 1)
 
 
 class EscortNPC(pygame.sprite.Sprite):

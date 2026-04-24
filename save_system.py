@@ -13,19 +13,19 @@ _DB_PATH = os.path.join(os.path.dirname(__file__), "save_data.db")
 # ── schema ──────────────────────────────────────────────
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS player (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    coins       INTEGER NOT NULL DEFAULT 0,
-    max_hp      INTEGER NOT NULL DEFAULT 100,
-    speed_cap   REAL    NOT NULL DEFAULT 1.5,
-    armor_hp    INTEGER NOT NULL DEFAULT 0,
-    compass_uses INTEGER NOT NULL DEFAULT 0
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    coins            INTEGER NOT NULL DEFAULT 0,
+    max_hp           INTEGER NOT NULL DEFAULT 100,
+    speed_cap        REAL    NOT NULL DEFAULT 1.5,
+    armor_hp         INTEGER NOT NULL DEFAULT 0,
+    compass_uses     INTEGER NOT NULL DEFAULT 0,
+    difficulty_preference TEXT NOT NULL DEFAULT 'default'
 );
 
 CREATE TABLE IF NOT EXISTS dungeon_progress (
-    dungeon_id    TEXT    PRIMARY KEY,
-    current_level INTEGER NOT NULL DEFAULT 0,
-    is_alive      INTEGER NOT NULL DEFAULT 1,
-    completed     INTEGER NOT NULL DEFAULT 0
+    dungeon_id TEXT PRIMARY KEY,
+    is_alive   INTEGER NOT NULL DEFAULT 1,
+    completed  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS inventory (
@@ -54,14 +54,25 @@ def _get_conn():
     conn = sqlite3.connect(_DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
-    # Migrate: add new columns if missing (for existing save files)
     cur = conn.cursor()
+
+    # Migrate: add columns added after initial release
     cur.execute("PRAGMA table_info(player)")
-    columns = {row[1] for row in cur.fetchall()}
-    if "armor_hp" not in columns:
+    player_cols = {row[1] for row in cur.fetchall()}
+    if "armor_hp" not in player_cols:
         cur.execute("ALTER TABLE player ADD COLUMN armor_hp INTEGER NOT NULL DEFAULT 0")
-    if "compass_uses" not in columns:
+    if "compass_uses" not in player_cols:
         cur.execute("ALTER TABLE player ADD COLUMN compass_uses INTEGER NOT NULL DEFAULT 0")
+
+    # Migrate: add difficulty_preference; on first appearance reset dungeon
+    # progress so old five-level current_level data does not corrupt new runs.
+    if "difficulty_preference" not in player_cols:
+        cur.execute(
+            "ALTER TABLE player ADD COLUMN "
+            "difficulty_preference TEXT NOT NULL DEFAULT 'default'"
+        )
+        cur.execute("UPDATE dungeon_progress SET is_alive=1, completed=0")
+
     conn.commit()
     return conn
 
@@ -77,26 +88,26 @@ def save_progress(progress: PlayerProgress):
 
         # player row (upsert)
         cur.execute(
-            "INSERT INTO player (id, coins, max_hp, speed_cap, armor_hp, compass_uses) "
-            "VALUES (1, ?, ?, ?, ?, ?) "
+            "INSERT INTO player "
+            "(id, coins, max_hp, speed_cap, armor_hp, compass_uses, difficulty_preference) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET coins=excluded.coins, "
             "max_hp=excluded.max_hp, speed_cap=excluded.speed_cap, "
-            "armor_hp=excluded.armor_hp, compass_uses=excluded.compass_uses",
+            "armor_hp=excluded.armor_hp, compass_uses=excluded.compass_uses, "
+            "difficulty_preference=excluded.difficulty_preference",
             (progress.coins, progress.max_hp, progress.speed_cap,
-             progress.armor_hp, progress.compass_uses),
+             progress.armor_hp, progress.compass_uses,
+             progress.difficulty_preference),
         )
 
         # dungeon progress (upsert each)
         for dp in progress.dungeons.values():
             cur.execute(
-                "INSERT INTO dungeon_progress "
-                "(dungeon_id, current_level, is_alive, completed) "
-                "VALUES (?, ?, ?, ?) "
+                "INSERT INTO dungeon_progress (dungeon_id, is_alive, completed) "
+                "VALUES (?, ?, ?) "
                 "ON CONFLICT(dungeon_id) DO UPDATE SET "
-                "current_level=excluded.current_level, "
                 "is_alive=excluded.is_alive, completed=excluded.completed",
-                (dp.dungeon_id, dp.current_level,
-                 int(dp.is_alive), int(dp.completed)),
+                (dp.dungeon_id, int(dp.is_alive), int(dp.completed)),
             )
 
         # inventory
@@ -155,8 +166,8 @@ def load_progress() -> PlayerProgress:
         }
 
         # player
-        cur.execute("SELECT coins, max_hp, speed_cap, armor_hp, compass_uses "
-                    "FROM player WHERE id=1")
+        cur.execute("SELECT coins, max_hp, speed_cap, armor_hp, compass_uses, "
+                    "difficulty_preference FROM player WHERE id=1")
         row = cur.fetchone()
         if row:
             progress.coins = row[0]
@@ -164,13 +175,12 @@ def load_progress() -> PlayerProgress:
             progress.speed_cap = row[2]
             progress.armor_hp = row[3]
             progress.compass_uses = row[4]
+            progress.difficulty_preference = row[5]
 
         # dungeon progress
-        cur.execute("SELECT dungeon_id, current_level, is_alive, completed "
-                    "FROM dungeon_progress")
-        for dungeon_id, level, alive, completed in cur.fetchall():
+        cur.execute("SELECT dungeon_id, is_alive, completed FROM dungeon_progress")
+        for dungeon_id, alive, completed in cur.fetchall():
             dp = progress.get_dungeon(dungeon_id)
-            dp.current_level = level
             dp.is_alive = bool(alive)
             dp.completed = bool(completed)
 
