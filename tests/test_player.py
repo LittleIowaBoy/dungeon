@@ -36,19 +36,6 @@ class PlayerLoadoutTests(unittest.TestCase):
         self.assertEqual(player.current_weapon_index, 0)
         self.assertEqual(player.weapon_upgrade_tier("hammer"), 2)
 
-    def test_reset_for_dungeon_applies_legacy_upgrade_fallback(self):
-        progress = PlayerProgress()
-        progress.equipped_slots["weapon_1"] = "axe"
-        progress.equipped_slots["weapon_2"] = "spear"
-        progress.weapon_upgrades["axe"] = 0
-        progress.inventory["axe_plus"] = 1
-
-        player = Player(32, 32)
-        player.reset_for_dungeon(progress)
-
-        self.assertEqual(player.weapon_ids, ["axe", "spear"])
-        self.assertEqual(player.weapon_upgrade_tier("axe"), 1)
-
     def test_cycle_and_use_potion_delegate_to_consumable_rules(self):
         progress = PlayerProgress()
         progress.inventory["health_potion_medium"] = 1

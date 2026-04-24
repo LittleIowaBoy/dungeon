@@ -2,10 +2,7 @@
 import pygame
 from sprites import make_rect_surface
 from item_catalog import ITEM_DATABASE
-from settings import (
-    COLOR_HEALTH_POTION, COLOR_COIN, COLOR_SPEED_BOOST,
-    HEAL_AMOUNT, SPEED_BOOST_AMOUNT, SPEED_CAP,
-)
+from settings import COLOR_COIN
 
 
 class Item(pygame.sprite.Sprite):
@@ -23,34 +20,12 @@ class Item(pygame.sprite.Sprite):
         """Override in subclasses to apply the pickup effect."""
 
 
-class HealthPotion(Item):
-    color = COLOR_HEALTH_POTION
-    size = 16
-
-    def collect(self, player):
-        player.current_hp = min(player.current_hp + HEAL_AMOUNT, player.max_hp)
-
-
 class Coin(Item):
     color = COLOR_COIN
     size = 12
 
     def collect(self, player):
         player.coins += 1
-
-
-class SpeedBoost(Item):
-    color = COLOR_SPEED_BOOST
-    size = 16
-
-    def collect(self, player):
-        player.speed_multiplier = min(
-            player.speed_multiplier + SPEED_BOOST_AMOUNT, SPEED_CAP
-        )
-
-
-# Lookup used by drop / chest generation (legacy instant pickups)
-ITEM_CLASSES = [Coin, HealthPotion, SpeedBoost]
 
 
 class LootDrop(Item):

@@ -53,22 +53,35 @@ class SaveSystemRoundTripTests(unittest.TestCase):
         self.assertEqual(player.armor_hp, 5)
         self.assertEqual(player.compass_uses, 2)
 
-    def test_save_load_round_trip_migrates_legacy_upgrade_into_runtime_loadout(self):
+    def test_save_load_round_trip_persists_equipped_runes(self):
+        import rune_rules
+        from rune_catalog import (
+            RUNE_CATEGORY_BEHAVIOR,
+            RUNE_CATEGORY_IDENTITY,
+            RUNE_CATEGORY_STAT,
+            runes_by_category,
+        )
+
         progress = PlayerProgress()
-        progress.equipped_slots["weapon_1"] = "axe"
-        progress.equipped_slots["weapon_2"] = "spear"
-        progress.inventory["axe_plus"] = 1
+        stat_id = runes_by_category(RUNE_CATEGORY_STAT)[0].rune_id
+        behavior_id = runes_by_category(RUNE_CATEGORY_BEHAVIOR)[0].rune_id
+        identity_id = runes_by_category(RUNE_CATEGORY_IDENTITY)[0].rune_id
+        rune_rules.equip_rune(progress, stat_id)
+        rune_rules.equip_rune(progress, behavior_id)
+        rune_rules.equip_rune(progress, identity_id)
 
         save_system.save_progress(progress)
         loaded = save_system.load_progress()
 
+        self.assertTrue(rune_rules.has_rune(loaded, stat_id))
+        self.assertTrue(rune_rules.has_rune(loaded, behavior_id))
+        self.assertTrue(rune_rules.has_rune(loaded, identity_id))
+
         player = Player(32, 32)
         player.reset_for_dungeon(loaded)
-
-        self.assertNotIn("axe_plus", loaded.inventory)
-        self.assertEqual(loaded.weapon_upgrades["axe"], 1)
-        self.assertEqual(player.weapon_ids, ["axe", "spear"])
-        self.assertEqual(player.weapon_upgrade_tier("axe"), 1)
+        self.assertTrue(rune_rules.has_rune(player, stat_id))
+        self.assertTrue(rune_rules.has_rune(player, behavior_id))
+        self.assertTrue(rune_rules.has_rune(player, identity_id))
 
 
 if __name__ == "__main__":

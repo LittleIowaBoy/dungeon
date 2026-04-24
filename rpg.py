@@ -21,6 +21,7 @@ from camera import Camera
 from hud import HUD
 from room import DOOR, PORTAL, WALL
 from items import LootDrop
+from item_catalog import ITEM_DATABASE
 from game_states import GameState
 from content_db import ensure_room_content_db
 from dungeon_config import get_dungeon, get_difficulty_preset, DUNGEONS
@@ -34,6 +35,7 @@ from menu import (
     ShopScreen,
     PauseScreen,
     LevelCompleteScreen,
+    RuneAltarPickScreen,
 )
 from menu_view import (
     build_main_menu_view,
@@ -42,10 +44,21 @@ from menu_view import (
     build_level_complete_screen_view,
     build_pause_screen_view,
     build_room_test_select_view,
+    build_rune_altar_pick_view,
     build_shop_view,
 )
 from room_test_catalog import build_room_test_plan, load_room_test_entries
 from shop import Shop
+import ability_rules
+import allies
+import behavior_runes
+import dodge_rules
+import enemy_collision_rules
+import identity_runes
+import rune_rules
+import stat_runes
+import status_effects
+import time_rules
 
 
 class Game:
@@ -82,6 +95,8 @@ class Game:
         self._pause_screen = PauseScreen(
             room_identifier_enabled=self._show_room_identifier,
         )
+        self._rune_altar_pick = RuneAltarPickScreen()
+        self._pending_rune_altar = None  # config dict of altar awaiting pick
 
         # snapshot of progress before entering a level (for quit-revert)
         self._pre_level_progress_snapshot = None
@@ -256,6 +271,8 @@ class Game:
                 self._update_playing()
             elif self.state == GameState.PAUSED:
                 self._handle_paused(events)
+            elif self.state == GameState.RUNE_ALTAR_PICK:
+                self._handle_rune_altar_pick(events)
             elif self.state == GameState.LEVEL_COMPLETE:
                 self._handle_level_complete(events)
             elif self.state == GameState.GAME_OVER:
@@ -331,6 +348,18 @@ class Game:
                     else:
                         self.dungeon.hitbox_group.add(result)
 
+            # dodge (i-frames + burst of motion)
+            if event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
+                pre_center = self.player.rect.center
+                if dodge_rules.trigger_dodge(self.player, pygame.time.get_ticks()):
+                    if behavior_runes.spawns_afterimage(self.player):
+                        decoy = behavior_runes.make_afterimage_hitbox(pre_center)
+                        self.dungeon.hitbox_group.add(decoy)
+
+            # active ability (rune-supplied)
+            if event.key == pygame.K_f:
+                ability_rules.activate_ability(self.player, pygame.time.get_ticks())
+
             # chest interaction
             if event.key == pygame.K_e:
                 now_ticks = pygame.time.get_ticks()
@@ -362,13 +391,100 @@ class Game:
                 self._pause_screen.selected = 0
                 self.state = GameState.PAUSED
 
+    def _apply_player_hit(self, hitbox, enemy):
+        """Apply a single player→enemy hit through all rune pipelines."""
+        scaled = stat_runes.modify_outgoing_damage(
+            self.player, enemy, hitbox.damage
+        )
+        # The Conduit: split damage across primary + nearest other enemy.
+        primary_damage, splash_damage = identity_runes.conduit_split_damage(
+            self.player, scaled
+        )
+        enemy.take_damage(primary_damage)
+        if splash_damage > 0:
+            splash_target = identity_runes.conduit_find_splash_target(
+                self.player, enemy, self.dungeon.enemy_group
+            )
+            if splash_target is not None:
+                splash_target.take_damage(splash_damage)
+        killed = enemy.current_hp <= 0
+        stat_runes.on_player_hit_landed(self.player, enemy, primary_damage, killed)
+        if not killed:
+            return
+        # Vampiric Strike heal
+        heal = behavior_runes.vampiric_kill_heal_amount(self.player)
+        if heal > 0:
+            self.player.current_hp = min(
+                self.player.max_hp, self.player.current_hp + heal
+            )
+        # Necromancer: register the kill (ally spawn handled by caller).
+        identity_runes.necromancer_register_kill(self.player)
+        # Shrapnel Burst AOE
+        targets = behavior_runes.shrapnel_burst_targets(
+            self.player, enemy.rect, self.dungeon.enemy_group
+        )
+        if targets:
+            blast = behavior_runes.shrapnel_burst_damage(self.player, scaled)
+            for other in targets:
+                if other is enemy:
+                    continue
+                other.take_damage(blast)
+        if behavior_runes.player_in_shrapnel_blast(self.player, enemy.rect):
+            self_dmg = behavior_runes.shrapnel_burst_self_damage(self.player, scaled)
+            if self_dmg > 0:
+                self.player.take_damage(self_dmg)
+        # Loot drop
+        drop = enemy.roll_drop()
+        if drop:
+            self.dungeon.item_group.add(drop)
+
     def _update_playing(self):
         room = self.dungeon.current_room
         walls = room.get_wall_rects()
         now_ticks = pygame.time.get_ticks()
 
         # player movement
+        prev_center = self.player.rect.center
         self.player.update(walls, room.terrain_at_pixel)
+        is_moving = self.player.rect.center != prev_center
+        stat_runes.update_movement_state(
+            self.player, now_ticks, self.clock.get_time(), is_moving
+        )
+        behavior_runes.update_static_charge(
+            self.player, self.clock.get_time(), is_moving
+        )
+        behavior_runes.update_boomerang_returns(
+            self.player, self.dungeon.hitbox_group, now_ticks
+        )
+        # Identity rune passives + time anchor patience meter
+        identity_runes.passive_update(self.player)
+        anchor_event = identity_runes.update_time_anchor(
+            self.player, self.clock.get_time(), is_moving
+        )
+        anchor_scale = identity_runes.time_anchor_time_scale(self.player, is_moving)
+        if anchor_scale is not None:
+            time_rules.set_time_scale(self.player, anchor_scale)
+        if anchor_event == "freeze":
+            for enemy in self.dungeon.enemy_group:
+                status_effects.apply_status(
+                    enemy, status_effects.STUNNED, now_ticks,
+                    duration_ms=identity_runes.TIME_ANCHOR_FREEZE_DURATION_MS,
+                )
+            identity_runes.consume_time_anchor_freeze(self.player)
+
+        # dodge — clear pass-through once active phase ends
+        dodge_rules.update_dodge_state(self.player, now_ticks)
+
+        # status effect ticks (DOT + expiry) for player and enemies
+        status_effects.tick_statuses(
+            self.player, now_ticks,
+            lambda holder, amount: holder.take_damage(amount),
+        )
+        for enemy in list(self.dungeon.enemy_group):
+            status_effects.tick_statuses(
+                enemy, now_ticks,
+                lambda holder, amount: holder.take_damage(amount),
+            )
 
         # door transitions
         direction = self.dungeon.try_transition(self.player.rect)
@@ -376,6 +492,7 @@ class Game:
             spawn = self.dungeon.move_to(direction)
             if spawn:
                 self.player.place(*spawn)
+                rune_rules.on_room_enter(self.player)
                 self.dungeon.current_room.on_enter(
                     pygame.time.get_ticks(),
                     entry_direction=OPPOSITE_DIR[direction],
@@ -407,8 +524,40 @@ class Game:
                     break
 
         # enemies AI + movement
+        time_scale = time_rules.get_time_scale(self.player)
         for enemy in self.dungeon.enemy_group:
-            enemy.update_movement(enemy_focus_rect, walls)
+            if status_effects.is_immobilized(enemy, now_ticks):
+                continue
+            if time_scale != 1.0:
+                original_speed = enemy.speed
+                enemy.speed = original_speed * time_scale
+                try:
+                    enemy.update_movement(enemy_focus_rect, walls)
+                finally:
+                    enemy.speed = original_speed
+            else:
+                enemy.update_movement(enemy_focus_rect, walls)
+
+        # Necromancer: spawn a SkeletonAlly when a kill milestone is pending.
+        if identity_runes.necromancer_consume_pending(self.player):
+            allies.spawn_skeleton_near(
+                self.player, self.dungeon.ally_group, now_ticks,
+            )
+        # Allies: chase nearest enemy and melee.
+        allies.update_allies(
+            self.dungeon.ally_group,
+            self.dungeon.enemy_group,
+            self.player,
+            walls,
+            now_ticks,
+        )
+
+        # enemy-vs-enemy collisions (Pacifist rune)
+        enemy_collision_rules.apply_enemy_collisions(
+            self.dungeon.enemy_group,
+            enemy_collision_rules.enemy_vs_enemy_multiplier(self.player),
+            now_ticks,
+        )
 
         # attack hitboxes
         self.dungeon.hitbox_group.update()
@@ -416,11 +565,14 @@ class Game:
             hits = pygame.sprite.spritecollide(hitbox, self.dungeon.enemy_group, False)
             for enemy in hits:
                 if hitbox.try_hit(enemy):
-                    enemy.take_damage(hitbox.damage)
-                    if enemy.current_hp <= 0:
-                        drop = enemy.roll_drop()
-                        if drop:
-                            self.dungeon.item_group.add(drop)
+                    self._apply_player_hit(hitbox, enemy)
+            # Ricochet: pick a second target near the first primary hit
+            if hits:
+                ricochet_target = behavior_runes.find_ricochet_target(
+                    self.player, hitbox, hits[0], self.dungeon.enemy_group
+                )
+                if ricochet_target is not None and hitbox.try_hit(ricochet_target):
+                    self._apply_player_hit(hitbox, ricochet_target)
 
         for hitbox in self.dungeon.hitbox_group:
             hits = pygame.sprite.spritecollide(hitbox, self.dungeon.objective_group, False)
@@ -432,7 +584,12 @@ class Game:
         if not self.player.is_invincible:
             hits = pygame.sprite.spritecollide(self.player, self.dungeon.enemy_group, False)
             for enemy in hits:
+                pre_hp = self.player.current_hp
                 self.player.take_damage(enemy.damage)
+                damage_taken = pre_hp - self.player.current_hp
+                reflect = stat_runes.compute_reflect(self.player, damage_taken)
+                if reflect > 0:
+                    enemy.take_damage(reflect)
                 break
 
         for objective in self.dungeon.objective_group:
@@ -449,6 +606,13 @@ class Game:
                     if current >= item.max_owned:
                         continue  # leave on ground
                 item.collect(self.player)
+                # Pacifist rune: destroyed when a weapon item is picked up.
+                if isinstance(item, LootDrop):
+                    item_data = ITEM_DATABASE.get(item.item_id, {})
+                    if item_data.get("category") == "weapon":
+                        identity_runes.destroy_pacifist_on_weapon_pickup(
+                            self.player, self.player.progress,
+                        )
                 item.kill()
 
         # portal check
@@ -460,6 +624,14 @@ class Game:
         row = self.player.rect.centery // TILE_SIZE
         if room.tile_at(col, row) == PORTAL:
             self._on_level_complete()
+            return
+
+        # rune altar pickup prompt
+        altar_config = room.pending_rune_altar(self.player)
+        if altar_config is not None:
+            self._pending_rune_altar = altar_config
+            self._rune_altar_pick.open(altar_config["offered_rune_ids"])
+            self.state = GameState.RUNE_ALTAR_PICK
             return
 
         # death check
@@ -544,6 +716,24 @@ class Game:
         elif choice == "Quit Level":
             self._quit_level()
 
+    # ── rune altar pick handler ─────────────────────────
+    def _handle_rune_altar_pick(self, events):
+        result = self._rune_altar_pick.handle_events(events)
+        if result is None:
+            return
+        action, rune_id = result
+        room = self.dungeon.current_room
+        if action == "pick" and rune_id is not None:
+            if rune_rules.equip_altar_pick(self.player, self.progress, rune_id):
+                if self._pending_rune_altar is not None:
+                    room.consume_rune_altar(self._pending_rune_altar)
+        elif action == "cancel" and self._pending_rune_altar is not None:
+            room.snooze_rune_altar(self._pending_rune_altar)
+        self._pending_rune_altar = None
+        self.state = GameState.PLAYING
+        # Reload sprites so a consumed altar disappears immediately
+        self.dungeon._load_room_sprites()
+
     def _quit_level(self):
         """Quit the current level — revert progress to pre-level snapshot."""
         if self._is_room_test_active():
@@ -584,7 +774,8 @@ class Game:
 
         elif self.state in (GameState.PLAYING, GameState.PAUSED,
                             GameState.LEVEL_COMPLETE,
-                            GameState.GAME_OVER, GameState.GAME_WIN):
+                            GameState.GAME_OVER, GameState.GAME_WIN,
+                            GameState.RUNE_ALTAR_PICK):
             # draw the gameplay underneath overlays
             if self.dungeon and self.player:
                 self.camera.draw(
@@ -592,6 +783,7 @@ class Game:
                     self.dungeon.current_room,
                     [
                         self.dungeon.enemy_group,
+                        self.dungeon.ally_group,
                         self.dungeon.item_group,
                         self.dungeon.chest_group,
                         self.dungeon.objective_group,
@@ -620,6 +812,11 @@ class Game:
                 self._level_complete.draw(
                     self.screen,
                     build_level_complete_screen_view(self._level_complete),
+                )
+            elif self.state == GameState.RUNE_ALTAR_PICK:
+                self._rune_altar_pick.draw(
+                    self.screen,
+                    build_rune_altar_pick_view(self._rune_altar_pick, self.progress),
                 )
 
         pygame.display.flip()

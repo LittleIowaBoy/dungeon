@@ -1,6 +1,7 @@
 """Room: tile grid, terrain, walls/doors, enemy/chest spawn configs."""
 import random
 import pygame
+import rune_rules
 from objective_metadata import (
     DEFAULT_ALTAR_VARIANT,
     DEFAULT_RELIC_VARIANT,
@@ -1708,6 +1709,65 @@ class Room:
                 }
                 for index, pos in enumerate(beacon_positions)
             ]
+        elif self.room_plan.objective_rule == "rune_altar":
+            self.objective_entity_configs = self._build_rune_altar_configs()
+
+    def _build_rune_altar_configs(self):
+        """Generate one rune altar centred in the room with three rune offers.
+
+        The offered rune ids are sampled at room-build time so the choice is
+        stable across visits.  ``consumed`` flips to True after the player
+        commits a pick via :meth:`consume_rune_altar`.
+        """
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        offered = rune_rules.generate_altar_offer(random)
+        return [
+            {
+                "kind": "rune_altar",
+                "label": self.room_plan.objective_label or "Rune Altar",
+                "pos": (cx, cy),
+                "offered_rune_ids": list(offered),
+                "consumed": False,
+            }
+        ]
+
+    def pending_rune_altar(self, player):
+        """Return the first non-consumed altar config the player overlaps, or ``None``.
+
+        Tracks a per-altar ``snoozed`` flag so that cancelling the pick prompt
+        does not immediately re-trigger.  The flag clears once the player
+        steps out of interaction range.
+        """
+        if self.room_plan is None or self.room_plan.objective_rule != "rune_altar":
+            return None
+        result = None
+        for config in self.objective_entity_configs:
+            if config.get("kind") != "rune_altar":
+                continue
+            if config.get("consumed"):
+                continue
+            if not config.get("offered_rune_ids"):
+                continue
+            ax, ay = config["pos"]
+            px, py = player.rect.center
+            in_range = (px - ax) ** 2 + (py - ay) ** 2 <= 36 ** 2
+            if not in_range:
+                config["snoozed"] = False
+                continue
+            if config.get("snoozed"):
+                continue
+            if result is None:
+                result = config
+        return result
+
+    def consume_rune_altar(self, altar_config):
+        """Mark *altar_config* as consumed so it does not re-offer on revisit."""
+        altar_config["consumed"] = True
+
+    def snooze_rune_altar(self, altar_config):
+        """Mark *altar_config* as snoozed until the player leaves interaction range."""
+        altar_config["snoozed"] = True
 
     def _build_trap_gauntlet_configs(self):
         trap_variant = self.room_plan.objective_variant or "sweeper_lanes"

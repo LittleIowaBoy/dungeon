@@ -3,10 +3,15 @@ import pygame
 import attack_rules
 import combat_rules
 import consumable_rules
+import ability_rules
+import dodge_rules
 import effect_state_rules
 import loadout_rules
 import movement_rules
 import player_visual_rules
+import rune_rules
+import status_effects
+import time_rules
 import tool_rules
 from sprites import make_rect_surface
 from settings import (
@@ -62,6 +67,22 @@ class Player(pygame.sprite.Sprite):
         self.compass_direction = None       # e.g. "NE"
         self.compass_arrow = None           # e.g. "↗"
         self._compass_display_until = 0     # ticks timestamp
+
+        # runes (per-dungeon loadout + scratch state)
+        self.equipped_runes = rune_rules.empty_loadout()
+        self.rune_state = {}
+
+        # dodge
+        dodge_rules.reset_runtime_dodge(self)
+
+        # active ability slot (rune-supplied)
+        ability_rules.reset_runtime_ability(self)
+
+        # status effects (burning/frozen/etc.) — inert until applied
+        status_effects.reset_statuses(self)
+
+        # time scale — 1.0 normal, runes may slow
+        time_rules.reset_time_scale(self)
 
     # ── properties ──────────────────────────────────────
     @property
@@ -134,6 +155,10 @@ class Player(pygame.sprite.Sprite):
 
         movement_rules.reset_runtime_movement(self)
 
+        # Runes — sync loadout BEFORE max-HP reset so stat_runes can scale it.
+        rune_rules.sync_runtime_to_progress(self, progress)
+        rune_rules.on_room_enter(self)
+
         combat_rules.reset_runtime_combat(self, progress.max_hp)
 
         # Armor — persists across levels, loaded from progress
@@ -155,6 +180,21 @@ class Player(pygame.sprite.Sprite):
         # Reset boosts
         consumable_rules.reset_runtime_consumables(self)
         player_visual_rules.reset_runtime_visuals(self)
+
+        # Runes — already synced above; nothing more to do here.
+        pass
+
+        # Dodge state — reset cooldowns/i-frames
+        dodge_rules.reset_runtime_dodge(self)
+
+        # Active ability — cleared until a rune supplies one
+        ability_rules.reset_runtime_ability(self)
+
+        # Status effects — wipe carryover from previous run
+        status_effects.reset_statuses(self)
+
+        # Time scale — reset to normal
+        time_rules.reset_time_scale(self)
 
     # ── boost properties ────────────────────────────────
     @property

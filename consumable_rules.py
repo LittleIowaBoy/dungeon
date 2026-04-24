@@ -38,10 +38,24 @@ def cycle_potion(player):
 def use_selected_potion(player):
     if player.progress is None:
         return False
+    import behavior_runes  # local import to avoid circular dep
+    import identity_runes  # local import to avoid circular dep
+    import pygame
+    if behavior_runes.blocks_health_pickup(player):
+        return False
     item_id = POTION_ITEM_IDS[player.selected_potion_size]
     if not consume_inventory_item(player.progress, item_id):
         return False
     heal = POTION_HEAL[player.selected_potion_size]
+    # Glass Soul: heals convert into a temporary attack-speed boost.
+    iframe = identity_runes.glass_soul_intercept_heal(
+        player, heal, pygame.time.get_ticks()
+    )
+    if iframe > 0:
+        player.attack_boost_until = max(
+            getattr(player, "attack_boost_until", 0), iframe
+        )
+        return True
     player.current_hp = min(player.current_hp + heal, player.max_hp)
     return True
 

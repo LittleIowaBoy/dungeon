@@ -6,9 +6,11 @@ from unittest.mock import patch
 import pygame
 
 import attack_rules
+import behavior_runes
 import combat_rules
 import enemies
 import movement_rules
+import rune_rules
 from items import Coin, LootDrop
 from settings import ATTACK_BOOST_MULTIPLIER, INVINCIBILITY_MS, WEAPON_PLUS_MULTIPLIER
 
@@ -83,6 +85,50 @@ class RuntimeRulesTests(unittest.TestCase):
         self.assertEqual(hitboxes[0].glow_calls, 1)
         self.assertEqual(hitboxes[1].glow_calls, 1)
         self.assertEqual(weapon.calls, [(64, 80, 1.0, 0.0)])
+
+    def test_attack_with_boomerang_zeroes_outbound_and_queues_return(self):
+        hb_rect = pygame.Rect(0, 0, 16, 16)
+        hb_rect.center = (100, 50)
+
+        class _Hitbox:
+            def __init__(self):
+                self.damage = 20
+                self.rect = hb_rect
+
+            def set_glow(self):
+                pass
+
+        hitbox = _Hitbox()
+        weapon = _DummyWeapon(hitbox)
+        player = SimpleNamespace(
+            weapon=weapon,
+            rect=SimpleNamespace(centerx=64, centery=80),
+            facing_dx=1.0,
+            facing_dy=0.0,
+            is_attack_boosted=False,
+            current_weapon_id="sword",
+            weapon_upgrade_tier=lambda _id: 0,
+            equipped_runes=rune_rules.empty_loadout(),
+            rune_state={"room": {}},
+            statuses={},
+        )
+        rune_rules.equip_rune(player, "boomerang")
+
+        with patch("pygame.time.get_ticks", return_value=5_000):
+            result = attack_rules.attack(player)
+
+        self.assertIs(result, hitbox)
+        # Outbound zeroed.
+        self.assertEqual(hitbox.damage, 0)
+        # Return queued at original (pre-zero) damage.
+        pending = player.rune_state["boomerang_pending"]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["center"], (100, 50))
+        self.assertEqual(pending[0]["damage"], 20)
+        self.assertEqual(
+            pending[0]["spawn_at"],
+            5_000 + behavior_runes.BOOMERANG_RETURN_DELAY_MS,
+        )
 
     def test_reset_runtime_combat_resets_hp_and_invincibility(self):
         player = SimpleNamespace(max_hp=5, current_hp=2, _invincible_until=999)

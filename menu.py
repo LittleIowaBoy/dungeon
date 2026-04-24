@@ -1,4 +1,4 @@
-"""Menu screens: MainMenu, RoomTestSelect, DungeonSelect, CharacterCustomize, Shop, Pause, LevelComplete."""
+"""Menu screens: MainMenu, RoomTestSelect, DungeonSelect, CharacterCustomize, Shop, Pause, LevelComplete, RuneAltarPick."""
 import pygame
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -8,6 +8,7 @@ from settings import (
 from game_states import GameState
 from dungeon_config import DUNGEONS
 from item_catalog import ITEM_DATABASE
+from rune_catalog import RUNE_DATABASE, RUNE_SLOT_CAPACITY
 from shop import Shop
 
 
@@ -729,3 +730,116 @@ class LevelCompleteScreen:
             surface, self._font, view.options, view.selected_index,
             SCREEN_WIDTH // 2 - 160, options_y,
         )
+
+
+# ═════════════════════════════════════════════════════════
+#  Rune Altar Pick
+# ═════════════════════════════════════════════════════════
+class RuneAltarPickScreen:
+    """Modal overlay shown when the player interacts with a rune altar.
+
+    Holds the candidate rune ids for the current altar and the player's
+    selection cursor.  Returns ``("pick", rune_id)`` or ``("cancel", None)``
+    on a confirmed action; otherwise returns ``None``.
+    """
+
+    def __init__(self):
+        self.offered_rune_ids: tuple[str, ...] = ()
+        self.selected = 0
+        self._font = None
+        self._title_font = None
+        self._small_font = None
+
+    def open(self, offered_rune_ids):
+        self.offered_rune_ids = tuple(offered_rune_ids)
+        self.selected = 0
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 36)
+            self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 14)
+
+    def handle_events(self, events):
+        if not self.offered_rune_ids:
+            return ("cancel", None)
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return ("cancel", None)
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self.selected = (self.selected - 1) % len(self.offered_rune_ids)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self.selected = (self.selected + 1) % len(self.offered_rune_ids)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                return ("pick", self.offered_rune_ids[self.selected])
+        return None
+
+    def draw(self, surface, view):
+        self._ensure_fonts()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 200))
+        surface.blit(overlay, (0, 0))
+
+        title = self._title_font.render(view.title, True, COLOR_PORTAL)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 80)))
+
+        subtitle = self._small_font.render(view.subtitle, True, COLOR_GRAY)
+        surface.blit(subtitle, subtitle.get_rect(center=(SCREEN_WIDTH // 2, 116)))
+
+        if not view.cards:
+            empty = self._font.render(view.empty_message, True, COLOR_GRAY)
+            surface.blit(empty, empty.get_rect(center=(SCREEN_WIDTH // 2, 240)))
+            return
+
+        card_w, card_h = 220, 320
+        gap = 20
+        total_w = len(view.cards) * card_w + (len(view.cards) - 1) * gap
+        start_x = (SCREEN_WIDTH - total_w) // 2
+        y = 150
+
+        for i, card in enumerate(view.cards):
+            x = start_x + i * (card_w + gap)
+            border_color = COLOR_PORTAL if i == view.selected_index else COLOR_GRAY
+            pygame.draw.rect(surface, COLOR_DARK_GRAY, (x, y, card_w, card_h))
+            pygame.draw.rect(surface, border_color, (x, y, card_w, card_h), 3)
+
+            name = self._font.render(card.name, True, COLOR_WHITE)
+            surface.blit(name, name.get_rect(center=(x + card_w // 2, y + 28)))
+
+            cat = self._small_font.render(card.category_label, True, COLOR_COIN)
+            surface.blit(cat, cat.get_rect(center=(x + card_w // 2, y + 56)))
+
+            slot = self._small_font.render(card.slot_status, True, COLOR_GRAY)
+            surface.blit(slot, slot.get_rect(center=(x + card_w // 2, y + 76)))
+
+            self._draw_wrapped(
+                surface, card.bonus_text, x + 12, y + 110,
+                card_w - 24, COLOR_WHITE,
+            )
+            self._draw_wrapped(
+                surface, card.tradeoff_text, x + 12, y + 200,
+                card_w - 24, COLOR_HEALTH_BAR,
+            )
+
+        hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
+        surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 40)))
+
+    def _draw_wrapped(self, surface, text, x, y, max_width, color):
+        words = text.split()
+        line = ""
+        line_y = y
+        for word in words:
+            trial = (line + " " + word).strip()
+            if self._small_font.size(trial)[0] <= max_width:
+                line = trial
+            else:
+                if line:
+                    rendered = self._small_font.render(line, True, color)
+                    surface.blit(rendered, (x, line_y))
+                    line_y += 18
+                line = word
+        if line:
+            rendered = self._small_font.render(line, True, color)
+            surface.blit(rendered, (x, line_y))

@@ -138,6 +138,7 @@ class RoomContentBootstrapTests(unittest.TestCase):
             "trap_gauntlet",
             "stealth_passage",
             "timed_extraction",
+            "rune_altar_chamber",
         })
         self.assertEqual(seeded_templates["standard_combat"], (1, "implemented", "", 0, 1, "avoid", 0, "any", "immediate", "", 0, 0, 0, 0, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
         self.assertEqual(seeded_templates["survival_holdout"], (1, "prototype", "", 4, 4, "prefer", 2, "finale", "holdout_timer", "1,2,3", 96, 0, 1, 1500, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))

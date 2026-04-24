@@ -18,6 +18,7 @@ from objective_entities import (
     HoldoutStabilizer,
     HoldoutZone,
     PressurePlate,
+    RuneAltar,
     TrapCrusher,
     TrapLaneSwitch,
     TrapSafeSpot,
@@ -185,6 +186,7 @@ class Dungeon:
         self.chest_group: pygame.sprite.Group = pygame.sprite.Group()
         self.objective_group: pygame.sprite.Group = pygame.sprite.Group()
         self.hitbox_group: pygame.sprite.Group = pygame.sprite.Group()
+        self.ally_group: pygame.sprite.Group = pygame.sprite.Group()
 
     # ── public API ──────────────────────────────────────
     @property
@@ -358,31 +360,6 @@ class Dungeon:
         self.room_plans[pos] = room_plan
         return room
 
-    def _generate_room(self, pos, forced_doors=None, depth=0):
-        """Lazily generate a non-path room at *pos*."""
-        planned_room = self._topology_plan.rooms.get(pos)
-        if planned_room is not None:
-            self._room_depths[pos] = planned_room.depth
-            return self._create_room(
-                pos,
-                fixed_doors=planned_room.doors,
-                is_exit=planned_room.is_exit,
-                depth=planned_room.depth,
-                path_kind=planned_room.path_kind,
-            )
-
-        # also force doors toward any existing neighbor that has a door toward us
-        if forced_doors is None:
-            forced_doors = {}
-        for d, (ox, oy) in DIR_OFFSETS.items():
-            neighbor_pos = (pos[0] + ox, pos[1] + oy)
-            if neighbor_pos in self.rooms:
-                opp = OPPOSITE_DIR[d]
-                if self.rooms[neighbor_pos].doors.get(opp):
-                    forced_doors[d] = True
-        self._room_depths[pos] = depth
-        return self._create_room(pos, forced_doors=forced_doors, depth=depth, path_kind="branch")
-
     def _random_doors(self, pos, forced=None):
         """Pick random doors, suppressing any that lead out of bounds."""
         doors = {}
@@ -412,6 +389,7 @@ class Dungeon:
         self.chest_group.empty()
         self.objective_group.empty()
         self.hitbox_group.empty()
+        self.ally_group.empty()
 
         room = self.current_room
 
@@ -451,6 +429,8 @@ class Dungeon:
                 self.objective_group.add(TrapCrusher(config))
             elif config["kind"] == "trap_safe_spot":
                 self.objective_group.add(TrapSafeSpot(config))
+            elif config["kind"] == "rune_altar" and not config.get("consumed"):
+                self.objective_group.add(RuneAltar(config))
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

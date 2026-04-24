@@ -38,11 +38,6 @@ DEFAULT_EQUIPPED_SLOTS = {
     "arms": None,
     "legs": None,
 }
-LEGACY_WEAPON_PLUS_IDS = {
-    "sword_plus": "sword",
-    "spear_plus": "spear",
-    "axe_plus": "axe",
-}
 
 
 ITEM_DATABASE = {

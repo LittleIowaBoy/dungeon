@@ -1,23 +1,16 @@
 """Weapons: Sword (arc), Spear (line), Axe (circle) with AttackHitbox sprites."""
-import math
 import pygame
 from settings import (
     TILE_SIZE, PLAYER_SIZE, ATTACK_DURATION_MS,
-    SWORD_DAMAGE, SWORD_RANGE, SWORD_COOLDOWN, SWORD_ARC_DEG,
+    SWORD_DAMAGE, SWORD_RANGE, SWORD_COOLDOWN,
     SPEAR_DAMAGE, SPEAR_RANGE, SPEAR_WIDTH, SPEAR_COOLDOWN,
     AXE_DAMAGE, AXE_RANGE, AXE_COOLDOWN,
-    HAMMER_DAMAGE, HAMMER_RANGE, HAMMER_COOLDOWN,
+    HAMMER_DAMAGE, HAMMER_COOLDOWN,
     COLOR_SWORD_HIT, COLOR_SPEAR_HIT, COLOR_AXE_HIT, COLOR_HAMMER_HIT,
     COLOR_ATTACK_GLOW,
 )
 
-
-# ── helpers ─────────────────────────────────────────────
-def _direction_angle(dx, dy):
-    """Return angle in degrees (0 = right, 90 = up) from a direction vector."""
-    if dx == 0 and dy == 0:
-        return 0.0
-    return math.degrees(math.atan2(-dy, dx))  # pygame y-down
+_SQ2 = 0.7071067811865476  # 1/sqrt(2) — used for 45° arc segments
 
 
 # ── AttackHitbox sprite ─────────────────────────────────
@@ -100,14 +93,24 @@ class Sword(Weapon):
 
     def _make_hitbox(self, cx, cy, dx, dy):
         depth = int(SWORD_RANGE * TILE_SIZE)
-        # Keep sword wider than the player and place it fully in front.
         size = max(depth, PLAYER_SIZE + 8)
         offset = PLAYER_SIZE // 2 + size // 2 + 2
-        ox = int(dx * offset)
-        oy = int(dy * offset)
-        rect = pygame.Rect(0, 0, size, size)
-        rect.center = (cx + ox, cy + oy)
-        return self._build_hitbox(rect, COLOR_SWORD_HIT)
+        # 180° arc: five hitbox segments fanned at -90°, -45°, 0°, +45°, +90°
+        # relative to the facing direction.  Each returns as a list so the
+        # pipeline can treat them like multi-segment spear hits.
+        directions = [
+            ( dy,           -dx),            # -90°
+            ( _SQ2*(dx+dy),  _SQ2*(dy-dx)), # -45°
+            ( dx,            dy),            #   0° (centre)
+            ( _SQ2*(dx-dy),  _SQ2*(dx+dy)), # +45°
+            (-dy,            dx),            # +90°
+        ]
+        hitboxes = []
+        for ndx, ndy in directions:
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = (cx + int(ndx * offset), cy + int(ndy * offset))
+            hitboxes.append(self._build_hitbox(rect, COLOR_SWORD_HIT))
+        return hitboxes
 
 
 # ── Spear ───────────────────────────────────────────────
@@ -175,8 +178,8 @@ class Hammer(Weapon):
     cooldown_ms = HAMMER_COOLDOWN
 
     def _make_hitbox(self, cx, cy, dx, dy):
-        depth = int(HAMMER_RANGE * TILE_SIZE)
-        size = max(depth, PLAYER_SIZE + 6)
+        # Small tight square — one tile — placed directly in front.
+        size = TILE_SIZE
         offset = PLAYER_SIZE // 2 + size // 2 + 2
         rect = pygame.Rect(0, 0, size, size)
         rect.center = (cx + int(dx * offset), cy + int(dy * offset))

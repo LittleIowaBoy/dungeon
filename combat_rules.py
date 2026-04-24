@@ -1,16 +1,24 @@
 """Combat-specific runtime rules for Player state."""
 
+import dodge_rules
+import identity_runes
+import stat_runes
 from settings import INVINCIBILITY_MS
 
 
 def reset_runtime_combat(player, max_hp):
-    player.max_hp = max_hp
-    player.current_hp = max_hp
+    base_max = stat_runes.modify_max_hp(player, max_hp)
+    player.max_hp = base_max
+    player.current_hp = base_max
     player._invincible_until = 0
 
 
 def is_invincible(player, now_ticks):
-    return now_ticks < player._invincible_until
+    if now_ticks < player._invincible_until:
+        return True
+    if dodge_rules.is_dodging(player, now_ticks) and stat_runes.dodge_grants_iframes(player):
+        return True
+    return False
 
 
 def is_alive(player):
@@ -21,6 +29,19 @@ def take_damage(player, amount, now_ticks):
     if is_invincible(player, now_ticks):
         return
 
+    # Glass Soul converts incoming damage into i-frames instead of HP loss.
+    absorbed, iframe_until = identity_runes.glass_soul_intercept_damage(
+        player, amount, now_ticks
+    )
+    if absorbed:
+        player._invincible_until = iframe_until
+        return
+
+    amount = stat_runes.modify_incoming_damage(player, amount)
+    if amount <= 0:
+        player._invincible_until = now_ticks + INVINCIBILITY_MS
+        return
+
     if player.armor_hp > 0:
         absorbed = min(amount, player.armor_hp)
         player.armor_hp -= absorbed
@@ -28,3 +49,4 @@ def take_damage(player, amount, now_ticks):
 
     player.current_hp = max(0, player.current_hp - amount)
     player._invincible_until = now_ticks + INVINCIBILITY_MS
+    stat_runes.on_player_damage_taken(player, amount)

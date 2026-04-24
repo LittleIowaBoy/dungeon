@@ -123,5 +123,97 @@ class HUDViewProjectionTests(unittest.TestCase):
         self.assertEqual(victory.prompt_text, "Press R to return to menu")
 
 
+class RuneMetersHUDViewTests(unittest.TestCase):
+    def _build_minimal_dungeon(self):
+        return SimpleNamespace(
+            current_room=SimpleNamespace(
+                objective_hud_state=lambda _t: {"visible": False, "label": ""},
+                playtest_identifier_state=lambda _t: {
+                    "visible": False, "title": "", "detail": ""
+                },
+            ),
+            minimap_snapshot=lambda: {"radius": 1, "rooms": []},
+        )
+
+    def test_no_runes_equipped_hides_all_meters(self):
+        player = _PlayerStub()
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=0)
+
+        self.assertFalse(view.rune_meters.time_anchor.visible)
+        self.assertFalse(view.rune_meters.static_charge.visible)
+        self.assertFalse(view.rune_meters.glass_soul_iframe.visible)
+
+    def test_time_anchor_meter_reflects_state(self):
+        player = _PlayerStub()
+        player.equipped_runes = {
+            "stat": [], "behavior": [], "identity": ["time_anchor"]
+        }
+        player.rune_state = {"time_anchor_meter": 0.4}
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=0)
+
+        meter = view.rune_meters.time_anchor
+        self.assertTrue(meter.visible)
+        self.assertEqual(meter.kind, "time_anchor")
+        self.assertAlmostEqual(meter.fill_fraction, 0.4)
+        self.assertEqual(meter.label, "Time Anchor")
+
+    def test_time_anchor_full_label(self):
+        player = _PlayerStub()
+        player.equipped_runes = {
+            "stat": [], "behavior": [], "identity": ["time_anchor"]
+        }
+        player.rune_state = {"time_anchor_meter": 1.0}
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=0)
+        self.assertEqual(view.rune_meters.time_anchor.label, "Time Anchor READY")
+
+    def test_static_charge_meter_reflects_state(self):
+        player = _PlayerStub()
+        player.equipped_runes = {
+            "stat": [], "behavior": ["static_charge"], "identity": []
+        }
+        player.rune_state = {"static_charge": 0.75}
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=0)
+
+        meter = view.rune_meters.static_charge
+        self.assertTrue(meter.visible)
+        self.assertAlmostEqual(meter.fill_fraction, 0.75)
+        self.assertEqual(meter.label, "Static Charge")
+
+    def test_static_charge_full_label(self):
+        player = _PlayerStub()
+        player.equipped_runes = {
+            "stat": [], "behavior": ["static_charge"], "identity": []
+        }
+        player.rune_state = {"static_charge": 1.0}
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=0)
+        self.assertEqual(view.rune_meters.static_charge.label, "Static Charge FULL")
+
+    def test_glass_soul_iframe_active_shows_remaining(self):
+        player = _PlayerStub()
+        player.equipped_runes = {
+            "stat": [], "behavior": [], "identity": ["glass_soul"]
+        }
+        player._invincible_until = 3000
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=2000)
+
+        meter = view.rune_meters.glass_soul_iframe
+        self.assertTrue(meter.visible)
+        self.assertAlmostEqual(meter.fill_fraction, 1000 / 2000.0)
+        self.assertIn("i-frames", meter.label)
+
+    def test_glass_soul_iframe_idle_shows_zero(self):
+        player = _PlayerStub()
+        player.equipped_runes = {
+            "stat": [], "behavior": [], "identity": ["glass_soul"]
+        }
+        player._invincible_until = 0
+        view = build_hud_view(player, self._build_minimal_dungeon(), now_ticks=5000)
+
+        meter = view.rune_meters.glass_soul_iframe
+        self.assertTrue(meter.visible)
+        self.assertEqual(meter.fill_fraction, 0.0)
+        self.assertEqual(meter.label, "Glass Soul")
+
+
 if __name__ == "__main__":
     unittest.main()

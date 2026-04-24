@@ -3,7 +3,7 @@ consumable quick-bar, compass, game-state screens."""
 import pygame
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
-    COLOR_HEALTH_BAR, COLOR_HEALTH_BG, COLOR_HUD_TEXT,
+    COLOR_HEALTH_BAR, COLOR_HEALTH_BG,
     COLOR_WHITE, COLOR_BLACK, COLOR_COIN, COLOR_PORTAL,
     COLOR_PLAYER, COLOR_DARK_GRAY, COLOR_GRAY, COLOR_LIGHT_GRAY,
     COLOR_ARMOR_BAR, COLOR_ARMOR_BG,
@@ -42,6 +42,10 @@ class HUD:
             view.compass,
             view.objective,
         )
+        self._draw_equipped_runes(surface, view.equipped_runes)
+        self._draw_rune_meters(surface, view.rune_meters)
+        self._draw_dodge_indicator(surface, view.dodge)
+        self._draw_ability_indicator(surface, view.ability)
 
     # ── health bar ──────────────────────────────────────
     def _draw_health_bar(self, surface, view):
@@ -220,6 +224,90 @@ class HUD:
                 f"{effect.name}: {effect.seconds_remaining:.1f}s", True, color)
             surface.blit(txt, (10, y))
             y += 16
+
+    # ── equipped runes strip ────────────────────────────
+    def _draw_equipped_runes(self, surface, equipped_runes_view):
+        if not equipped_runes_view.runes:
+            return
+        # Render along the bottom-left, above the quick bar.
+        x = 10
+        y = SCREEN_HEIGHT - 96
+        header = self._small_font.render("Runes", True, COLOR_WHITE)
+        surface.blit(header, (x, y))
+        y += 16
+        for rune_view in equipped_runes_view.runes:
+            color = (210, 200, 255) if rune_view.category != "identity" else (255, 215, 130)
+            txt = self._small_font.render(rune_view.short_label, True, color)
+            surface.blit(txt, (x, y))
+            y += 14
+
+    # ── rune meters (time anchor / static charge / glass-soul i-frame) ──
+    _RUNE_METER_COLORS = {
+        "time_anchor":       (180, 200, 255),
+        "static_charge":     (255, 240, 130),
+        "glass_soul_iframe": (255, 180, 200),
+    }
+
+    def _draw_rune_meters(self, surface, rune_meters_view):
+        meters = [
+            rune_meters_view.time_anchor,
+            rune_meters_view.static_charge,
+            rune_meters_view.glass_soul_iframe,
+        ]
+        visible = [m for m in meters if m.visible]
+        if not visible:
+            return
+
+        x = 10
+        bar_w, bar_h = 120, 6
+        spacing = 14
+        # Stack upward above the equipped-runes header (which sits at SCREEN_HEIGHT - 96).
+        y = SCREEN_HEIGHT - 96 - 4 - spacing * len(visible)
+
+        for meter in visible:
+            color = self._RUNE_METER_COLORS.get(meter.kind, COLOR_WHITE)
+            pygame.draw.rect(surface, COLOR_HEALTH_BG, (x, y, bar_w, bar_h))
+            fill_w = max(0, min(bar_w, int(bar_w * meter.fill_fraction)))
+            pygame.draw.rect(surface, color, (x, y, fill_w, bar_h))
+            pygame.draw.rect(surface, COLOR_WHITE, (x, y, bar_w, bar_h), 1)
+            label = self._small_font.render(meter.label, True, color)
+            surface.blit(label, (x + bar_w + 6, y - 4))
+            y += spacing
+
+    # ── dodge indicator ─────────────────────────────────
+    def _draw_dodge_indicator(self, surface, dodge_view):
+        # Small chip at bottom-right showing [Shift] dodge state.
+        x = SCREEN_WIDTH - 110
+        y = SCREEN_HEIGHT - 24
+        if dodge_view.active:
+            color = (140, 220, 255)
+            label = "[Shift] DODGE"
+        elif dodge_view.ready:
+            color = (200, 230, 200)
+            label = "[Shift] Dodge"
+        else:
+            color = (140, 140, 140)
+            pct = int((1.0 - dodge_view.cooldown_fraction) * 100)
+            label = f"[Shift] {pct}%"
+        txt = self._small_font.render(label, True, color)
+        surface.blit(txt, (x, y))
+
+    # ── active ability indicator ─────────────────────
+    def _draw_ability_indicator(self, surface, ability_view):
+        x = SCREEN_WIDTH - 230
+        y = SCREEN_HEIGHT - 24
+        if not ability_view.equipped:
+            color = (90, 90, 90)
+            label = "[F] —"
+        elif ability_view.ready:
+            color = (255, 220, 140)
+            label = f"[F] {ability_view.label}"
+        else:
+            color = (140, 130, 100)
+            pct = int((1.0 - ability_view.cooldown_fraction) * 100)
+            label = f"[F] {ability_view.label} {pct}%"
+        txt = self._small_font.render(label, True, color)
+        surface.blit(txt, (x, y))
 
     # ── compass direction display ───────────────────────
     def _draw_compass(self, surface, compass_view):

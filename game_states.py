@@ -10,6 +10,7 @@ class GameState(Enum):
     SHOP                = auto()
     PLAYING             = auto()
     PAUSED              = auto()
+    RUNE_ALTAR_PICK     = auto()
     LEVEL_COMPLETE      = auto()
     GAME_OVER           = auto()
     GAME_WIN            = auto()  # entire dungeon cleared (all 5 levels)

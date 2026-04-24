@@ -101,6 +101,22 @@ The current room families now expose more of their mechanics directly in runtime
 - timed extraction rooms can escalate with pursuit waves, temporarily seal the exit during collapse phases, preserve a clean-clear payout bonus, roll into overtime cleanup pressure, and explain the clean-vs-overtime result on the level-complete screen
 - escort rooms have higher escort durability, spawn the escort next to the player on entry, and highlight the exit destination in-room
 
+## Rune System
+
+Runes are persistent per-run modifiers picked up from rare Rune Altar rooms. Each pickup offers a 1-of-3 choice across three categories with strict slot limits:
+
+- **Stat runes (3 slots)**: simple offensive, defensive, and mobility tradeoffs (Bloodthirst, Glass Cannon, Last Stand, Sprinter, Heavy Hitter, etc.)
+- **Behavior runes (1 slot)**: rewrite how attacks or abilities resolve (Ricochet, Shockwave, Vampiric Strike, Afterimage, Overclock, Chain Reaction, Static Charge, Boomerang, Shrapnel Burst)
+- **Identity runes (1 slot)**: rewrite the run's game plan (The Pacifist, Glass Soul, Time Anchor, Necromancer, The Conduit)
+
+Architecture seams:
+
+- `rune_catalog.py`: rune definitions, categories, and rarity weights
+- `rune_rules.py`: equip/unequip, altar offer generation, per-room state reset, save serialization
+- `stat_runes.py` / `behavior_runes.py` / `identity_runes.py`: pure-function effect resolution called from `attack_rules.py`, `combat_rules.py`, `consumable_rules.py`, `dodge_rules.py`, `status_effects.py`, and `rpg.py`
+- `allies.py`: the Necromancer skeleton ally sprite and per-frame update
+- `hud_view.py` / `hud.py`: equipped-runes panel and per-rune meters (Time Anchor patience, Static Charge, Glass Soul i-frame)
+
 ## Architecture
 
 The project is intentionally data-driven. The most important ownership seams are:

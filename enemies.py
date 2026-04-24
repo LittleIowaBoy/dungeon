@@ -2,6 +2,8 @@
 import math
 import random
 import pygame
+import enemy_collision_rules
+import status_effects
 from sprites import make_rect_surface
 from settings import (
     TILE_SIZE,
@@ -9,7 +11,7 @@ from settings import (
     RANDOM_HP, RANDOM_SPEED, RANDOM_DAMAGE, COLOR_RANDOM,
     CHASER_HP, CHASER_SPEED, CHASER_DAMAGE, COLOR_CHASER,
     CHASE_RADIUS, CHASE_LOST_RADIUS,
-    DROP_CHANCE, DROP_WEIGHTS,
+    DROP_CHANCE,
 )
 from item_catalog import ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS
 from items import LootDrop, Coin
@@ -31,6 +33,8 @@ class Enemy(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=(x, y))
         self.max_hp = self.hp
         self.current_hp = self.hp
+        status_effects.reset_statuses(self)
+        enemy_collision_rules.reset_collision_state(self)
 
     # ── to be overridden ────────────────────────────────
     def update_movement(self, player_rect, wall_rects):

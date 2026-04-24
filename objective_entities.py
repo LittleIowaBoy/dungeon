@@ -36,6 +36,10 @@ _TRAP_CRUSHER_IDLE_COLOR = (120, 120, 120)
 _TRAP_VENT_ACTIVE_COLOR = (120, 220, 255)
 _TRAP_VENT_IDLE_COLOR = (90, 120, 160)
 _TRAP_SAFE_SPOT_COLOR = (90, 200, 130, 140)   # muted green, semi-transparent
+_RUNE_ALTAR_BASE_COLOR = (90, 110, 170)
+_RUNE_ALTAR_GLYPH_COLOR = (220, 195, 255)
+_RUNE_ALTAR_HALO_COLOR = (200, 170, 255, 80)
+_RUNE_ALTAR_CONSUMED_COLOR = (110, 110, 130)
 
 
 def _player_in_safe_spot(player, safe_spots):
@@ -896,6 +900,82 @@ class TrapCrusher(pygame.sprite.Sprite):
 
 
 class TrapSafeSpot(pygame.sprite.Sprite):
+    """Visual marker for a safe spot inside a trap lane.
+
+    Safe spots are logical zones where hazard damage is suppressed even when
+    the hazard is active.  This sprite draws a subtle coloured overlay so the
+    player can identify them.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        x, y, w, h = config["rect"]
+        self.image = make_rect_surface(w, h, _TRAP_SAFE_SPOT_COLOR)
+        self.rect = self.image.get_rect(topleft=(x, y))
+
+    def update(self, now_ticks):
+        del now_ticks
+
+    def draw_overlay(self, surface):
+        x, y, w, h = self._config["rect"]
+        pygame.draw.rect(surface, _TRAP_SAFE_SPOT_COLOR, pygame.Rect(x, y, w, h))
+        pygame.draw.rect(surface, (120, 240, 160), pygame.Rect(x, y, w, h), 1)
+
+
+class RuneAltar(pygame.sprite.Sprite):
+    """Static altar that offers the player a choice of three runes.
+
+    The altar tracks ``consumed`` on its config dict so that re-entering the
+    room after a pick does not respawn the choice.  Detection of the player's
+    interaction with the altar (overlap + room-level pending offer) is
+    handled by :class:`room.Room`, not by this sprite.
+    """
+
+    SIZE = 32
+    INTERACTION_RADIUS = 36
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        consumed = bool(config.get("consumed"))
+        color = _RUNE_ALTAR_CONSUMED_COLOR if consumed else _RUNE_ALTAR_BASE_COLOR
+        self.image = make_rect_surface(self.SIZE, self.SIZE, color)
+        self.rect = self.image.get_rect(center=config["pos"])
+        self._pulse_phase_ms = 0
+
+    @property
+    def consumed(self):
+        return bool(self._config.get("consumed"))
+
+    @property
+    def offered_rune_ids(self):
+        return tuple(self._config.get("offered_rune_ids", ()))
+
+    def update(self, now_ticks):
+        self._pulse_phase_ms = now_ticks
+
+    def draw_overlay(self, surface):
+        if self.consumed:
+            return
+        # halo pulse
+        period = 1400
+        phase = (self._pulse_phase_ms % period) / period
+        radius = self.INTERACTION_RADIUS + int(6 * (0.5 + 0.5 * math.sin(phase * math.tau)))
+        halo_size = radius * 2
+        halo = pygame.Surface((halo_size, halo_size), pygame.SRCALPHA)
+        pygame.draw.circle(halo, _RUNE_ALTAR_HALO_COLOR, (radius, radius), radius)
+        halo_rect = halo.get_rect(center=self.rect.center)
+        surface.blit(halo, halo_rect)
+        # central glyph
+        cx, cy = self.rect.center
+        pygame.draw.circle(surface, _RUNE_ALTAR_GLYPH_COLOR, (cx, cy), 5)
+
+
+class EscortNPC(pygame.sprite.Sprite):
+    """Friendly objective actor that moves through the room and can be attacked by enemies."""
+
+    SIZE = 24
     """Visual marker for a safe spot inside a trap lane.
 
     Safe spots are logical zones where hazard damage is suppressed even when

@@ -116,21 +116,13 @@ COLOR_HAMMER_HIT = (220, 220, 220, 120)
 # HUD
 COLOR_HEALTH_BAR = (220, 30, 30)
 COLOR_HEALTH_BG  = (60, 20, 20)
-COLOR_HUD_TEXT   = (230, 230, 230)
 
-# ── Player stats ────────────────────────────────────────
+# ── Player stats ──────────────────────────────────
 PLAYER_BASE_SPEED   = 3.0    # pixels per frame
 PLAYER_MAX_HP       = 100
 PLAYER_SIZE         = 28     # pixels (square)
 INVINCIBILITY_MS    = 1000   # 1 second
 FLASH_INTERVAL_MS   = 100
-
-# ── Speed boost (legacy instant pickup) ─────────────────
-SPEED_BOOST_AMOUNT = 0.10    # +10 % per pickup
-SPEED_CAP          = 1.5     # max multiplier
-
-# ── Item values (legacy instant pickup) ─────────────────
-HEAL_AMOUNT = 25
 
 # ── Consumable items ────────────────────────────────────
 # Health potions
@@ -196,22 +188,20 @@ CHEST_LOOT_WEIGHT_SPEED_BOOST   = 12
 CHEST_LOOT_WEIGHT_ATTACK_BOOST  = 8
 
 # ── Weapon stats  (damage, range_tiles, cooldown_ms) ────
-SWORD_DAMAGE   = 15
+SWORD_DAMAGE   = 30
 SWORD_RANGE    = 1.5
 SWORD_COOLDOWN = 400
-SWORD_ARC_DEG  = 90
 
-SPEAR_DAMAGE   = 10
-SPEAR_RANGE    = 3.0
+SPEAR_DAMAGE   = 20
+SPEAR_RANGE    = 4.5
 SPEAR_WIDTH    = 0.5
 SPEAR_COOLDOWN = 250
 
-AXE_DAMAGE     = 20
+AXE_DAMAGE     = 30
 AXE_RANGE      = 1.5
 AXE_COOLDOWN   = 1200
 
-HAMMER_DAMAGE   = 28
-HAMMER_RANGE    = 1.25
+HAMMER_DAMAGE   = 84
 HAMMER_COOLDOWN = 800
 
 ATTACK_DURATION_MS = 150     # how long the hitbox sprite lives
@@ -237,8 +227,7 @@ ENEMY_MAX_PER_ROOM = 4
 
 # ── Drops ───────────────────────────────────────────────
 DROP_CHANCE = 0.40           # 40 %
-# weights: coin, health_potion, speed_boost
-DROP_WEIGHTS = [50, 35, 15]
+
 
 # ── Chests ──────────────────────────────────────────────
 CHEST_SPAWN_CHANCE = 0.30

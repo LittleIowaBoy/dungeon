@@ -114,5 +114,57 @@ class PlayerProgressTransitionTests(unittest.TestCase):
         self.assertFalse(progress.can_equip("weapon_2", "sword"))
 
 
+class PlayerProgressRuneTests(unittest.TestCase):
+    def _equip_some_runes(self, progress):
+        import rune_rules
+        from rune_catalog import (
+            RUNE_CATEGORY_BEHAVIOR,
+            RUNE_CATEGORY_STAT,
+            runes_by_category,
+        )
+        stat_id = runes_by_category(RUNE_CATEGORY_STAT)[0].rune_id
+        behavior_id = runes_by_category(RUNE_CATEGORY_BEHAVIOR)[0].rune_id
+        rune_rules.equip_rune(progress, stat_id)
+        rune_rules.equip_rune(progress, behavior_id)
+        return stat_id, behavior_id
+
+    def test_snapshot_and_restore_round_trip_includes_runes(self):
+        import rune_rules
+        progress = PlayerProgress()
+        stat_id, behavior_id = self._equip_some_runes(progress)
+
+        snapshot = progress.snapshot_run_state()
+        rune_rules.clear_loadout(progress)
+        self.assertFalse(rune_rules.has_rune(progress, stat_id))
+
+        progress.restore_run_state(snapshot)
+        self.assertTrue(rune_rules.has_rune(progress, stat_id))
+        self.assertTrue(rune_rules.has_rune(progress, behavior_id))
+
+    def test_complete_dungeon_wipes_runes(self):
+        import rune_rules
+        progress = PlayerProgress()
+        progress.begin_dungeon_run("mud_caves")
+        stat_id, _ = self._equip_some_runes(progress)
+        player = SimpleNamespace(
+            coins=0, armor_hp=0, compass_uses=0,
+            equipped_runes=progress.equipped_runes,
+        )
+
+        progress.complete_dungeon_from_runtime("mud_caves", player)
+
+        self.assertFalse(rune_rules.has_rune(progress, stat_id))
+
+    def test_die_in_dungeon_wipes_runes(self):
+        import rune_rules
+        progress = PlayerProgress()
+        progress.begin_dungeon_run("mud_caves")
+        stat_id, _ = self._equip_some_runes(progress)
+
+        progress.die_in_dungeon("mud_caves")
+
+        self.assertFalse(rune_rules.has_rune(progress, stat_id))
+
+
 if __name__ == "__main__":
     unittest.main()

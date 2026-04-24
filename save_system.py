@@ -6,6 +6,7 @@ the game files as ``save_data.db``.
 import os
 import sqlite3
 
+import rune_rules
 from progress import PlayerProgress, DungeonProgress
 
 _DB_PATH = os.path.join(os.path.dirname(__file__), "save_data.db")
@@ -46,6 +47,13 @@ CREATE TABLE IF NOT EXISTS equipped_slots (
 CREATE TABLE IF NOT EXISTS weapon_upgrades (
     weapon_id TEXT PRIMARY KEY,
     tier      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS equipped_runes (
+    category   TEXT    NOT NULL,
+    slot_index INTEGER NOT NULL,
+    rune_id    TEXT    NOT NULL,
+    PRIMARY KEY (category, slot_index)
 );
 """
 
@@ -142,6 +150,17 @@ def save_progress(progress: PlayerProgress):
                 (weapon_id, tier),
             )
 
+        # equipped runes
+        cur.execute("DELETE FROM equipped_runes")
+        rune_loadout = rune_rules.serialize_loadout(progress.equipped_runes)
+        for category, rune_ids in rune_loadout.items():
+            for slot_index, rune_id in enumerate(rune_ids):
+                cur.execute(
+                    "INSERT INTO equipped_runes (category, slot_index, rune_id) "
+                    "VALUES (?, ?, ?)",
+                    (category, slot_index, rune_id),
+                )
+
         conn.commit()
     finally:
         conn.close()
@@ -203,6 +222,19 @@ def load_progress() -> PlayerProgress:
         cur.execute("SELECT weapon_id, tier FROM weapon_upgrades")
         for weapon_id, tier in cur.fetchall():
             progress.weapon_upgrades[weapon_id] = tier
+
+        # equipped runes
+        progress.equipped_runes = rune_rules.empty_loadout()
+        cur.execute(
+            "SELECT category, slot_index, rune_id FROM equipped_runes "
+            "ORDER BY category, slot_index"
+        )
+        rune_rows = cur.fetchall()
+        if rune_rows:
+            grouped: dict[str, list[str]] = {}
+            for category, _slot_index, rune_id in rune_rows:
+                grouped.setdefault(category, []).append(rune_id)
+            progress.equipped_runes = rune_rules.normalize_loadout(grouped)
 
         progress.migrate_legacy_state()
 

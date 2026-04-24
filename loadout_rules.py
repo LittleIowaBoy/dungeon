@@ -4,7 +4,6 @@ from item_catalog import (
     DEFAULT_EQUIPPED_SLOTS,
     EQUIPMENT_SLOTS,
     ITEM_DATABASE,
-    LEGACY_WEAPON_PLUS_IDS,
     STARTER_WEAPON_IDS,
     UPGRADEABLE_WEAPON_IDS,
     WEAPON_EQUIPMENT_SLOTS,
@@ -99,12 +98,7 @@ def build_runtime_weapon_state(progress, weapon_factory):
 
 
 def resolve_runtime_weapon_upgrade_tiers(progress):
-    upgrade_tiers = dict(getattr(progress, "weapon_upgrades", {}))
-    inventory = getattr(progress, "inventory", {})
-    for legacy_item_id, weapon_id in LEGACY_WEAPON_PLUS_IDS.items():
-        if inventory.get(legacy_item_id, 0) > 0:
-            upgrade_tiers[weapon_id] = max(upgrade_tiers.get(weapon_id, 0), 1)
-    return upgrade_tiers
+    return dict(getattr(progress, "weapon_upgrades", {}))
 
 
 def can_equip(progress, slot, item_id):

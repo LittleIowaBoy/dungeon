@@ -6,7 +6,13 @@ import pygame
 from settings import COLOR_COIN, COLOR_HEALTH_BAR, COLOR_PORTAL, COLOR_WHITE
 
 import consumable_rules
+import ability_rules
+import behavior_runes
+import dodge_rules
+import identity_runes
+import rune_rules
 import tool_rules
+from rune_catalog import RUNE_CATEGORIES, RUNE_DATABASE
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,48 @@ class RoomIdentifierHUDView:
 
 
 @dataclass(frozen=True)
+class EquippedRuneHUDView:
+    name: str
+    category: str
+    short_label: str
+
+
+@dataclass(frozen=True)
+class EquippedRunesHUDView:
+    runes: tuple[EquippedRuneHUDView, ...]
+
+
+@dataclass(frozen=True)
+class RuneMeterHUDView:
+    visible: bool
+    label: str
+    fill_fraction: float
+    kind: str  # "time_anchor" | "static_charge" | "glass_soul_iframe"
+
+
+@dataclass(frozen=True)
+class RuneMetersHUDView:
+    time_anchor: RuneMeterHUDView
+    static_charge: RuneMeterHUDView
+    glass_soul_iframe: RuneMeterHUDView
+
+
+@dataclass(frozen=True)
+class DodgeHUDView:
+    ready: bool
+    active: bool
+    cooldown_fraction: float  # 0.0 ready → 1.0 just triggered
+
+
+@dataclass(frozen=True)
+class AbilityHUDView:
+    equipped: bool
+    label: str
+    ready: bool
+    cooldown_fraction: float
+
+
+@dataclass(frozen=True)
 class OverlayHUDView:
     title: str
     title_color: tuple[int, int, int]
@@ -87,6 +135,10 @@ class HUDView:
     compass: CompassHUDView
     objective: ObjectiveHUDView
     room_identifier: RoomIdentifierHUDView
+    equipped_runes: EquippedRunesHUDView
+    rune_meters: RuneMetersHUDView
+    dodge: DodgeHUDView
+    ability: AbilityHUDView
 
 
 def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
@@ -109,6 +161,10 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
             now_ticks,
             show_room_identifier,
         ),
+        equipped_runes=_build_equipped_runes_view(player),
+        rune_meters=_build_rune_meters_view(player, now_ticks),
+        dodge=_build_dodge_view(player, now_ticks),
+        ability=_build_ability_view(player, now_ticks),
     )
 
 
@@ -234,4 +290,109 @@ def _build_room_identifier_view(dungeon, now_ticks, show_room_identifier):
         visible=bool(state.get("visible")),
         title=state.get("title", ""),
         detail=state.get("detail", ""),
+    )
+
+
+_RUNE_CATEGORY_SHORT = {
+    "stat":     "S",
+    "behavior": "B",
+    "identity": "I",
+}
+
+
+def _build_equipped_runes_view(player):
+    loadout = rune_rules.equipped_runes(player)
+    runes = []
+    for category in RUNE_CATEGORIES:
+        for rune_id in loadout.get(category, ()):
+            rune = RUNE_DATABASE.get(rune_id)
+            if rune is None:
+                continue
+            short = _RUNE_CATEGORY_SHORT.get(category, "?")
+            runes.append(
+                EquippedRuneHUDView(
+                    name=rune.name,
+                    category=category,
+                    short_label=f"[{short}] {rune.name}",
+                )
+            )
+    return EquippedRunesHUDView(runes=tuple(runes))
+
+
+_HIDDEN_RUNE_METER = RuneMeterHUDView(
+    visible=False, label="", fill_fraction=0.0, kind=""
+)
+
+
+def _build_rune_meters_view(player, now_ticks):
+    # Time Anchor patience meter
+    if rune_rules.has_rune(player, "time_anchor"):
+        meter = max(0.0, min(1.0, identity_runes.time_anchor_meter(player)))
+        time_anchor = RuneMeterHUDView(
+            visible=True,
+            label=("Time Anchor READY" if meter >= 1.0 else "Time Anchor"),
+            fill_fraction=meter,
+            kind="time_anchor",
+        )
+    else:
+        time_anchor = _HIDDEN_RUNE_METER
+
+    # Static Charge meter
+    if rune_rules.has_rune(player, "static_charge"):
+        charge = max(0.0, min(1.0, behavior_runes.static_charge_value(player)))
+        static_charge = RuneMeterHUDView(
+            visible=True,
+            label=("Static Charge FULL" if charge >= 1.0 else "Static Charge"),
+            fill_fraction=charge,
+            kind="static_charge",
+        )
+    else:
+        static_charge = _HIDDEN_RUNE_METER
+
+    # Glass Soul i-frame countdown
+    if rune_rules.has_rune(player, "glass_soul"):
+        until = int(getattr(player, "_invincible_until", 0) or 0)
+        remaining_ms = max(0, until - int(now_ticks))
+        if remaining_ms > 0:
+            fraction = min(
+                1.0, remaining_ms / float(identity_runes.GLASS_SOUL_INVINCIBLE_MS)
+            )
+            glass_soul = RuneMeterHUDView(
+                visible=True,
+                label=f"i-frames {remaining_ms / 1000:.1f}s",
+                fill_fraction=fraction,
+                kind="glass_soul_iframe",
+            )
+        else:
+            glass_soul = RuneMeterHUDView(
+                visible=True,
+                label="Glass Soul",
+                fill_fraction=0.0,
+                kind="glass_soul_iframe",
+            )
+    else:
+        glass_soul = _HIDDEN_RUNE_METER
+
+    return RuneMetersHUDView(
+        time_anchor=time_anchor,
+        static_charge=static_charge,
+        glass_soul_iframe=glass_soul,
+    )
+
+
+def _build_dodge_view(player, now_ticks):
+    return DodgeHUDView(
+        ready=dodge_rules.can_dodge(player, now_ticks),
+        active=dodge_rules.is_dodging(player, now_ticks),
+        cooldown_fraction=dodge_rules.cooldown_fraction_remaining(player, now_ticks),
+    )
+
+
+def _build_ability_view(player, now_ticks):
+    ability_id = getattr(player, "active_ability_id", None)
+    return AbilityHUDView(
+        equipped=ability_rules.has_ability(player),
+        label=ability_id or "",
+        ready=ability_rules.can_activate(player, now_ticks),
+        cooldown_fraction=ability_rules.cooldown_fraction_remaining(player, now_ticks),
     )

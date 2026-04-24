@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from dungeon_config import DUNGEONS
+from rune_catalog import RUNE_DATABASE, RUNE_SLOT_CAPACITY
 
 
 @dataclass(frozen=True)
@@ -348,4 +349,57 @@ def build_level_complete_screen_view(screen):
         detail_lines=tuple(screen.detail_lines),
         options=options,
         selected_index=selected_index,
+    )
+
+
+@dataclass(frozen=True)
+class RuneAltarPickCardView:
+    name: str
+    category_label: str
+    slot_status: str
+    bonus_text: str
+    tradeoff_text: str
+
+
+@dataclass(frozen=True)
+class RuneAltarPickView:
+    title: str
+    subtitle: str
+    cards: tuple[RuneAltarPickCardView, ...]
+    selected_index: int
+    empty_message: str
+    footer_hint: str
+
+
+def build_rune_altar_pick_view(screen, progress):
+    cards = []
+    equipped = getattr(progress, "equipped_runes", {}) or {}
+    for rune_id in screen.offered_rune_ids:
+        rune = RUNE_DATABASE.get(rune_id)
+        if rune is None:
+            continue
+        category_runes = equipped.get(rune.category, [])
+        capacity = RUNE_SLOT_CAPACITY.get(rune.category, 0)
+        if len(category_runes) >= capacity and category_runes:
+            displaced = RUNE_DATABASE.get(category_runes[0])
+            displaced_name = displaced.name if displaced else category_runes[0]
+            slot_status = f"Slot full — replaces {displaced_name}"
+        else:
+            slot_status = f"Slot {len(category_runes) + 1}/{capacity}"
+        cards.append(
+            RuneAltarPickCardView(
+                name=rune.name,
+                category_label=f"{rune.category.title()} Rune",
+                slot_status=slot_status,
+                bonus_text=f"+ {rune.bonus_text}",
+                tradeoff_text=f"– {rune.tradeoff_text}",
+            )
+        )
+    return RuneAltarPickView(
+        title="Rune Altar",
+        subtitle="Choose one rune. Picking is permanent for this run.",
+        cards=tuple(cards),
+        selected_index=min(screen.selected, max(0, len(cards) - 1)),
+        empty_message="No runes available.",
+        footer_hint="Left/Right: select  Enter: equip  Esc: cancel",
     )

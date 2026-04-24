@@ -4,6 +4,9 @@ import math
 
 import pygame
 
+import dodge_rules
+import status_effects
+import time_rules
 from settings import ICE_FRICTION, PLAYER_BASE_SPEED, TERRAIN_SPEED
 
 
@@ -36,6 +39,13 @@ def update_motion(player, wall_rects, terrain_at, keys):
     speed = PLAYER_BASE_SPEED * player._effective_speed_multiplier()
     terrain_multiplier = TERRAIN_SPEED.get(terrain, 1.0)
 
+    now_ticks = pygame.time.get_ticks()
+    speed *= status_effects.speed_multiplier(player, now_ticks)
+    speed *= time_rules.get_time_scale(player)
+    if status_effects.is_immobilized(player, now_ticks):
+        raw_dx = 0.0
+        raw_dy = 0.0
+
     if player._on_ice:
         player.velocity_x += raw_dx * speed * 0.15
         player.velocity_y += raw_dy * speed * 0.15
@@ -44,6 +54,11 @@ def update_motion(player, wall_rects, terrain_at, keys):
     else:
         player.velocity_x = raw_dx * speed * terrain_multiplier
         player.velocity_y = raw_dy * speed * terrain_multiplier
+
+    # Dodge override — locks velocity into a frozen burst direction.
+    dodge_v = dodge_rules.dodge_velocity(player, pygame.time.get_ticks(), speed)
+    if dodge_v is not None:
+        player.velocity_x, player.velocity_y = dodge_v
 
     move_axis(player, player.velocity_x, 0, wall_rects)
     move_axis(player, 0, player.velocity_y, wall_rects)

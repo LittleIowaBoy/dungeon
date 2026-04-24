@@ -7,11 +7,11 @@ import copy
 
 from dungeon_config import DUNGEONS
 import loadout_rules
+import rune_rules
 from item_catalog import (
     DEFAULT_EQUIPPED_SLOTS,
     EQUIPMENT_SLOTS,
     ITEM_DATABASE,
-    LEGACY_WEAPON_PLUS_IDS,
     STARTER_WEAPON_IDS,
     UPGRADEABLE_WEAPON_IDS,
     WEAPON_EQUIPMENT_SLOTS,
@@ -65,6 +65,9 @@ class PlayerProgress:
         self.armor_hp = 0        # current armor durability
         self.compass_uses = 0    # remaining compass uses
 
+        # Runes (per-dungeon loadout, wiped on completion or death)
+        self.equipped_runes: dict[str, list[str]] = rune_rules.empty_loadout()
+
         # Dungeon difficulty preference: "default", "medium", or "hard".
         # Persisted across sessions.  Drives grid size during dungeon generation.
         self.difficulty_preference: str = "default"
@@ -91,6 +94,7 @@ class PlayerProgress:
             "inventory": copy.deepcopy(self.inventory),
             "armor_hp": self.armor_hp,
             "compass_uses": self.compass_uses,
+            "equipped_runes": rune_rules.serialize_loadout(self.equipped_runes),
         }
 
     def restore_run_state(self, snapshot):
@@ -99,12 +103,16 @@ class PlayerProgress:
         self.inventory = copy.deepcopy(snapshot["inventory"])
         self.armor_hp = snapshot["armor_hp"]
         self.compass_uses = snapshot["compass_uses"]
+        self.equipped_runes = rune_rules.normalize_loadout(
+            snapshot.get("equipped_runes")
+        )
 
     def sync_runtime_state(self, player):
         """Sync runtime player values back into persistent progress."""
         self.coins = player.coins
         self.armor_hp = player.armor_hp
         self.compass_uses = player.compass_uses
+        rune_rules.sync_progress_to_runtime(self, player)
 
     def begin_dungeon_run(self, dungeon_id):
         """Mark a dungeon run active and capture its pre-level revert point."""
@@ -119,6 +127,8 @@ class PlayerProgress:
         """Mark the dungeon complete and persist run resources."""
         self.sync_dungeon_run(player)
         self.get_dungeon(dungeon_id).complete()
+        # Runes are per-dungeon and wipe on completion.
+        self.equipped_runes = rune_rules.empty_loadout()
         return True, None
 
     def abandon_dungeon_run(self, snapshot):
@@ -134,10 +144,6 @@ class PlayerProgress:
         loadout_rules.ensure_loadout_state(self)
 
     def migrate_legacy_state(self):
-        for legacy_item_id, weapon_id in LEGACY_WEAPON_PLUS_IDS.items():
-            if self.inventory.pop(legacy_item_id, 0) > 0:
-                self.set_weapon_upgrade(weapon_id, 1)
-
         if self.inventory.pop("armor", 0) > 0 and self.total_owned("armor") == 0:
             if self.equipped_slots.get("chest") is None:
                 self.equipped_slots["chest"] = "armor"
@@ -195,8 +201,7 @@ class PlayerProgress:
         # Clear equipment that is lost on death
         self.armor_hp = 0
         self.compass_uses = 0
-        for legacy_item_id in LEGACY_WEAPON_PLUS_IDS:
-            self.inventory.pop(legacy_item_id, None)
+        self.equipped_runes = rune_rules.empty_loadout()
         for weapon_id in self.weapon_upgrades:
             self.weapon_upgrades[weapon_id] = 0
         self.inventory.pop("armor", None)
