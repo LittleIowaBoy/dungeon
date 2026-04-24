@@ -692,9 +692,9 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
         ),
         _override_template(
             "trap_gauntlet",
-            display_name="Floodgate Sweep Run",
-            objective_variant="sweeper_lanes",
-            notes="Navigate floodgate sweepers, or arm the bonus lane for a richer vault chest.",
+            display_name="Floodgate Hazard Run",
+            objective_variant="mixed_lanes",
+            notes="Use the entry and checkpoint switches to reroute through a mixed floodgate gauntlet of sweepers, vents, and crushers, then commit to the challenge lane for the vault cache.",
         ),
         _override_template(
             "stealth_passage",
@@ -707,13 +707,13 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
         ),
         _override_template(
             "puzzle_gated_doors",
-            display_name="Tidal Rune Locks",
-            objective_variant="paired_runes",
+            display_name="Tidal Counter-Seals",
+            objective_variant="staggered_plates",
             objective_label="Glyph",
             objective_entity_count=4,
             puzzle_reinforcement_count=2,
             puzzle_stall_duration_ms=2200,
-            notes="Match tidal glyph pairs while waves punish lingering on the wrong marker.",
+            notes="Follow the staggered tidal glyph order while waves punish resets and lingering on the wrong marker.",
         ),
         _override_template(
             "ritual_disruption",

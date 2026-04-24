@@ -17,7 +17,7 @@ The current architecture already gives us the right seams:
 
 The next work should preserve that split and push more decision-making into data and planning rather than adding more one-off room logic inside `Dungeon`.
 
-## Status Checkpoint (2026-04-22)
+## Status Checkpoint (2026-04-23)
 
 This plan now doubles as a resume point for the current implementation state.
 
@@ -31,8 +31,9 @@ This plan now doubles as a resume point for the current implementation state.
 
 ### Implemented mechanic depth so far
 
+- trap gauntlets now support dedicated sweeper, vent, crusher, and mixed-hazard variants, with entry switches, checkpoint reroutes, and challenge-side reward placement.
 - escort rooms have active escort actors, cleanup fallback on escort death, metadata-driven spawn and durability tuning, and bomb-carrier safe-lane gating.
-- puzzle rooms use metadata-driven plate counts, labels, layout offsets, and trigger padding.
+- puzzle rooms use metadata-driven plate counts, labels, layout offsets, trigger padding, and ordered, staggered, and paired rule variants.
 - holdout rooms now require defending a zone when configured and support scripted reinforcement wave sizes.
 - ritual rooms now support altar roles, reinforcement reactions, ward-linked shielding, and a revealed reliquary payoff on completion.
 - resource-race rooms now support timed prize forfeiture, chest lockout, and fallback cleanup after the reward is lost.
@@ -42,8 +43,7 @@ This plan now doubles as a resume point for the current implementation state.
 
 ### Still shallow relative to the full plan
 
-- trap gauntlet is still mostly terrain shaping plus reward placement; dedicated trap entities and lane logic are still pending.
-- puzzle rooms still lack rule variants, anti-camping reactions, and alternate solve routes.
+- puzzle rooms still lack broader anti-camping reactions and alternate solve routes beyond their ordered, staggered, and paired rule sets.
 - holdout rooms still lack rotating hazard phases and optional pressure-reduction side actions.
 - escort rooms still lack checkpoints, reward grading, and biome-specific variants.
 - ritual rooms now cover the first linked-state/payoff slice, but still lack timing windows, tether variants, and biome-specific ritual layouts.
@@ -467,8 +467,15 @@ The original generator-foundation targets are complete enough that the next work
 
 Recommended next continuation order:
 
-1. implement `Trap Gauntlet` Phase G1 and G2 so branch rooms gain real hazard identity instead of relying on terrain patches,
-2. implement `Puzzle-Gated Doors` Phase P1 so plate rooms start differentiating by rule set rather than only layout,
-3. implement `Survival Holdout` Phase H3 so the player gets optional side actions that reduce pressure during longer finales,
-4. return to `Ritual Disruption` for timing-window or tether variants only after another family gains comparable depth,
-5. leave escort reward grading and branch archetype specialization for a later pass once trap, puzzle, and holdout depth are in place.
+1. continue `Puzzle-Gated Doors` Phase P1 so plate rooms gain stronger anti-camping reactions and alternate solve routes on top of ordered, staggered, and paired variants,
+2. implement `Survival Holdout` Phase H3 so the player gets optional side actions that reduce pressure during longer finales,
+3. return to `Ritual Disruption` for timing-window or tether variants only after another family gains comparable depth,
+4. leave escort reward grading and branch archetype specialization for a later pass once puzzle and holdout depth are in place.
+
+## Handoff Snapshot (2026-04-23)
+
+- Milestone 1 (`Trap Gauntlet` G1/G2) is complete in the current branch. The room family now covers sweeper, vent, crusher, and mixed-hazard variants, with entry switches, checkpoint reroutes, and challenge-side reward placement.
+- Milestone 2 (`Puzzle-Gated Doors` P1) has started. The ordered-plate path now supports controller-owned target sequences, and a first new rule variant (`staggered_plates`) is live through the Sunken Ruins override.
+- Verified during this handoff pass: `python -m unittest discover -s tests -p test_room_objectives.py`, `python -m unittest discover -s tests -p test_content_db.py`, `python -m unittest discover -s tests -p test_room_test_catalog.py`, and the targeted Room Tests menu projection check in `test_menu_view.py -k room_test_select_view`.
+- Known residual note: a broader `test_menu_view.py` run previously exposed an unrelated shop-view assertion failure that was not part of this milestone work and was left untouched.
+- Recommended immediate next slice: keep Milestone 2 local to puzzle rooms by adding a puzzle-specific anti-camping reaction or one alternate-solve route, then rerun the same focused suites before widening scope.

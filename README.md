@@ -92,8 +92,8 @@ The overlay is intentionally non-persistent. It does not change objectives, rewa
 
 The current room families now expose more of their mechanics directly in runtime play and play-testing:
 
-- trap gauntlets use switchable safe lanes, challenge lanes, and upgraded chest rewards across sweeper, vent, and crusher variants
-- puzzle rooms support ordered plates and paired-rune variants, including reinforcement penalties for resets or stalling
+- trap gauntlets use switchable safe lanes, checkpoint reroutes, and challenge-side cache placement across sweeper, vent, crusher, and mixed-hazard variants
+- puzzle rooms support ordered plates, staggered-sequence plates, and paired-rune variants, including reinforcement penalties for resets or stalling
 - holdout rooms can spawn stabilizers that delay future reinforcement waves and add clearer target guidance
 - ritual rooms can gate altar damage behind pulse windows for biome-specific timing play
 - resource race rooms now escalate claimant pressure, allow steal-back/reclaim loops, and rename relic objectives per biome
@@ -135,8 +135,8 @@ Breadth-first roadmap work completed so far:
 - main-menu Room Tests selector with biome-aware single-room launches
 - topology-first generation with path metadata, branch shaping, and terminal reward tiers
 - runtime-toggleable play-test room identifier overlay
-- trap gauntlet depth slice
-- puzzle gated doors depth slice
+- trap gauntlet milestone closure: mixed hazard lanes, checkpoint reroutes, and challenge-side vault placement
+- puzzle gated doors milestone started: staggered-sequence variant added on top of ordered and paired rules
 - survival holdout depth slice
 - ritual disruption timing-window slice
 - breadth pass across resource race, stealth passage, and timed extraction
@@ -149,6 +149,7 @@ Deferred follow-up after the initial breadth-first roadmap sweep:
 1. Resource Race C2: interrupt and steal-back interactions
 2. Stealth Passage S1/S2: patrol routes, vision cones, and partial-detection escalation
 3. Timed Extraction T1/T2: route-closing events and stronger pursuit scripting
+4. Puzzle P1 follow-up: additional anti-camping and alternate-solve variants beyond ordered, staggered, and paired rule sets
 
 ## Project Layout
 

@@ -49,6 +49,28 @@ class RoomTestCatalogTests(unittest.TestCase):
         self.assertEqual(plan.reward_tier, "finale_bonus")
         self.assertEqual(plan.enemy_type_weights, (20, 30, 50))
 
+    def test_load_room_test_entries_includes_trap_biome_variants(self):
+        entries = [
+            entry
+            for entry in load_room_test_entries()
+            if entry.room_id == "trap_gauntlet"
+        ]
+
+        self.assertEqual(
+            [entry.context_label for entry in entries],
+            ["Base Layout", "Mud Caverns", "Frozen Depths", "Sunken Ruins"],
+        )
+        self.assertEqual(
+            [entry.display_name for entry in entries],
+            [
+                "Trap Gauntlet",
+                "Boulder Sweep Run",
+                "Frost Vent Gauntlet",
+                "Floodgate Hazard Run",
+            ],
+        )
+        self.assertEqual(entries[-1].objective_variant, "mixed_lanes")
+
 
 if __name__ == "__main__":
     unittest.main()

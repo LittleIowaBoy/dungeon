@@ -154,6 +154,12 @@ def build_dungeon_select_view(screen):
     )
 
 
+def _format_room_test_variant_label(variant_label):
+    if not variant_label:
+        return "Base rules"
+    return variant_label.replace("_", " ").title()
+
+
 def build_room_test_select_view(screen):
     entries = screen.entries
     if not entries:
@@ -195,7 +201,7 @@ def build_room_test_select_view(screen):
             f"Context: {selected_entry.context_label}"
             f" (launch profile: {selected_entry.profile_dungeon_name})"
         )
-    variant_label = selected_entry.objective_variant or "Base rules"
+    variant_label = _format_room_test_variant_label(selected_entry.objective_variant)
 
     return RoomTestSelectView(
         title="Room Tests",

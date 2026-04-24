@@ -51,7 +51,7 @@ class MenuViewProjectionTests(unittest.TestCase):
             (
                 "Family: Ritual Disruption",
                 "Context: Frozen Depths",
-                "Variant: frost_obelisk",
+                "Variant: Frost Obelisk",
             ),
         )
         self.assertEqual(view.footer_hint, "Enter: start room  Esc: back")

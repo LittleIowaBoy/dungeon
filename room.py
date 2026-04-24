@@ -706,13 +706,14 @@ class Room:
             total = len(self.objective_entity_configs)
             activated = total - self.remaining_puzzle_plates()
             label = pluralize_label(self._plate_label()).lower()
-            next_target = min(total, controller.get("progress_index", 0) + 1)
+            next_target = self._puzzle_expected_label(controller)
             reset_suffix = ""
             if controller.get("last_reset_label"):
                 reset_suffix = f" | Reset on {controller['last_reset_label']}"
+            next_suffix = f" | Next {next_target}" if next_target else ""
             return {
                 "visible": True,
-                "label": f"Objective: Charge {label} {activated}/{total} | Next {next_target}{reset_suffix}{pressure_suffix}",
+                "label": f"Objective: Charge {label} {activated}/{total}{next_suffix}{reset_suffix}{pressure_suffix}",
             }
 
         if rule in {"escort_to_exit", "escort_bomb_to_exit"} and self.is_exit:
@@ -861,6 +862,9 @@ class Room:
             label = pluralize_label(self._plate_label()).lower()
             if self._puzzle_variant() == "paired_runes":
                 return f"Solve: Match two {label} with the same symbol. Changing symbols or waiting too long summons reinforcements."
+            if self._puzzle_variant() == "staggered_plates":
+                sequence = ", ".join(self._puzzle_sequence_labels())
+                return f"Solve: Follow the staggered {label} order {sequence}. Wrong steps or stalling summon reinforcements."
             return f"Solve: Activate the numbered {label} in order to unlock the exit. Wrong steps or stalling summon reinforcements."
 
         if rule == "escort_to_exit":
@@ -937,6 +941,8 @@ class Room:
                 variant = (self.room_plan.objective_variant or "sweeper_lanes").lower()
                 if variant == "vent_lanes":
                     return "Solve: Step on a lane switch to shut down one vent lane. The challenge lane still pulses but upgrades the chest."
+                if variant == "mixed_lanes":
+                    return "Solve: Use the entry and checkpoint switches to reroute through mixed trap lanes. The challenge lane keeps every hazard live but upgrades the chest."
                 if variant == "crusher_corridors":
                     return "Solve: Pick a corridor and time the crushers. The challenge corridor stays active but upgrades the chest."
                 return "Solve: Step on a lane switch to disable one sweeper lane. The challenge lane stays partially live but upgrades the chest."
@@ -1197,6 +1203,52 @@ class Room:
             return self.room_plan.objective_variant
         return "ordered_plates"
 
+    def _puzzle_target_sequence(self, variant=None, plate_count=0):
+        if variant is None:
+            variant = self._puzzle_variant()
+        if plate_count <= 0:
+            plate_count = len(self.objective_entity_configs)
+        if variant == "staggered_plates":
+            return tuple(range(0, plate_count, 2)) + tuple(range(1, plate_count, 2))
+        return tuple(range(plate_count))
+
+    def _puzzle_expected_plate_id(self, controller=None):
+        controller = controller or self._puzzle_controller() or {}
+        sequence = controller.get("target_sequence") or self._puzzle_target_sequence(
+            controller.get("variant", self._puzzle_variant()),
+            len(controller.get("configs", ())),
+        )
+        progress_index = controller.get("progress_index", 0)
+        if progress_index < 0 or progress_index >= len(sequence):
+            return None
+        return sequence[progress_index]
+
+    def _puzzle_expected_label(self, controller=None):
+        controller = controller or self._puzzle_controller() or {}
+        expected_plate_id = self._puzzle_expected_plate_id(controller)
+        if expected_plate_id is None:
+            return ""
+        for config in controller.get("configs", ()):
+            if config.get("plate_id", config.get("order_index", 0)) == expected_plate_id:
+                return config.get("telegraph_text", str(expected_plate_id + 1))
+        return str(expected_plate_id + 1)
+
+    def _puzzle_sequence_labels(self, controller=None):
+        controller = controller or self._puzzle_controller() or {}
+        sequence = controller.get("target_sequence") or self._puzzle_target_sequence(
+            controller.get("variant", self._puzzle_variant()),
+            len(controller.get("configs", ())),
+        )
+        labels = []
+        for plate_id in sequence:
+            label = str(plate_id + 1)
+            for config in controller.get("configs", ()):
+                if config.get("plate_id", config.get("order_index", 0)) == plate_id:
+                    label = config.get("telegraph_text", label)
+                    break
+            labels.append(label)
+        return tuple(labels)
+
     def _puzzle_target_configs(self):
         active_plates = [
             config for config in self.objective_entity_configs if not config.get("activated")
@@ -1220,9 +1272,11 @@ class Room:
                 return primed_targets
             return active_plates
 
-        expected_index = controller.get("progress_index", 0)
+        expected_plate_id = self._puzzle_expected_plate_id(controller)
         ordered_targets = [
-            config for config in active_plates if config.get("order_index", 0) == expected_index
+            config
+            for config in active_plates
+            if config.get("plate_id", config.get("order_index", 0)) == expected_plate_id
         ]
         return ordered_targets or active_plates
 
@@ -1294,7 +1348,7 @@ class Room:
             progress_index = controller.get("progress_index", 0)
             if progress_index <= 0:
                 return False
-            next_label = str(min(len(controller.get("configs", ())), progress_index + 1))
+            next_label = self._puzzle_expected_label(controller)
             for config in controller.get("configs", ()): 
                 config["activated"] = False
                 config["primed"] = False
@@ -1406,6 +1460,8 @@ class Room:
         lane_count = max(2, min(4, self.room_plan.objective_entity_count or 3))
         if trap_variant == "crusher_corridors":
             lane_count = 2
+        elif trap_variant == "mixed_lanes":
+            lane_count = max(3, lane_count)
         orientation = self._trap_orientation()
         lane_offsets = self._trap_lane_offsets(lane_count)
         lane_labels = self._trap_lane_labels(orientation, lane_count)
@@ -1425,7 +1481,8 @@ class Room:
         }
         configs = []
         for index, offset in enumerate(lane_offsets):
-            if trap_variant == "vent_lanes":
+            lane_hazard = self._trap_lane_hazard_kind(trap_variant, index)
+            if lane_hazard == "vent_lanes":
                 configs.append(
                     self._trap_vent_config(
                         controller,
@@ -1435,7 +1492,7 @@ class Room:
                         index,
                     )
                 )
-            elif trap_variant == "crusher_corridors":
+            elif lane_hazard == "crusher_corridors":
                 configs.extend(
                     self._trap_crusher_configs(
                         controller,
@@ -1454,21 +1511,34 @@ class Room:
                         index,
                     )
                 )
-            configs.append(
-                self._trap_switch_config(
-                    controller,
-                    orientation,
-                    offset,
-                    lane_labels[index],
-                    index,
-                    switch_bank,
+            for active_switch_bank in self._trap_switch_banks(trap_variant, switch_bank):
+                configs.append(
+                    self._trap_switch_config(
+                        controller,
+                        orientation,
+                        offset,
+                        lane_labels[index],
+                        index,
+                        active_switch_bank,
+                    )
                 )
-            )
         return configs
+
+    @staticmethod
+    def _trap_lane_hazard_kind(trap_variant, lane_index):
+        if trap_variant == "mixed_lanes":
+            return ("sweeper_lanes", "vent_lanes", "crusher_corridors")[lane_index % 3]
+        return trap_variant
+
+    @staticmethod
+    def _trap_switch_banks(trap_variant, primary_switch_bank):
+        if trap_variant == "mixed_lanes":
+            return (primary_switch_bank, "checkpoint")
+        return (primary_switch_bank,)
 
     def _build_puzzle_plate_configs(self):
         variant = self._puzzle_variant()
-        plate_count = self.room_plan.objective_entity_count or (4 if variant == "paired_runes" else 3)
+        plate_count = self.room_plan.objective_entity_count or (4 if variant in {"paired_runes", "staggered_plates"} else 3)
         if variant == "paired_runes" and plate_count % 2 == 1:
             plate_count += 1
 
@@ -1506,6 +1576,7 @@ class Room:
                 configs.append(
                     {
                         "kind": "pressure_plate",
+                        "plate_id": index,
                         "label": self._plate_label(),
                         "pos": pos,
                         "trigger_padding": self.room_plan.objective_trigger_padding or 10,
@@ -1521,6 +1592,7 @@ class Room:
                 configs.append(
                     {
                         "kind": "pressure_plate",
+                        "plate_id": index,
                         "label": self._plate_label(),
                         "pos": pos,
                         "trigger_padding": self.room_plan.objective_trigger_padding or 10,
@@ -1531,6 +1603,7 @@ class Room:
                         "telegraph_text": str(index + 1),
                     }
                 )
+            controller["target_sequence"] = self._puzzle_target_sequence(variant, plate_count)
         controller["configs"] = configs
         return configs
 
@@ -1601,17 +1674,24 @@ class Room:
 
     def _trap_switch_config(self, controller, orientation, offset, label, lane_index, switch_bank):
         if orientation == "horizontal":
-            col = 2 if switch_bank == "left" else ROOM_COLS - 3
+            if switch_bank == "checkpoint":
+                col = ROOM_COLS // 2
+            else:
+                col = 2 if switch_bank == "left" else ROOM_COLS - 3
             row = ROOM_ROWS // 2 + offset
         else:
             col = ROOM_COLS // 2 + offset
-            row = 2 if switch_bank == "top" else ROOM_ROWS - 3
+            if switch_bank == "checkpoint":
+                row = ROOM_ROWS // 2
+            else:
+                row = 2 if switch_bank == "top" else ROOM_ROWS - 3
 
         return {
             "kind": "trap_lane_switch",
             "lane_index": lane_index,
             "label": label,
             "controller": controller,
+            "switch_bank": switch_bank,
             "pos": (col * TILE_SIZE + TILE_SIZE // 2, row * TILE_SIZE + TILE_SIZE // 2),
             "trigger_padding": self.room_plan.objective_trigger_padding or 18,
             "selected": lane_index == controller["safe_lane"],
@@ -1675,6 +1755,9 @@ class Room:
         if controller.get("variant") == "crusher_corridors":
             self._shape_crusher_corridors(controller)
             return
+        if controller.get("variant") == "mixed_lanes":
+            self._shape_mixed_lanes(controller)
+            return
 
         orientation = controller["orientation"]
         for offset in controller["lane_offsets"]:
@@ -1684,6 +1767,54 @@ class Room:
                     for c in range(1, ROOM_COLS - 1):
                         if self.grid[r][c] not in {DOOR, PORTAL, WALL}:
                             self.grid[r][c] = FLOOR
+
+    def _shape_mixed_lanes(self, controller):
+        orientation = controller["orientation"]
+        lane_offsets = tuple(controller["lane_offsets"])
+
+        if orientation == "horizontal":
+            for offset in lane_offsets:
+                row = ROOM_ROWS // 2 + offset
+                for current_row in range(max(1, row - 1), min(ROOM_ROWS - 1, row + 2)):
+                    for col in range(1, ROOM_COLS - 1):
+                        if self.grid[current_row][col] not in {DOOR, PORTAL, WALL}:
+                            self.grid[current_row][col] = FLOOR
+
+            separator_rows = [
+                ROOM_ROWS // 2 + (lane_offsets[index] + lane_offsets[index + 1]) // 2
+                for index in range(len(lane_offsets) - 1)
+            ]
+            entry_cols = range(1, 4) if controller.get("switch_bank") == "left" else range(ROOM_COLS - 4, ROOM_COLS - 1)
+            checkpoint_cols = range(max(1, ROOM_COLS // 2 - 1), min(ROOM_COLS - 1, ROOM_COLS // 2 + 2))
+            gap_cols = set(entry_cols) | set(checkpoint_cols)
+
+            for row in separator_rows:
+                for col in range(1, ROOM_COLS - 1):
+                    if self.grid[row][col] in {DOOR, PORTAL}:
+                        continue
+                    self.grid[row][col] = FLOOR if col in gap_cols else WALL
+            return
+
+        for offset in lane_offsets:
+            col = ROOM_COLS // 2 + offset
+            for current_col in range(max(1, col - 1), min(ROOM_COLS - 1, col + 2)):
+                for row in range(1, ROOM_ROWS - 1):
+                    if self.grid[row][current_col] not in {DOOR, PORTAL, WALL}:
+                        self.grid[row][current_col] = FLOOR
+
+        separator_cols = [
+            ROOM_COLS // 2 + (lane_offsets[index] + lane_offsets[index + 1]) // 2
+            for index in range(len(lane_offsets) - 1)
+        ]
+        entry_rows = range(1, 4) if controller.get("switch_bank") == "top" else range(ROOM_ROWS - 4, ROOM_ROWS - 1)
+        checkpoint_rows = range(max(1, ROOM_ROWS // 2 - 1), min(ROOM_ROWS - 1, ROOM_ROWS // 2 + 2))
+        gap_rows = set(entry_rows) | set(checkpoint_rows)
+
+        for col in separator_cols:
+            for row in range(1, ROOM_ROWS - 1):
+                if self.grid[row][col] in {DOOR, PORTAL}:
+                    continue
+                self.grid[row][col] = FLOOR if row in gap_rows else WALL
 
     def _shape_crusher_corridors(self, controller):
         orientation = controller["orientation"]
@@ -1731,12 +1862,18 @@ class Room:
             return self._random_floor_pos(margin=3)
 
         switch_bank = controller.get("switch_bank", "left")
+        challenge_offset = 0
+        if controller.get("variant") == "mixed_lanes":
+            lane_offsets = controller.get("lane_offsets", ())
+            challenge_lane = controller.get("challenge_lane", 0)
+            if 0 <= challenge_lane < len(lane_offsets):
+                challenge_offset = lane_offsets[challenge_lane]
 
         if controller.get("orientation") == "horizontal":
             col = ROOM_COLS - 3 if switch_bank == "left" else 2
-            row = ROOM_ROWS // 2
+            row = ROOM_ROWS // 2 + challenge_offset
         else:
-            col = ROOM_COLS // 2
+            col = ROOM_COLS // 2 + challenge_offset
             row = ROOM_ROWS - 3 if switch_bank == "top" else 2
         return (col * TILE_SIZE + TILE_SIZE // 2, row * TILE_SIZE + TILE_SIZE // 2)
 

@@ -250,12 +250,12 @@ class PressurePlate(pygame.sprite.Sprite):
                 and not self._config.get("primed")
             )
 
-        return self._config.get("order_index", 0) == controller.get("progress_index", 0)
+        return self._config.get("plate_id", self._config.get("order_index", 0)) == self._expected_plate_id(controller)
 
     def _sync_ordered_variant(self, controller):
-        expected_index = controller.get("progress_index", 0)
+        expected_plate_id = self._expected_plate_id(controller)
         current_tick = controller.get("now_ticks")
-        if self._config.get("order_index", 0) != expected_index:
+        if self._config.get("plate_id", self._config.get("order_index", 0)) != expected_plate_id:
             for config in controller.get("configs", ()): 
                 config["activated"] = False
                 config["primed"] = False
@@ -268,11 +268,19 @@ class PressurePlate(pygame.sprite.Sprite):
             return True
 
         self._config["activated"] = True
-        controller["progress_index"] = expected_index + 1
+        controller["progress_index"] = controller.get("progress_index", 0) + 1
         controller["last_reset_label"] = ""
         if current_tick is not None:
             controller["last_progress_at"] = current_tick
         return True
+
+    @staticmethod
+    def _expected_plate_id(controller):
+        sequence = tuple(controller.get("target_sequence") or range(len(controller.get("configs", ()))))
+        progress_index = controller.get("progress_index", 0)
+        if progress_index < 0 or progress_index >= len(sequence):
+            return None
+        return sequence[progress_index]
 
     def _sync_paired_variant(self, controller):
         pair_label = self._config.get("pair_label", self._config.get("telegraph_text", "?"))

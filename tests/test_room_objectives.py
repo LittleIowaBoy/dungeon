@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pygame
 
 from objective_entities import AltarAnchor, EscortNPC, HoldoutStabilizer, PressurePlate, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
-from room import PORTAL, Room
+from room import FLOOR, PORTAL, WALL, Room
 from room_plan import RoomPlan, RoomTemplate
 from settings import ROOM_COLS, ROOM_ROWS, TILE_SIZE
 
@@ -291,6 +291,73 @@ class RoomObjectiveTests(unittest.TestCase):
             "Solve: Pick a corridor and time the crushers. The challenge corridor stays active but upgrades the chest.",
         )
 
+    def test_trap_gauntlet_can_build_mixed_lane_variant(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+            ),
+        )
+
+        sweepers = [
+            config for config in room.objective_entity_configs if config["kind"] == "trap_sweeper"
+        ]
+        vents = [
+            config for config in room.objective_entity_configs if config["kind"] == "trap_vent_lane"
+        ]
+        crushers = [
+            config for config in room.objective_entity_configs if config["kind"] == "trap_crusher"
+        ]
+        switches = [
+            config for config in room.objective_entity_configs if config["kind"] == "trap_lane_switch"
+        ]
+
+        self.assertEqual(len(sweepers), 1)
+        self.assertEqual(len(vents), 1)
+        self.assertEqual(len(crushers), 2)
+        self.assertEqual(len(switches), 6)
+        self.assertEqual({config["switch_bank"] for config in switches}, {"left", "checkpoint"})
+        controller = room._trap_controller()
+        challenge_offset = controller["lane_offsets"][controller["challenge_lane"]]
+        expected_chest_y = room._offset_to_pixel((0, challenge_offset))[1]
+        self.assertEqual(room.chest_pos[1], expected_chest_y)
+        separator_rows = [
+            ROOM_ROWS // 2 + (controller["lane_offsets"][index] + controller["lane_offsets"][index + 1]) // 2
+            for index in range(len(controller["lane_offsets"]) - 1)
+        ]
+        self.assertEqual(room.tile_at(5, separator_rows[0]), WALL)
+        self.assertEqual(room.tile_at(5, separator_rows[1]), WALL)
+        self.assertEqual(room.tile_at(ROOM_COLS // 2, separator_rows[0]), FLOOR)
+        self.assertEqual(room.tile_at(ROOM_COLS // 2, separator_rows[1]), FLOOR)
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Safe lane Middle | Bonus route Bottom")
+
+        checkpoint_switch = next(
+            config
+            for config in switches
+            if config["switch_bank"] == "checkpoint" and config["lane_index"] == 2
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(checkpoint_switch).rect.copy())
+
+        switched = TrapLaneSwitch(checkpoint_switch).sync_player_overlap(player)
+
+        self.assertTrue(switched)
+        self.assertEqual(room._trap_controller()["safe_lane"], 2)
+        self.assertTrue(room._trap_challenge_route_selected())
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Challenge lane Bottom | Bonus route Bottom")
+        self.assertEqual(
+            room._playtest_identifier_detail(1000),
+            "Solve: Use the entry and checkpoint switches to reroute through mixed trap lanes. The challenge lane keeps every hazard live but upgrades the chest.",
+        )
+
     def test_ordered_puzzle_resets_when_player_activates_wrong_plate(self):
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
@@ -352,6 +419,45 @@ class RoomObjectiveTests(unittest.TestCase):
 
         self.assertTrue(all(config["activated"] for config in a_plates))
         self.assertEqual(room.objective_hud_state(1100)["label"], "Objective: Match runes 1/2")
+
+    def test_staggered_puzzle_variant_uses_sequence_targets_and_reset_pressure(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                enemy_count_range=(1, 1),
+                objective_variant="staggered_plates",
+                objective_label="Seal",
+                objective_entity_count=4,
+            ),
+        )
+        room.on_enter(1000)
+
+        first_plate = next(config for config in room.objective_entity_configs if config["telegraph_text"] == "1")
+        second_plate = next(config for config in room.objective_entity_configs if config["telegraph_text"] == "2")
+
+        first_sprite = PressurePlate(first_plate)
+        first_sprite.update(1050)
+        first_sprite.sync_player_overlap(SimpleNamespace(rect=first_sprite.rect.copy()))
+
+        self.assertEqual(room.objective_hud_state(1100)["label"], "Objective: Charge seals 1/4 | Next 3")
+
+        second_sprite = PressurePlate(second_plate)
+        second_sprite.update(1150)
+        second_sprite.sync_player_overlap(SimpleNamespace(rect=second_sprite.rect.copy()))
+
+        update = room.update_objective(1200, [])
+
+        self.assertEqual(update["kind"], "spawn_reinforcements")
+        self.assertEqual(update["source"], "puzzle_reaction")
+        self.assertEqual(room._puzzle_controller()["progress_index"], 0)
+        self.assertEqual(room.objective_hud_state(1200)["label"], "Objective: Charge seals 0/4 | Next 1 | Reset on 2 | Pressure spike")
+        self.assertEqual(
+            room._playtest_identifier_detail(1200),
+            "Solve: Follow the staggered seals order 1, 3, 2, 4. Wrong steps or stalling summon reinforcements.",
+        )
 
     def test_paired_rune_puzzle_summons_reinforcement_after_stalling(self):
         room = Room(
