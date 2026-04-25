@@ -3,6 +3,7 @@ import os
 import sys
 import pygame
 from chest import Chest
+from objective_entities import EscortNPC, Heartstone
 from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
@@ -36,6 +37,8 @@ from menu import (
     PauseScreen,
     LevelCompleteScreen,
     RuneAltarPickScreen,
+    AllItemsPauseScreen,
+    AllRunesPauseScreen,
 )
 from menu_view import (
     build_main_menu_view,
@@ -52,6 +55,7 @@ from shop import Shop
 import ability_rules
 import allies
 import behavior_runes
+import damage_feedback
 import dodge_rules
 import enemy_collision_rules
 import identity_runes
@@ -98,6 +102,14 @@ class Game:
         self._rune_altar_pick = RuneAltarPickScreen()
         self._pending_rune_altar = None  # config dict of altar awaiting pick
 
+        # Test-room pause sub-screens (lazy-built when entering a room test).
+        self._all_items_screen = None
+        self._all_runes_screen = None
+        # Snapshot of (equipped_slots, equipment_storage, equipped_runes) taken
+        # when entering a room test.  Restored on exit so test-room edits do
+        # not persist.  None when no room test is active.
+        self._room_test_loadout_snapshot = None
+
         # snapshot of progress before entering a level (for quit-revert)
         self._pre_level_progress_snapshot = None
 
@@ -113,6 +125,7 @@ class Game:
         self._pre_level_progress_snapshot = self.progress.begin_dungeon_run(dungeon_id)
 
         difficulty = self.progress.difficulty_preference
+        damage_feedback.reset_all()
         self.dungeon = Dungeon(dungeon_config=config, difficulty=difficulty)
 
         start_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
@@ -130,7 +143,17 @@ class Game:
         self._current_dungeon_id = entry.profile_dungeon_id
         self._pre_level_progress_snapshot = None
 
+        # Snapshot loadout state before any test-room edits.  The pause
+        # menu in test-room mode lets the player force-equip any item or
+        # rune; on exit (death, quit, or returning to the selector) we
+        # restore from this snapshot so persistent progress is unchanged.
+        self._room_test_loadout_snapshot = self._snapshot_room_test_loadout()
+        self._pause_screen.room_test_mode = True
+        self._all_items_screen = AllItemsPauseScreen(self.progress)
+        self._all_runes_screen = AllRunesPauseScreen(self.progress)
+
         room_plan = build_room_test_plan(entry)
+        damage_feedback.reset_all()
         self.dungeon = Dungeon.from_room_plan(
             entry.profile_dungeon_id, room_plan, entry_direction=spawn_direction
         )
@@ -142,6 +165,29 @@ class Game:
         self._level_complete = None
         self._enter_current_room(entry_direction=spawn_direction)
         self.state = GameState.PLAYING
+
+    def _snapshot_room_test_loadout(self):
+        """Capture equipped slots/storage/runes before test-room entry."""
+        return {
+            "equipped_slots": dict(self.progress.equipped_slots),
+            "equipment_storage": dict(self.progress.equipment_storage),
+            "equipped_runes": rune_rules.serialize_loadout(self.progress.equipped_runes),
+        }
+
+    def _restore_room_test_loadout(self):
+        """Revert progress loadout to the pre-test snapshot, if any."""
+        snapshot = self._room_test_loadout_snapshot
+        if snapshot is None:
+            return
+        self.progress.equipped_slots = dict(snapshot["equipped_slots"])
+        self.progress.equipment_storage = dict(snapshot["equipment_storage"])
+        self.progress.equipped_runes = rune_rules.normalize_loadout(
+            snapshot["equipped_runes"]
+        )
+        self._room_test_loadout_snapshot = None
+        self._pause_screen.room_test_mode = False
+        self._all_items_screen = None
+        self._all_runes_screen = None
 
     def _room_test_spawn_position(self, spawn_direction="left"):
         """Return the spawn point just inside the entry door for room-test mode."""
@@ -192,6 +238,7 @@ class Game:
 
     def _return_to_room_tests(self):
         """Drop the current room-test runtime and reopen the selector."""
+        self._restore_room_test_loadout()
         self._reset_runtime_state()
         self.state = GameState.ROOM_TEST_SELECT
 
@@ -240,6 +287,67 @@ class Game:
                         reward_tier=update_result.get("reward_tier", "standard"),
                     )
                 )
+        elif update_result.get("kind") == "despawn_escort":
+            for objective in list(self.dungeon.objective_group):
+                if isinstance(objective, EscortNPC):
+                    objective.kill()
+        elif update_result.get("kind") == "spawn_heartstone":
+            x, y = update_result.get("position", (None, None))
+            if x is not None and y is not None:
+                room = self.dungeon.current_room
+                config = room._heartstone_config
+                if config is not None:
+                    self.dungeon.objective_group.add(Heartstone(config))
+
+    def _update_heartstone(self, room, hp_at_frame_start):
+        """Pickup / carry-sync / damage-drop / portal-delivery for the Heartstone."""
+        state = room.heartstone_state() if hasattr(room, "heartstone_state") else None
+        if state is None or state["delivered"]:
+            return
+
+        heartstone_sprite = None
+        for objective in self.dungeon.objective_group:
+            if isinstance(objective, Heartstone):
+                heartstone_sprite = objective
+                break
+        if heartstone_sprite is None:
+            return
+
+        if not state["carried"]:
+            # Pickup on overlap.
+            if self.player.rect.colliderect(heartstone_sprite.rect):
+                room.notify_heartstone_picked_up()
+                self.player.carrying_heartstone = True
+                room.notify_heartstone_position(self.player.rect.center)
+            return
+
+        # Carrying: drop if damaged this frame.
+        if self.player.current_hp < hp_at_frame_start:
+            room.notify_heartstone_dropped(self.player.rect.center)
+            self.player.carrying_heartstone = False
+            return
+
+        # Carrying: keep heartstone glued to the player.
+        room.notify_heartstone_position(self.player.rect.center)
+
+        # Delivery: player overlaps any portal cell.
+        col = self.player.rect.centerx // TILE_SIZE
+        row = self.player.rect.centery // TILE_SIZE
+        if room.tile_at(col, row) == PORTAL or self._player_over_portal_cell(room):
+            room.notify_heartstone_delivered()
+            self.player.carrying_heartstone = False
+            heartstone_sprite.kill()
+
+    def _player_over_portal_cell(self, room):
+        # Heartstone delivery: the portal cells live in room._portal_cells; check
+        # whether the player's center is on any of them even when the tile has
+        # been temporarily set to FLOOR (portal inactive while sealed).
+        cells = getattr(room, "_portal_cells", ())
+        if not cells:
+            return False
+        col = self.player.rect.centerx // TILE_SIZE
+        row = self.player.rect.centery // TILE_SIZE
+        return (row, col) in cells
 
     # ── main loop ───────────────────────────────────────
     def run(self):
@@ -250,9 +358,7 @@ class Game:
             # global quit
             for event in events:
                 if event.type == pygame.QUIT:
-                    if not self._is_room_test_active():
-                        self._sync_player_state_to_progress()
-                    save_progress(self.progress)
+                    self._handle_global_quit()
                     pygame.quit()
                     sys.exit()
 
@@ -271,6 +377,10 @@ class Game:
                 self._update_playing()
             elif self.state == GameState.PAUSED:
                 self._handle_paused(events)
+            elif self.state == GameState.PAUSE_ALL_ITEMS:
+                self._handle_pause_all_items(events)
+            elif self.state == GameState.PAUSE_ALL_RUNES:
+                self._handle_pause_all_runes(events)
             elif self.state == GameState.RUNE_ALTAR_PICK:
                 self._handle_rune_altar_pick(events)
             elif self.state == GameState.LEVEL_COMPLETE:
@@ -443,6 +553,10 @@ class Game:
         walls = room.get_wall_rects()
         now_ticks = pygame.time.get_ticks()
 
+        # Track HP at the start of the frame so we can detect any damage source
+        # (enemy contact, traps, altars, etc.) and drop the heartstone if hit.
+        hp_at_frame_start = self.player.current_hp
+
         # player movement
         prev_center = self.player.rect.center
         self.player.update(walls, room.terrain_at_pixel)
@@ -526,6 +640,8 @@ class Game:
         # enemies AI + movement
         time_scale = time_rules.get_time_scale(self.player)
         for enemy in self.dungeon.enemy_group:
+            if getattr(enemy, "is_frozen", False):
+                continue
             if status_effects.is_immobilized(enemy, now_ticks):
                 continue
             if time_scale != 1.0:
@@ -584,6 +700,8 @@ class Game:
         if not self.player.is_invincible:
             hits = pygame.sprite.spritecollide(self.player, self.dungeon.enemy_group, False)
             for enemy in hits:
+                if getattr(enemy, "is_frozen", False):
+                    continue
                 pre_hp = self.player.current_hp
                 self.player.take_damage(enemy.damage)
                 damage_taken = pre_hp - self.player.current_hp
@@ -615,11 +733,22 @@ class Game:
                         )
                 item.kill()
 
+        # Heartstone Claim: pickup, carry-sync, drop on damage, deliver on portal.
+        self._update_heartstone(room, hp_at_frame_start)
+
         # portal check
         objective_update = room.update_objective(
             now_ticks, self.dungeon.enemy_group
         )
         self._apply_room_objective_update(objective_update)
+        # Test rooms with respawn enabled re-spawn slain configured enemies
+        # after their per-room delay so designers can keep testing damage.
+        if room.respawn_enemies_after_ms is not None:
+            frozen = bool(getattr(room, "frozen_enemies", False))
+            for cls, (px, py) in room.update_enemy_respawns(
+                now_ticks, self.dungeon.enemy_group
+            ):
+                self.dungeon.enemy_group.add(cls(px, py, is_frozen=frozen))
         col = self.player.rect.centerx // TILE_SIZE
         row = self.player.rect.centery // TILE_SIZE
         if room.tile_at(col, row) == PORTAL:
@@ -644,6 +773,7 @@ class Game:
             not room.enemies_cleared
             and not self.dungeon.enemy_group
             and room.enemy_configs
+            and room.respawn_enemies_after_ms is None
         ):
             room.enemies_cleared = True
 
@@ -713,8 +843,32 @@ class Game:
             self.state = GameState.PLAYING
         elif choice == "Toggle Room Identifier":
             self._toggle_room_identifier()
+        elif choice == "All Items":
+            if self._all_items_screen is not None:
+                self.state = GameState.PAUSE_ALL_ITEMS
+        elif choice == "All Runes":
+            if self._all_runes_screen is not None:
+                self.state = GameState.PAUSE_ALL_RUNES
         elif choice == "Quit Level":
             self._quit_level()
+
+    def _handle_pause_all_items(self, events):
+        if self._all_items_screen is None:
+            self.state = GameState.PAUSED
+            return
+        result = self._all_items_screen.handle_events(events)
+        if result == "back":
+            self._pause_screen.selected = 0
+            self.state = GameState.PAUSED
+
+    def _handle_pause_all_runes(self, events):
+        if self._all_runes_screen is None:
+            self.state = GameState.PAUSED
+            return
+        result = self._all_runes_screen.handle_events(events)
+        if result == "back":
+            self._pause_screen.selected = 0
+            self.state = GameState.PAUSED
 
     # ── rune altar pick handler ─────────────────────────
     def _handle_rune_altar_pick(self, events):
@@ -743,6 +897,29 @@ class Game:
         if self._pre_level_progress_snapshot is not None:
             self.progress.abandon_dungeon_run(self._pre_level_progress_snapshot)
         self._return_to_menu(sync_player_state=False)
+
+    def _handle_global_quit(self):
+        """Persist progress on window close.
+
+        Mid-dungeon-run handling:
+        - Room test active → restore the loadout snapshot, then save without
+          syncing the live player (test-room edits never persist).
+        - Live dungeon run with a pre-level snapshot → abandon the run by
+          reverting to the snapshot before saving.  This prevents picked-
+          but-uncommitted runes from leaking into save state when the
+          player closes the window mid-run.
+        - No active run → sync player state and save normally.
+        """
+        if self._is_room_test_active():
+            self._restore_room_test_loadout()
+            save_progress(self.progress)
+            return
+        if self._pre_level_progress_snapshot is not None:
+            self.progress.abandon_dungeon_run(self._pre_level_progress_snapshot)
+            save_progress(self.progress)
+            return
+        self._sync_player_state_to_progress()
+        save_progress(self.progress)
 
     # ── draw ────────────────────────────────────────────
     def _draw(self):
@@ -773,6 +950,7 @@ class Game:
             self._shop_screen.draw(self.screen, build_shop_view(self._shop_screen))
 
         elif self.state in (GameState.PLAYING, GameState.PAUSED,
+                            GameState.PAUSE_ALL_ITEMS, GameState.PAUSE_ALL_RUNES,
                             GameState.LEVEL_COMPLETE,
                             GameState.GAME_OVER, GameState.GAME_WIN,
                             GameState.RUNE_ALTAR_PICK):
@@ -801,6 +979,12 @@ class Game:
 
             if self.state == GameState.PAUSED:
                 self._pause_screen.draw(self.screen, build_pause_screen_view(self._pause_screen))
+            elif self.state == GameState.PAUSE_ALL_ITEMS:
+                if self._all_items_screen is not None:
+                    self._all_items_screen.draw(self.screen)
+            elif self.state == GameState.PAUSE_ALL_RUNES:
+                if self._all_runes_screen is not None:
+                    self._all_runes_screen.draw(self.screen)
             elif self.state == GameState.GAME_OVER:
                 self.hud.draw_game_over(self.screen, build_game_over_overlay_view())
             elif self.state == GameState.GAME_WIN:

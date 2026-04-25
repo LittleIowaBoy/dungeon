@@ -2,6 +2,7 @@
 import math
 import random
 import pygame
+import damage_feedback
 import enemy_collision_rules
 import status_effects
 from sprites import make_rect_surface
@@ -27,12 +28,13 @@ class Enemy(pygame.sprite.Sprite):
     damage = 5
     color = COLOR_PATROL
 
-    def __init__(self, x, y):
+    def __init__(self, x, y, *, is_frozen=False):
         super().__init__()
         self.image = make_rect_surface(ENEMY_SIZE, ENEMY_SIZE, self.color)
         self.rect = self.image.get_rect(center=(x, y))
         self.max_hp = self.hp
         self.current_hp = self.hp
+        self.is_frozen = bool(is_frozen)
         status_effects.reset_statuses(self)
         enemy_collision_rules.reset_collision_state(self)
 
@@ -42,7 +44,11 @@ class Enemy(pygame.sprite.Sprite):
 
     # ── damage / death ──────────────────────────────────
     def take_damage(self, amount):
+        previous_hp = self.current_hp
         self.current_hp -= amount
+        damage_dealt = previous_hp - max(self.current_hp, 0)
+        if damage_dealt > 0:
+            damage_feedback.report_damage(self, damage_dealt)
         if self.current_hp <= 0:
             self.kill()
 
@@ -82,8 +88,8 @@ class PatrolEnemy(Enemy):
     damage = PATROL_DAMAGE
     color = COLOR_PATROL
 
-    def __init__(self, x, y):
-        super().__init__(x, y)
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
         # pick a random patrol axis and extent
         self._axis = random.choice(("h", "v"))
         extent = random.randint(4, 8) * TILE_SIZE
@@ -116,8 +122,8 @@ class RandomEnemy(Enemy):
     damage = RANDOM_DAMAGE
     color = COLOR_RANDOM
 
-    def __init__(self, x, y):
-        super().__init__(x, y)
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
         self._pick_direction()
 
     def _pick_direction(self):
@@ -147,8 +153,8 @@ class ChaserEnemy(Enemy):
     damage = CHASER_DAMAGE
     color = COLOR_CHASER
 
-    def __init__(self, x, y):
-        super().__init__(x, y)
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
         self._chasing = False
 
     def update_movement(self, player_rect, wall_rects):

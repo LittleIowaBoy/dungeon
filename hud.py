@@ -9,6 +9,7 @@ from settings import (
     COLOR_ARMOR_BAR, COLOR_ARMOR_BG,
     COLOR_SPEED_GLOW, COLOR_COMPASS,
     COLOR_DOOR_TWO_WAY, COLOR_DOOR_ONE_WAY, COLOR_DOOR_NONE,
+    COLOR_DOOR_SEALED,
     ARMOR_HP,
     SPEED_BOOST_DURATION_MS, ATTACK_BOOST_DURATION_MS,
 )
@@ -27,6 +28,9 @@ class HUD:
     # ── main in-game overlay ────────────────────────────
     def draw(self, surface, view):
         self._ensure_fonts()
+        # World-anchored overlays first so HUD chrome stays on top.
+        self._draw_entity_health_bars(surface, view.entity_health_bars)
+        self._draw_damage_numbers(surface, view.damage_numbers)
         self._draw_health_bar(surface, view)
         self._draw_armor_bar(surface, view)
         self._draw_weapon(surface, view)
@@ -46,6 +50,47 @@ class HUD:
         self._draw_rune_meters(surface, view.rune_meters)
         self._draw_dodge_indicator(surface, view.dodge)
         self._draw_ability_indicator(surface, view.ability)
+
+    # ── world-space health bars ─────────────────────────
+    def _draw_entity_health_bars(self, surface, bar_views):
+        if not bar_views:
+            return
+        bar_w = 28
+        bar_h = 4
+        for bar in bar_views:
+            if bar.max_hp <= 0:
+                continue
+            ratio = max(0.0, min(1.0, bar.current_hp / bar.max_hp))
+            cx = bar.rect.centerx
+            top = bar.rect.top - bar_h - 3
+            x = cx - bar_w // 2
+            pygame.draw.rect(surface, COLOR_HEALTH_BG, (x, top, bar_w, bar_h))
+            pygame.draw.rect(
+                surface, COLOR_HEALTH_BAR,
+                (x, top, int(bar_w * ratio), bar_h),
+            )
+            pygame.draw.rect(surface, COLOR_BLACK, (x, top, bar_w, bar_h), 1)
+
+    # ── floating damage numbers ─────────────────────────
+    def _draw_damage_numbers(self, surface, number_views):
+        if not number_views:
+            return
+        from damage_feedback import DAMAGE_NUMBER_RISE_PIXELS
+        font = self._font
+        for number in number_views:
+            rise = int(DAMAGE_NUMBER_RISE_PIXELS * number.age_fraction)
+            cx, cy = number.world_pos
+            cy = cy - 18 - rise
+            text = number.text
+            # Black 1px outline (4-direction blit) for legibility.
+            outline = font.render(text, True, COLOR_BLACK)
+            ow, oh = outline.get_size()
+            ox = cx - ow // 2
+            oy = cy - oh // 2
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                surface.blit(outline, (ox + dx, oy + dy))
+            fill = font.render(text, True, COLOR_WHITE)
+            surface.blit(fill, (ox, oy))
 
     # ── health bar ──────────────────────────────────────
     def _draw_health_bar(self, surface, view):
@@ -157,6 +202,8 @@ class HUD:
             return COLOR_DOOR_TWO_WAY
         if kind == "one_way":
             return COLOR_DOOR_ONE_WAY
+        if kind == "sealed":
+            return COLOR_DOOR_SEALED
         return COLOR_DOOR_NONE
 
     @staticmethod
@@ -323,7 +370,20 @@ class HUD:
             return
         y = 54 if compass_view.visible else 30
         txt = self._small_font.render(objective_view.label, True, COLOR_WHITE)
-        surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2, y)))
+        rect = txt.get_rect(center=(SCREEN_WIDTH // 2, y))
+        surface.blit(txt, rect)
+        if objective_view.extraction_bonus_visible:
+            badge = self._small_font.render(
+                f"+{objective_view.extraction_bonus_amount} BONUS",
+                True,
+                COLOR_COIN,
+            )
+            badge_rect = badge.get_rect(midleft=(rect.right + 10, rect.centery))
+            surface.blit(badge, badge_rect)
+        if objective_view.carrying_heartstone:
+            badge = self._small_font.render("♥ Heartstone", True, (220, 60, 70))
+            badge_rect = badge.get_rect(midright=(rect.left - 10, rect.centery))
+            surface.blit(badge, badge_rect)
 
     def _draw_room_identifier(self, surface, room_identifier_view, compass_view, objective_view):
         if not room_identifier_view.visible:

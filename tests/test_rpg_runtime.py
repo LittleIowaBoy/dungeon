@@ -141,7 +141,16 @@ class GameRuntimeTests(unittest.TestCase):
         room_plan = SimpleNamespace()
         dungeon = object()
         game = rpg.Game.__new__(rpg.Game)
-        game.progress = SimpleNamespace(begin_dungeon_run=Mock())
+        game.progress = SimpleNamespace(
+            begin_dungeon_run=Mock(),
+            equipped_slots={"weapon_1": "sword", "helmet": None},
+            equipment_storage={"sword": 1},
+            equipped_runes={"stat": [], "behavior": [], "identity": []},
+        )
+        game._pause_screen = SimpleNamespace(room_test_mode=False, room_identifier_enabled=True)
+        game._all_items_screen = None
+        game._all_runes_screen = None
+        game._room_test_loadout_snapshot = None
         game._pre_level_progress_snapshot = {"coins": 10}
 
         with patch("rpg.build_room_test_plan", return_value=room_plan) as build_room_test_plan:
@@ -279,6 +288,10 @@ class GameRuntimeTests(unittest.TestCase):
         game._pre_level_progress_snapshot = {"coins": 5}
         game._level_complete = object()
         game._room_test_entry = SimpleNamespace(entry_id="resource")
+        game._room_test_loadout_snapshot = None
+        game._pause_screen = SimpleNamespace(room_test_mode=False, room_identifier_enabled=True)
+        game._all_items_screen = None
+        game._all_runes_screen = None
 
         rpg.Game._return_to_room_tests(game)
 

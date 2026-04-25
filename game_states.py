@@ -10,6 +10,8 @@ class GameState(Enum):
     SHOP                = auto()
     PLAYING             = auto()
     PAUSED              = auto()
+    PAUSE_ALL_ITEMS     = auto()  # test-room only: pause sub-screen for force-equip items
+    PAUSE_ALL_RUNES     = auto()  # test-room only: pause sub-screen for force-equip runes
     RUNE_ALTAR_PICK     = auto()
     LEVEL_COMPLETE      = auto()
     GAME_OVER           = auto()

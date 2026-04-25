@@ -95,11 +95,13 @@ The current room families now expose more of their mechanics directly in runtime
 - trap gauntlets use switchable safe lanes, checkpoint reroutes, and challenge-side cache placement across sweeper, vent, crusher, and mixed-hazard variants
 - puzzle rooms support ordered plates, staggered-sequence plates, and paired-rune variants, including reinforcement penalties for resets or stalling
 - holdout rooms can spawn stabilizers that delay future reinforcement waves and add clearer target guidance
-- ritual rooms can gate altar damage behind pulse windows for biome-specific timing play
+- ritual rooms can gate altar damage behind pulse windows for biome-specific timing play, and the Spore Totem Grove now correctly empowers surviving altars when ward links are broken
 - resource race rooms now escalate claimant pressure, allow steal-back/reclaim loops, and rename relic objectives per biome
+- the Heartstone Claim variant of the resource race requires the player to physically carry a heart-shaped relic to the portal; taking damage drops it where the player stood, the portal stays sealed until delivery, and the HUD shows a `♥ Heartstone` badge while carrying
 - stealth rooms use patrolling alarm beacons, forward vision cones, a short search phase, bonus caches that are lost when alarms trip, and biome-specific failure responses including escape and delayed seal-release variants
-- timed extraction rooms can escalate with pursuit waves, temporarily seal the exit during collapse phases, preserve a clean-clear payout bonus, roll into overtime cleanup pressure, and explain the clean-vs-overtime result on the level-complete screen
-- escort rooms have higher escort durability, spawn the escort next to the player on entry, and highlight the exit destination in-room
+- timed extraction rooms can escalate with pursuit waves, temporarily seal the exit during collapse phases, preserve a clean-clear payout bonus, roll into overtime cleanup pressure, and explain the clean-vs-overtime result on the level-complete screen; while the clean-clear bonus is still earnable the HUD shows a `+N BONUS` badge next to the objective label
+- escort rooms have higher escort durability, spawn the escort next to the player on entry, and highlight the exit destination in-room; once the escort reaches the exit the NPC despawns instead of lingering in the room
+- objective rooms share a primary/secondary fallback model: when a primary objective fails (escort dies, alarm triggers a lockdown, the rival claims the relic) the room falls back to a "clear remaining enemies" secondary so the run can still progress
 
 ## Rune System
 

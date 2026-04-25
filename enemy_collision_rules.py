@@ -39,8 +39,12 @@ def apply_enemy_collisions(enemy_group, multiplier, now_ticks):
     for i, attacker in enumerate(enemies):
         if not attacker.alive() or _on_cooldown(attacker, now_ticks):
             continue
+        if getattr(attacker, "is_frozen", False):
+            continue
         for victim in enemies[i + 1:]:
             if not victim.alive() or _on_cooldown(victim, now_ticks):
+                continue
+            if getattr(victim, "is_frozen", False):
                 continue
             if not attacker.rect.colliderect(victim.rect):
                 continue

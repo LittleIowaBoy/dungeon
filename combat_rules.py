@@ -1,5 +1,6 @@
 """Combat-specific runtime rules for Player state."""
 
+import damage_feedback
 import dodge_rules
 import identity_runes
 import stat_runes
@@ -30,10 +31,10 @@ def take_damage(player, amount, now_ticks):
         return
 
     # Glass Soul converts incoming damage into i-frames instead of HP loss.
-    absorbed, iframe_until = identity_runes.glass_soul_intercept_damage(
+    absorbed_iframe, iframe_until = identity_runes.glass_soul_intercept_damage(
         player, amount, now_ticks
     )
-    if absorbed:
+    if absorbed_iframe:
         player._invincible_until = iframe_until
         return
 
@@ -42,6 +43,7 @@ def take_damage(player, amount, now_ticks):
         player._invincible_until = now_ticks + INVINCIBILITY_MS
         return
 
+    pre_total = player.armor_hp + player.current_hp
     if player.armor_hp > 0:
         absorbed = min(amount, player.armor_hp)
         player.armor_hp -= absorbed
@@ -50,3 +52,6 @@ def take_damage(player, amount, now_ticks):
     player.current_hp = max(0, player.current_hp - amount)
     player._invincible_until = now_ticks + INVINCIBILITY_MS
     stat_runes.on_player_damage_taken(player, amount)
+    total_taken = pre_total - (player.armor_hp + player.current_hp)
+    if total_taken > 0:
+        damage_feedback.report_damage(player, total_taken)

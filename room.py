@@ -14,12 +14,13 @@ from settings import (
     DIR_OFFSETS, OPPOSITE_DIR,
     COLOR_FLOOR, COLOR_WALL, COLOR_MUD, COLOR_ICE, COLOR_WATER,
     COLOR_DOOR, COLOR_PORTAL,
+    COLOR_BLACK, COLOR_WHITE,
     ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM,
     CHEST_SPAWN_CHANCE,
     TERRAIN_PATCH_MIN, TERRAIN_PATCH_MAX,
     TERRAIN_PATCH_SIZE_MIN, TERRAIN_PATCH_SIZE_MAX,
 )
-from enemies import ENEMY_CLASSES
+from enemies import ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy
 
 # tile type constants
 FLOOR = "floor"
@@ -42,6 +43,29 @@ TERRAIN_COLORS = {
 
 # terrain types that can be randomly placed (default pool)
 _TERRAIN_POOL = [MUD, ICE, WATER]
+
+# Identifier for the bespoke "Tuning Test Room" used by the room-test menu.
+# When a room is built from a plan with this room_id, the standard random
+# placement is replaced with a hand-tuned layout (see Room._build_tuning_test_room).
+TUNING_TEST_ROOM_ID = "tuning_test_room"
+
+_TUNING_LABEL_FONT = None
+
+
+def _tuning_label_font():
+    """Lazy-init shared Pygame font for tuning-test-room labels."""
+    global _TUNING_LABEL_FONT
+    if _TUNING_LABEL_FONT is None:
+        if not pygame.font.get_init():
+            try:
+                pygame.font.init()
+            except pygame.error:
+                return None
+        try:
+            _TUNING_LABEL_FONT = pygame.font.SysFont("consolas", 14, bold=True)
+        except pygame.error:
+            return None
+    return _TUNING_LABEL_FONT
 
 _DEFAULT_PRESSURE_PLATE_OFFSETS = ((-5, -3), (5, -3), (0, 4), (0, -4))
 _DEFAULT_ALARM_BEACON_OFFSETS = ((-4, -2), (4, -2), (0, 4), (0, -4))
@@ -208,6 +232,7 @@ class Room:
         self._portal_active = True
         self.objective_status = "inactive"
         self.objective_started_at = None
+        self._secondary_objective_active = False
         self._reinforcement_spawned = False
         self._holdout_wave_index = 0
         self._holdout_progress_ms = 0
@@ -224,6 +249,9 @@ class Room:
         self._timed_extraction_wave_index = 0
         self._timed_extraction_route_sealed = False
         self._timed_extraction_bonus_awarded = False
+        self._heartstone_config = None  # Set when chest opened in Heartstone Claim rooms.
+        self._heartstone_spawn_pending = False
+        self._heartstone_delivered = False
         self._ritual_reaction_ids = set()
         self.objective_entity_configs = []
         self._chest_reward_tier = room_plan.reward_tier if room_plan is not None else "standard"
@@ -241,8 +269,19 @@ class Room:
         # spawn configs (created once, enemies re-instantiated on each visit)
         self.enemy_configs = self._gen_enemy_configs()
         self._build_objective_configs()
+        # Test rooms can opt into auto-respawning slain enemies after a delay.
+        # When None (default), enemies stay dead for the run as usual.
+        self.respawn_enemies_after_ms: int | None = None
+        self._enemy_respawn_due_at: dict[int, int] = {}
         if self.room_plan and self.room_plan.room_id == "trap_gauntlet":
             self._carve_trap_gauntlet_lanes()
+        # Tuning test room: bespoke layout for gameplay testing.  Replaces
+        # the random terrain/enemy placement with hand-tuned sections so each
+        # terrain and enemy type can be exercised in isolation.
+        self.frozen_enemies = False
+        self.tuning_test_labels: list[tuple[str, tuple[int, int]]] = []
+        if self.room_plan and self.room_plan.room_id == TUNING_TEST_ROOM_ID:
+            self._build_tuning_test_room()
 
         # chest
         self.chest_pos = None  # (px, py) or None
@@ -257,6 +296,8 @@ class Room:
             )
             if should_spawn_chest:
                 self.chest_pos = self._trap_reward_position()
+        elif self.room_plan and self.room_plan.room_id == TUNING_TEST_ROOM_ID:
+            self.chest_pos = None
         elif self.room_plan and self.room_plan.guaranteed_chest:
             self.chest_pos = self._random_floor_pos(margin=3)
         elif random.random() < chest_spawn_chance:
@@ -278,14 +319,56 @@ class Room:
         return "floor"
 
     def get_wall_rects(self):
-        """Return a list of pygame.Rects for all WALL tiles."""
+        """Return a list of pygame.Rects for all WALL tiles.
+
+        When the room is sealed, the closed door tiles are also returned
+        so they block player and enemy movement just like walls.
+        """
         walls = []
         for r in range(ROOM_ROWS):
             for c in range(ROOM_COLS):
                 if self.grid[r][c] == WALL:
                     walls.append(pygame.Rect(c * TILE_SIZE, r * TILE_SIZE,
                                              TILE_SIZE, TILE_SIZE))
+        if self.doors_sealed:
+            for _direction, rect in self.get_seal_door_rects():
+                walls.append(rect)
         return walls
+
+    def get_seal_door_rects(self):
+        """Return ``[(direction, pygame.Rect), ...]`` covering each present door.
+
+        Each rect spans the ``DOOR_WIDTH``-tile opening on the room border.
+        Empty when the room has no doors; not gated by ``doors_sealed`` so
+        callers can render "open door" art post-completion if desired.
+        """
+        mid_col = ROOM_COLS // 2
+        mid_row = ROOM_ROWS // 2
+        half = DOOR_WIDTH // 2
+        span = (half * 2 + 1) * TILE_SIZE
+        rects = []
+        if self.doors.get("top"):
+            x = (mid_col - half) * TILE_SIZE
+            rects.append(("top", pygame.Rect(x, 0, span, TILE_SIZE)))
+        if self.doors.get("bottom"):
+            x = (mid_col - half) * TILE_SIZE
+            rects.append(("bottom",
+                          pygame.Rect(x, (ROOM_ROWS - 1) * TILE_SIZE,
+                                      span, TILE_SIZE)))
+        if self.doors.get("left"):
+            y = (mid_row - half) * TILE_SIZE
+            rects.append(("left", pygame.Rect(0, y, TILE_SIZE, span)))
+        if self.doors.get("right"):
+            y = (mid_row - half) * TILE_SIZE
+            rects.append(("right",
+                          pygame.Rect((ROOM_COLS - 1) * TILE_SIZE, y,
+                                      TILE_SIZE, span)))
+        return rects
+
+    @property
+    def biome_terrain(self):
+        """Return the room's biome terrain key ("mud"/"ice"/"water"/None)."""
+        return self._terrain_type
 
     # ── door centre positions (pixel) ───────────────────
     def door_pixel_pos(self, direction):
@@ -381,6 +464,32 @@ class Room:
         for r, c in self._portal_cells:
             self.grid[r][c] = tile
 
+    def _mark_primary_failed(self, status):
+        """Flag the primary objective as unrecoverable and engage the secondary fallback.
+
+        Doors stay sealed (portal off) until ``_check_secondary_objective`` resolves the
+        fallback. ``status`` is the rule-specific HUD label key (e.g. ``"escort_down"``,
+        ``"alarm"``, ``"lost_race"``).
+        """
+        self._secondary_objective_active = True
+        self.objective_status = status
+        self._set_portal_active(False)
+
+    def _check_secondary_objective(self, now_ticks, enemy_group):
+        """Resolve the secondary objective when the primary has been failed.
+
+        Default secondary objective: clear the room of enemies. Future per-rule
+        overrides can hook here to substitute a more thematic fallback.
+        Returns True when the secondary objective just completed.
+        """
+        if not self._secondary_objective_active:
+            return False
+        if len(enemy_group) == 0:
+            self.objective_status = "completed"
+            self._set_portal_active(True)
+            return True
+        return False
+
     def on_enter(self, now_ticks, *, entry_direction=None, player_position=None, room_test=False):
         if not self.is_exit or self.room_plan is None:
             return
@@ -424,7 +533,21 @@ class Room:
             self._resource_race_claimed_once = True
             self._resource_race_reclaim_started_at = None
             self.objective_status = "escape"
-            self._set_portal_active(True)
+            if self._is_heartstone_variant():
+                # Heartstone variant: portal stays sealed until the heartstone
+                # is delivered; spawn the heartstone at the chest position.
+                self._set_portal_active(False)
+                if self._heartstone_config is None:
+                    drop_pos = self.chest_pos or (0, 0)
+                    self._heartstone_config = {
+                        "kind": "heartstone",
+                        "pos": tuple(drop_pos),
+                        "carried": False,
+                        "delivered": False,
+                    }
+                    self._heartstone_spawn_pending = True
+            else:
+                self._set_portal_active(True)
 
     def allows_chest_open(self, now_ticks):
         if self.room_plan is None:
@@ -518,17 +641,20 @@ class Room:
                 self.objective_status = "completed"
                 self._set_portal_active(True)
             elif escort.get("reached_exit"):
+                already_completed = self.objective_status == "completed"
                 self.objective_status = "completed"
                 self._set_portal_active(True)
+                if not already_completed and not escort.get("destroyed"):
+                    # Mark destroyed so re-entering the room won't respawn the
+                    # escort sprite, and tell rpg.py to despawn the live one.
+                    escort["destroyed"] = True
+                    return {"kind": "despawn_escort"}
             elif escort.get("destroyed"):
-                if len(enemy_group) == 0:
-                    self.objective_status = "completed"
-                    self._set_portal_active(True)
-                else:
-                    self.objective_status = (
-                        "carrier_down" if rule == "escort_bomb_to_exit" else "escort_down"
-                    )
-                    self._set_portal_active(False)
+                failure_status = (
+                    "carrier_down" if rule == "escort_bomb_to_exit" else "escort_down"
+                )
+                self._mark_primary_failed(failure_status)
+                self._check_secondary_objective(now_ticks, enemy_group)
             else:
                 self.objective_status = "active"
                 self._set_portal_active(False)
@@ -559,7 +685,7 @@ class Room:
                     return None
                 self._stealth_lockdown_started = True
 
-            self.objective_status = "alarm"
+            self._mark_primary_failed("alarm")
             portal_should_stay_active = self._stealth_uses_escape_variant()
             if self._stealth_uses_release_variant():
                 if self._stealth_alarm_started_at is None:
@@ -576,9 +702,7 @@ class Room:
                 self._reinforcement_spawned = True
                 self.enemy_configs.extend(reinforcements)
                 return {"kind": "spawn_reinforcements", "enemy_configs": reinforcements}
-            if len(enemy_group) == 0:
-                self.objective_status = "completed"
-                self._set_portal_active(True)
+            self._check_secondary_objective(now_ticks, enemy_group)
             return None
 
         if rule == "claim_relic_before_lockdown":
@@ -602,17 +726,33 @@ class Room:
                 return None
 
             if self._resource_race_failed:
-                if len(enemy_group) == 0:
-                    self.objective_status = "completed"
-                    self._set_portal_active(True)
-                else:
-                    self.objective_status = "lost_race"
-                    self._set_portal_active(False)
+                if not self._secondary_objective_active:
+                    self._mark_primary_failed("lost_race")
+                self._check_secondary_objective(now_ticks, enemy_group)
                 return None
 
             claim_update = self._maybe_restore_resource_race_chest(now_ticks, enemy_group)
             if claim_update is not None:
                 return claim_update
+
+            if self._is_heartstone_variant():
+                # Emit a one-shot spawn update the first tick after pickup.
+                if self._heartstone_spawn_pending and self._heartstone_config is not None:
+                    self._heartstone_spawn_pending = False
+                    self.objective_status = "escape"
+                    self._set_portal_active(False)
+                    return {
+                        "kind": "spawn_heartstone",
+                        "position": self._heartstone_config["pos"],
+                    }
+                # Completion requires delivery, not just enemy clear.
+                if self._heartstone_delivered:
+                    self.objective_status = "completed"
+                    self._set_portal_active(True)
+                else:
+                    self.objective_status = "escape"
+                    self._set_portal_active(False)
+                return None
 
             if len(enemy_group) == 0:
                 self.objective_status = "completed"
@@ -632,6 +772,10 @@ class Room:
             return None
 
         if rule == "destroy_altars":
+            # Defensive: keep ritual link state fresh every frame so a destroyed
+            # ward immediately drops shielding on remaining altars even if no
+            # new ritual reaction triggers this tick.
+            self._refresh_ritual_links()
             remaining_altars = self.remaining_objective_entities()
             if remaining_altars == 0:
                 self.objective_status = "completed"
@@ -1353,11 +1497,69 @@ class Room:
         self._timed_extraction_bonus_awarded = True
         return _TIMED_EXTRACTION_CLEAN_BONUS_COINS.get(self.room_plan.reward_tier, 0)
 
+    def timed_extraction_bonus_state(self):
+        """Return the current Mire Cache extraction bonus state for HUD display.
+
+        ``available`` is True while the player can still earn the bonus by
+        completing the room cleanly (chest looted, not in overtime, not yet
+        awarded). ``amount`` is the coin value the bonus would award now.
+        Returns None for non-extraction rooms so the HUD can hide the badge.
+        """
+        if self.room_plan is None or self.room_plan.objective_rule != "loot_then_timer":
+            return None
+        amount = _TIMED_EXTRACTION_CLEAN_BONUS_COINS.get(self.room_plan.reward_tier, 0)
+        return {
+            "available": self._timed_extraction_clean_bonus_pending(),
+            "amount": amount,
+        }
+
     def _escort_config(self):
         for config in self.objective_entity_configs:
             if config.get("kind") == "escort_npc":
                 return config
         return None
+
+    # ── Heartstone Claim helpers ───────────────────────
+    def _is_heartstone_variant(self):
+        return (
+            self.room_plan is not None
+            and self.room_plan.objective_rule == "claim_relic_before_lockdown"
+            and (self.room_plan.objective_variant or "") == "heartstone_shard"
+        )
+
+    def heartstone_state(self):
+        """Return current heartstone state, or None if not active in this room."""
+        if not self._is_heartstone_variant() or self._heartstone_config is None:
+            return None
+        config = self._heartstone_config
+        return {
+            "pos": config["pos"],
+            "carried": config["carried"],
+            "delivered": config["delivered"],
+        }
+
+    def notify_heartstone_picked_up(self):
+        if self._heartstone_config is None:
+            return
+        self._heartstone_config["carried"] = True
+
+    def notify_heartstone_dropped(self, pos):
+        if self._heartstone_config is None:
+            return
+        self._heartstone_config["carried"] = False
+        self._heartstone_config["pos"] = (int(pos[0]), int(pos[1]))
+
+    def notify_heartstone_position(self, pos):
+        if self._heartstone_config is None:
+            return
+        self._heartstone_config["pos"] = (int(pos[0]), int(pos[1]))
+
+    def notify_heartstone_delivered(self):
+        if self._heartstone_config is None:
+            return
+        self._heartstone_config["delivered"] = True
+        self._heartstone_config["carried"] = False
+        self._heartstone_delivered = True
 
     def _holdout_zone_config(self):
         for config in self.objective_entity_configs:
@@ -2728,3 +2930,157 @@ class Room:
             pos = self._random_floor_pos(margin=4)
             configs.append((cls, pos))
         return configs
+
+    # ── tuning test room ─────────────────────────────────
+    def _build_tuning_test_room(self):
+        """Hand-tuned bespoke layout for the room-test 'Tuning Test Room'.
+
+        Each terrain type and enemy type gets its own labeled section so a
+        designer can walk to it, exercise its mechanics, and tune values.
+        Spawned enemies are flagged frozen via ``self.frozen_enemies`` so
+        the dungeon spawner constructs them with ``is_frozen=True``.
+
+        To extend this room with a new terrain or enemy type, append an
+        entry to ``terrain_sections`` or ``enemy_sections`` below.  The
+        single source of truth for what the test room exercises lives in
+        this method.
+        """
+        # Reset the interior to plain FLOOR so any random terrain or stray
+        # portal placement from the parent constructor is wiped.  Borders
+        # (walls) and door cells are preserved.
+        for r in range(1, ROOM_ROWS - 1):
+            for c in range(1, ROOM_COLS - 1):
+                if self.grid[r][c] != DOOR:
+                    self.grid[r][c] = FLOOR
+        self._portal_cells = []
+
+        # Each section is (terrain_const, col_start, label_text); each one
+        # paints a 3×3 patch in rows 2-4 starting at col_start.
+        terrain_sections = (
+            (MUD,   2,  "MUD"),
+            (ICE,   6,  "ICE"),
+            (WATER, 10, "WATER"),
+            (WALL,  14, "WALL"),
+        )
+        for terrain, col, _label in terrain_sections:
+            for r in range(2, 5):
+                for c in range(col, col + 3):
+                    self.grid[r][c] = terrain
+
+        # Single PORTAL tile in the upper-right corner; its cell is tracked
+        # so portal_center_pixel() / level-complete logic still works.
+        portal_row, portal_col = 3, 18
+        self.grid[portal_row][portal_col] = PORTAL
+        self._portal_cells = [(portal_row, portal_col)]
+        self._portal_active = True
+
+        # Frozen enemy showcase placed along row 9.  Order mirrors the
+        # ENEMY_CLASSES tuple so adding a new enemy type just means
+        # appending a row here.
+        enemy_sections = (
+            (PatrolEnemy, 4,  "PATROL"),
+            (RandomEnemy, 10, "RANDOM"),
+            (ChaserEnemy, 16, "CHASER"),
+        )
+        enemy_row = 9
+        self.enemy_configs = [
+            (cls, (col * TILE_SIZE + TILE_SIZE // 2,
+                   enemy_row * TILE_SIZE + TILE_SIZE // 2))
+            for cls, col, _label in enemy_sections
+        ]
+        self.frozen_enemies = True
+        # Slain test enemies respawn 2 seconds after death so designers can
+        # repeatedly exercise damage / death effects without leaving the room.
+        self.respawn_enemies_after_ms = 2000
+
+        # Floating world-space labels rendered by draw_overlay_labels().
+        def _cell_center(c, r):
+            return (c * TILE_SIZE + TILE_SIZE // 2,
+                    r * TILE_SIZE + TILE_SIZE // 2)
+
+        labels = []
+        for terrain, col, label in terrain_sections:
+            del terrain
+            labels.append((label, _cell_center(col + 1, 1)))
+        labels.append(("PORTAL", _cell_center(portal_col, 1)))
+        labels.append(("FLOOR", _cell_center(10, 6)))
+        labels.append(("DOOR", _cell_center(2, ROOM_ROWS // 2)))
+        for cls, col, label in enemy_sections:
+            del cls
+            labels.append((label, _cell_center(col, enemy_row + 2)))
+        labels.append(("PLAYER SPAWN", _cell_center(3, 12)))
+        self.tuning_test_labels = labels
+
+        # Strip any objective entities the parent constructor may have
+        # built; the tuning room has no objective gating.
+        self.objective_entity_configs = []
+        # No chest in the test room: keep visual focus on the sections.
+        self.chest_pos = None
+
+    def update_enemy_respawns(self, now_ticks, enemy_group):
+        """Return ``[(cls, (px, py)), ...]`` of test enemies due for respawn.
+
+        For rooms with ``respawn_enemies_after_ms`` set, the first time a
+        configured enemy slot is found missing from ``enemy_group`` we record
+        a respawn deadline.  Once ``now_ticks`` reaches the deadline the
+        slot is reported back for the caller to re-instantiate, and the
+        timer for that slot is cleared.  Returns an empty list when the
+        room has no respawn delay configured.
+        """
+        if self.respawn_enemies_after_ms is None:
+            return []
+        present_positions = {
+            (enemy.rect.centerx, enemy.rect.centery) for enemy in enemy_group
+        }
+        new_spawns = []
+        for idx, (cls, pos) in enumerate(self.enemy_configs):
+            if pos in present_positions:
+                self._enemy_respawn_due_at.pop(idx, None)
+                continue
+            due = self._enemy_respawn_due_at.get(idx)
+            if due is None:
+                self._enemy_respawn_due_at[idx] = (
+                    now_ticks + self.respawn_enemies_after_ms
+                )
+            elif now_ticks >= due:
+                new_spawns.append((cls, pos))
+                self._enemy_respawn_due_at.pop(idx, None)
+        return new_spawns
+
+    @property
+    def doors_sealed(self):
+        """True while the room's main objective remains incomplete.
+
+        A non-exit room's main objective is to clear its initial enemies.
+        An exit room's main objective is its planned objective rule (e.g.
+        ``holdout_timer``, ``charge_plates``).  Rooms with no enemies and
+        no exit-objective are never sealed.  Test rooms that auto-respawn
+        enemies (``respawn_enemies_after_ms``) are never sealed either.
+        """
+        if self.respawn_enemies_after_ms is not None:
+            return False
+        has_initial_enemies = bool(self.enemy_configs)
+        if has_initial_enemies and not self.enemies_cleared:
+            return True
+        if self.is_exit and self.room_plan is not None:
+            rule = self.room_plan.objective_rule
+            if rule and rule != "immediate" and self.objective_status != "completed":
+                return True
+        return False
+
+    def draw_overlay_labels(self, surface):
+        """Render world-space labels for the tuning test room (no-op otherwise)."""
+        if not self.tuning_test_labels:
+            return
+        font = _tuning_label_font()
+        if font is None:
+            return
+        for text, (cx, cy) in self.tuning_test_labels:
+            outline = font.render(text, True, COLOR_BLACK)
+            ow, oh = outline.get_size()
+            ox = cx - ow // 2
+            oy = cy - oh // 2
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                surface.blit(outline, (ox + dx, oy + dy))
+            fill = font.render(text, True, COLOR_WHITE)
+            surface.blit(fill, (ox, oy))

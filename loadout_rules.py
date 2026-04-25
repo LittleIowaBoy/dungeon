@@ -138,3 +138,36 @@ def unequip_slot(progress, slot):
     progress.add_to_equipment_storage(item_id)
     progress.equipped_slots[slot] = None
     return True
+
+
+def force_equip_item(progress, slot, item_id):
+    """Test-room equip: bypass ownership / equipment_storage checks.
+
+    Validates slot existence, that the item is equippable, that the slot
+    appears in the item's ``equipment_slots`` list, and the dual-weapon
+    rule.  Does not require a positive ``equipment_storage`` count and
+    does not mutate storage; the slot is simply overwritten.  Intended
+    for use only inside the bespoke test-room pause menu where the
+    surrounding flow snapshots and restores all loadout state.
+    """
+    if slot not in progress.equipped_slots:
+        return False
+    item_data = ITEM_DATABASE.get(item_id)
+    if item_data is None or not item_data.get("is_equippable"):
+        return False
+    if slot not in item_data.get("equipment_slots", []):
+        return False
+    if slot in WEAPON_EQUIPMENT_SLOTS:
+        other_slot = "weapon_2" if slot == "weapon_1" else "weapon_1"
+        if progress.equipped_slots.get(other_slot) == item_id:
+            return False
+    progress.equipped_slots[slot] = item_id
+    return True
+
+
+def force_unequip_slot(progress, slot):
+    """Test-room unequip: clear slot without touching equipment_storage."""
+    if slot not in progress.equipped_slots:
+        return False
+    progress.equipped_slots[slot] = None
+    return True

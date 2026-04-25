@@ -8,6 +8,7 @@ from settings import COLOR_COIN, COLOR_HEALTH_BAR, COLOR_PORTAL, COLOR_WHITE
 import consumable_rules
 import ability_rules
 import behavior_runes
+import damage_feedback
 import dodge_rules
 import identity_runes
 import rune_rules
@@ -61,6 +62,9 @@ class CompassHUDView:
 class ObjectiveHUDView:
     visible: bool
     label: str
+    extraction_bonus_visible: bool = False
+    extraction_bonus_amount: int = 0
+    carrying_heartstone: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,20 @@ class AbilityHUDView:
 
 
 @dataclass(frozen=True)
+class EntityHealthBarHUDView:
+    rect: pygame.Rect
+    current_hp: int
+    max_hp: int
+
+
+@dataclass(frozen=True)
+class DamageNumberHUDView:
+    text: str
+    world_pos: tuple[int, int]
+    age_fraction: float
+
+
+@dataclass(frozen=True)
 class OverlayHUDView:
     title: str
     title_color: tuple[int, int, int]
@@ -139,11 +157,30 @@ class HUDView:
     rune_meters: RuneMetersHUDView
     dodge: DodgeHUDView
     ability: AbilityHUDView
+    entity_health_bars: tuple[EntityHealthBarHUDView, ...]
+    damage_numbers: tuple[DamageNumberHUDView, ...]
 
 
 def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
     if now_ticks is None:
         now_ticks = pygame.time.get_ticks()
+
+    entity_groups = (
+        getattr(dungeon, "enemy_group", None),
+        getattr(dungeon, "ally_group", None),
+        getattr(dungeon, "objective_group", None),
+    )
+    entity_bar_data = damage_feedback.build_entity_health_bar_views(
+        entity_groups, exclude=(player,)
+    )
+    entity_health_bars = tuple(
+        EntityHealthBarHUDView(rect=rect, current_hp=current_hp, max_hp=max_hp)
+        for rect, current_hp, max_hp in entity_bar_data
+    )
+    damage_numbers = tuple(
+        DamageNumberHUDView(text=text, world_pos=tuple(world_pos), age_fraction=age)
+        for text, world_pos, age in damage_feedback.build_damage_number_views(now_ticks)
+    )
 
     return HUDView(
         current_hp=player.current_hp,
@@ -155,7 +192,7 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         quick_bar=_build_quick_bar_view(player),
         active_effects=_build_active_effects(player, now_ticks),
         compass=_build_compass_view(player, now_ticks),
-        objective=_build_objective_view(dungeon, now_ticks),
+        objective=_build_objective_view(player, dungeon, now_ticks),
         room_identifier=_build_room_identifier_view(
             dungeon,
             now_ticks,
@@ -165,6 +202,8 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         rune_meters=_build_rune_meters_view(player, now_ticks),
         dodge=_build_dodge_view(player, now_ticks),
         ability=_build_ability_view(player, now_ticks),
+        entity_health_bars=entity_health_bars,
+        damage_numbers=damage_numbers,
     )
 
 
@@ -265,15 +304,26 @@ def _build_compass_view(player, now_ticks):
     return CompassHUDView(visible=True, label=f"{prefix}: {label_suffix}".strip())
 
 
-def _build_objective_view(dungeon, now_ticks):
+def _build_objective_view(player, dungeon, now_ticks):
     room = getattr(dungeon, "current_room", None)
     if room is None or not hasattr(room, "objective_hud_state"):
         return ObjectiveHUDView(visible=False, label="")
 
     state = room.objective_hud_state(now_ticks)
+    bonus_visible = False
+    bonus_amount = 0
+    if hasattr(room, "timed_extraction_bonus_state"):
+        bonus = room.timed_extraction_bonus_state()
+        if bonus is not None and bonus.get("available"):
+            bonus_visible = True
+            bonus_amount = int(bonus.get("amount", 0))
+    carrying = bool(getattr(player, "carrying_heartstone", False))
     return ObjectiveHUDView(
         visible=bool(state.get("visible")),
         label=state.get("label", ""),
+        extraction_bonus_visible=bonus_visible,
+        extraction_bonus_amount=bonus_amount,
+        carrying_heartstone=carrying,
     )
 
 

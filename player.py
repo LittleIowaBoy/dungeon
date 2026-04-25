@@ -68,6 +68,9 @@ class Player(pygame.sprite.Sprite):
         self.compass_arrow = None           # e.g. "↗"
         self._compass_display_until = 0     # ticks timestamp
 
+        # heartstone carry state (Heartstone Claim room)
+        self.carrying_heartstone = False
+
         # runes (per-dungeon loadout + scratch state)
         self.equipped_runes = rune_rules.empty_loadout()
         self.rune_state = {}

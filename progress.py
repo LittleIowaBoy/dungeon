@@ -115,7 +115,15 @@ class PlayerProgress:
         rune_rules.sync_progress_to_runtime(self, player)
 
     def begin_dungeon_run(self, dungeon_id):
-        """Mark a dungeon run active and capture its pre-level revert point."""
+        """Mark a dungeon run active and capture its pre-level revert point.
+
+        Defensive: clear any equipped runes left over from a prior session
+        before snapshotting.  Runes are per-run state and should never
+        persist across runs; clearing here cleanses leaked state from
+        older saves so subsequent abandon/complete logic operates on a
+        clean baseline.
+        """
+        self.equipped_runes = rune_rules.empty_loadout()
         self.start_dungeon(dungeon_id)
         return self.snapshot_run_state()
 

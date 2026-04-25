@@ -229,10 +229,12 @@ class Dungeon:
         return {"radius": self._radius, "rooms": rooms}
 
     def door_kind(self, pos, direction):
-        """Return door kind on a room wall: 'none', 'two_way', or 'one_way'."""
+        """Return door kind on a room wall: 'none', 'sealed', 'two_way', or 'one_way'."""
         room = self.rooms.get(pos)
         if room is None or not room.doors.get(direction):
             return "none"
+        if getattr(room, "doors_sealed", False):
+            return "sealed"
 
         ox, oy = DIR_OFFSETS[direction]
         neighbor_pos = (pos[0] + ox, pos[1] + oy)
@@ -259,6 +261,8 @@ class Dungeon:
         Returns the direction string if a transition happened, else None.
         """
         room = self.current_room
+        if getattr(room, "doors_sealed", False):
+            return None
         px, py = player_rect.centerx, player_rect.centery
 
         for direction, has_door in room.doors.items():
@@ -395,8 +399,9 @@ class Dungeon:
 
         # enemies: skip if already cleared this run
         if not room.enemies_cleared:
+            frozen = bool(getattr(room, "frozen_enemies", False))
             for cls, (px, py) in room.enemy_configs:
-                enemy = cls(px, py)
+                enemy = cls(px, py, is_frozen=frozen)
                 self.enemy_group.add(enemy)
 
         # chest

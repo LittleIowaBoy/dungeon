@@ -782,6 +782,33 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(center_col, PORTAL)
         self.assertEqual(room.objective_status, "completed")
 
+    def test_escort_completion_emits_despawn_escort_update(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_protection", objective_rule="escort_to_exit", enemy_count_range=(1, 1)),
+        )
+        room.on_enter(1000)
+        room.objective_entity_configs[0]["reached_exit"] = True
+        update = room.update_objective(2000, [])
+        self.assertEqual(update, {"kind": "despawn_escort"})
+        self.assertTrue(room.objective_entity_configs[0]["destroyed"])
+        # Idempotent: a subsequent update should not re-emit.
+        followup = room.update_objective(2100, [])
+        self.assertIsNone(followup)
+
+    def test_bomb_carrier_completion_emits_despawn_escort_update(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_bomb_carrier", objective_rule="escort_bomb_to_exit", enemy_count_range=(1, 1)),
+        )
+        room.on_enter(1000)
+        room.objective_entity_configs[0]["reached_exit"] = True
+        update = room.update_objective(2000, [])
+        self.assertEqual(update, {"kind": "despawn_escort"})
+        self.assertTrue(room.objective_entity_configs[0]["destroyed"])
+
     def test_escort_room_uses_metadata_profile(self):
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
@@ -1668,6 +1695,44 @@ class RoomObjectiveTests(unittest.TestCase):
         )
         self.assertEqual(room.claim_timed_extraction_completion_bonus(), 0)
 
+    def test_timed_extraction_bonus_state_reports_availability(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "timed_extraction",
+                objective_rule="loot_then_timer",
+                duration=5000,
+                guaranteed_chest=True,
+                reward_tier="branch_bonus",
+            ),
+        )
+        # Before chest looted: amount fixed by tier, but not yet available.
+        state = room.timed_extraction_bonus_state()
+        self.assertIsNotNone(state)
+        self.assertFalse(state["available"])
+        self.assertEqual(state["amount"], 14)
+
+        room.on_enter(1000)
+        room.notify_chest_opened(2000)
+        room.update_objective(2500, [])
+        state = room.timed_extraction_bonus_state()
+        self.assertTrue(state["available"])
+        self.assertEqual(state["amount"], 14)
+
+        # Once claimed, no longer available.
+        room.claim_timed_extraction_completion_bonus()
+        state = room.timed_extraction_bonus_state()
+        self.assertFalse(state["available"])
+
+    def test_timed_extraction_bonus_state_none_for_other_rules(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_protection", objective_rule="escort_to_exit", enemy_count_range=(1, 1)),
+        )
+        self.assertIsNone(room.timed_extraction_bonus_state())
+
     def test_objective_compass_hint_reflects_pending_room_goal(self):
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
@@ -1775,6 +1840,184 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(room.objective_target_info((0, 0))[0], "Cache")
         self.assertEqual(room.minimap_objective_marker(), ("relic", "Cache"))
         self.assertEqual(room.objective_hud_state(0)["label"], "Objective: Secure the cache")
+
+
+class SporeTotemWardRegressionTests(unittest.TestCase):
+    def _make_room(self):
+        return Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(1, 1),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="ward_shields_others",
+            ),
+        )
+
+    def test_other_altars_take_damage_after_ward_destroyed_via_take_damage(self):
+        room = self._make_room()
+        configs = room.objective_entity_configs
+        # ward is index 2 (role_script "summon,pulse,ward")
+        self.assertEqual(configs[2]["role"], "ward")
+        ward = AltarAnchor(configs[2])
+        summon = AltarAnchor(configs[0])
+
+        # Initially the non-ward altars are shielded.
+        self.assertTrue(configs[0]["invulnerable"])
+        self.assertFalse(summon.take_damage(99))
+
+        # Kill the ward through its sprite (matches in-game flow).
+        ward.take_damage(ward.max_hp + 100)
+        self.assertTrue(configs[2]["destroyed"])
+
+        # update_objective should refresh ritual links so other altars become vulnerable.
+        room.update_objective(1500, [object()])
+
+        self.assertFalse(configs[0]["invulnerable"])
+        previous_hp = summon.current_hp
+        damaged = summon.take_damage(3)
+        # damaged is True only when killed; check HP decreased instead.
+        self.assertLess(summon.current_hp, previous_hp)
+
+
+class HeartstoneClaimTests(unittest.TestCase):
+    def _make_room(self):
+        return Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "resource_race",
+                objective_rule="claim_relic_before_lockdown",
+                duration=6800,
+                guaranteed_chest=True,
+                enemy_count_range=(1, 1),
+                objective_variant="heartstone_shard",
+            ),
+        )
+
+    def test_chest_open_spawns_heartstone_and_keeps_portal_sealed(self):
+        room = self._make_room()
+        room.on_enter(1000)
+        # No heartstone before the chest is opened.
+        self.assertIsNone(room.heartstone_state())
+
+        room.notify_chest_opened(2000)
+        state = room.heartstone_state()
+        self.assertIsNotNone(state)
+        self.assertFalse(state["carried"])
+        self.assertFalse(state["delivered"])
+        # Portal stays sealed for the heartstone variant.
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertNotEqual(center_col, PORTAL)
+
+        # First update_objective tick after pickup emits the spawn update.
+        update = room.update_objective(2100, [])
+        self.assertEqual(update["kind"], "spawn_heartstone")
+        self.assertEqual(update["position"], state["pos"])
+        # Subsequent ticks do not re-emit the spawn.
+        followup = room.update_objective(2200, [])
+        self.assertIsNone(followup)
+
+    def test_completion_requires_delivery_not_just_enemy_clear(self):
+        room = self._make_room()
+        room.on_enter(1000)
+        room.notify_chest_opened(2000)
+        room.update_objective(2100, [])  # consume spawn update
+
+        # Even with no enemies, no delivery -> not completed, portal sealed.
+        room.update_objective(2200, [])
+        self.assertNotEqual(room.objective_status, "completed")
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertNotEqual(center_col, PORTAL)
+
+        # Pickup + deliver flips status to completed and unseals portal.
+        room.notify_heartstone_picked_up()
+        room.notify_heartstone_delivered()
+        room.update_objective(2300, [])
+        self.assertEqual(room.objective_status, "completed")
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertEqual(center_col, PORTAL)
+
+    def test_dropped_heartstone_can_be_picked_up_again(self):
+        room = self._make_room()
+        room.on_enter(1000)
+        room.notify_chest_opened(2000)
+        room.update_objective(2100, [])
+
+        room.notify_heartstone_picked_up()
+        self.assertTrue(room.heartstone_state()["carried"])
+
+        # Damage drop happens at player position (60, 80).
+        room.notify_heartstone_dropped((60, 80))
+        state = room.heartstone_state()
+        self.assertFalse(state["carried"])
+        self.assertEqual(state["pos"], (60, 80))
+
+        # Re-pickup is allowed.
+        room.notify_heartstone_picked_up()
+        self.assertTrue(room.heartstone_state()["carried"])
+
+    def test_non_heartstone_resource_race_unaffected(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "resource_race",
+                objective_rule="claim_relic_before_lockdown",
+                duration=5000,
+                guaranteed_chest=True,
+                enemy_count_range=(1, 1),
+                objective_variant="relic_cache",
+            ),
+        )
+        room.on_enter(1000)
+        room.notify_chest_opened(2000)
+        # Portal active immediately for non-heartstone variant.
+        center_col = room.grid[len(room.grid) // 2][len(room.grid[0]) // 2]
+        self.assertEqual(center_col, PORTAL)
+        self.assertIsNone(room.heartstone_state())
+
+
+class SecondaryObjectiveSeamTests(unittest.TestCase):
+    def _make_room(self):
+        return Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_protection", objective_rule="escort_to_exit", enemy_count_range=(1, 1)),
+        )
+
+    def test_mark_primary_failed_engages_secondary_and_seals_doors(self):
+        room = self._make_room()
+        room.on_enter(1000)
+        self.assertFalse(room._secondary_objective_active)
+        room._mark_primary_failed("escort_down")
+        self.assertTrue(room._secondary_objective_active)
+        self.assertEqual(room.objective_status, "escort_down")
+        self.assertFalse(room._portal_active)
+        self.assertTrue(room.doors_sealed)
+
+    def test_check_secondary_objective_completes_when_enemies_clear(self):
+        room = self._make_room()
+        room.on_enter(1000)
+        room._mark_primary_failed("escort_down")
+        completed = room._check_secondary_objective(1500, [object()])
+        self.assertFalse(completed)
+        self.assertEqual(room.objective_status, "escort_down")
+        completed = room._check_secondary_objective(1600, [])
+        self.assertTrue(completed)
+        self.assertEqual(room.objective_status, "completed")
+        self.assertTrue(room._portal_active)
+
+    def test_check_secondary_objective_noop_when_primary_still_active(self):
+        room = self._make_room()
+        room.on_enter(1000)
+        # Primary still alive: secondary helper must not complete the room.
+        completed = room._check_secondary_objective(1100, [])
+        self.assertFalse(completed)
+        self.assertNotEqual(room.objective_status, "completed")
 
 
 if __name__ == "__main__":

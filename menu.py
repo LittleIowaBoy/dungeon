@@ -604,20 +604,33 @@ class ShopScreen:
 #  Pause Screen
 # ═════════════════════════════════════════════════════════
 class PauseScreen:
-    def __init__(self, room_identifier_enabled=True):
+    def __init__(self, room_identifier_enabled=True, *, room_test_mode=False):
         self.selected = 0
         self.room_identifier_enabled = room_identifier_enabled
+        self.room_test_mode = room_test_mode
         self._font = None
         self._title_font = None
         self._small_font = None
 
     def option_labels(self):
         toggle_state = "On" if self.room_identifier_enabled else "Off"
+        if self.room_test_mode:
+            return (
+                "Resume",
+                "All Items",
+                "All Runes",
+                f"Room Identifier: {toggle_state}",
+                "Quit Level",
+            )
         return (
             "Resume",
             f"Room Identifier: {toggle_state}",
             "Quit Level",
         )
+
+    def _toggle_index(self):
+        # Index of the room-identifier toggle within option_labels.
+        return 3 if self.room_test_mode else 1
 
     def _ensure_fonts(self):
         if self._font is None:
@@ -640,7 +653,7 @@ class PauseScreen:
             elif event.key in (pygame.K_DOWN, pygame.K_s):
                 self.selected = (self.selected + 1) % len(options)
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                if self.selected == 1:
+                if self.selected == self._toggle_index():
                     return "Toggle Room Identifier"
                 return options[self.selected]
         return None
@@ -664,6 +677,272 @@ class PauseScreen:
             view.warning_text, True, COLOR_GRAY)
         surface.blit(warn, warn.get_rect(center=(SCREEN_WIDTH // 2,
                                                   SCREEN_HEIGHT // 2 + 60)))
+
+
+# ═════════════════════════════════════════════════════════
+#  Test-Room Pause Sub-Screens (All Items / All Runes)
+# ═════════════════════════════════════════════════════════
+class AllItemsPauseScreen:
+    """Pause sub-screen exposing every equippable item, regardless of ownership.
+
+    Used inside the Tuning Test Room only.  Equipping/unequipping mutates
+    ``progress.equipped_slots`` directly via ``loadout_rules.force_equip_item``
+    and ``force_unequip_slot``; the surrounding flow snapshots & restores
+    the loadout when the test room exits, so changes do not persist.
+    """
+
+    SLOTS = list(CharacterCustomizeScreen.SLOTS)
+
+    def __init__(self, progress):
+        self.progress = progress
+        self.selected_slot = 0
+        self.selected_item = 0
+        self.focus = "slots"
+        self._font = None
+        self._small_font = None
+        self._title_font = None
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 36)
+            self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def _current_slot_key(self):
+        return self.SLOTS[self.selected_slot][0]
+
+    def _items_for_current_slot(self):
+        slot_key = self._current_slot_key()
+        results = [
+            item_id
+            for item_id, data in ITEM_DATABASE.items()
+            if data.get("is_equippable") and slot_key in data.get("equipment_slots", [])
+        ]
+        results.sort(key=lambda item_id: ITEM_DATABASE[item_id].get("name", item_id))
+        return results
+
+    def handle_events(self, events):
+        """Returns 'back' to exit, otherwise None."""
+        from loadout_rules import force_equip_item, force_unequip_slot
+
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return "back"
+            if event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_TAB):
+                self.focus = "items" if self.focus == "slots" else "slots"
+                self.selected_item = 0
+                continue
+            if event.key in (pygame.K_UP, pygame.K_w):
+                if self.focus == "slots":
+                    self.selected_slot = (self.selected_slot - 1) % len(self.SLOTS)
+                    self.selected_item = 0
+                else:
+                    items = self._items_for_current_slot()
+                    if items:
+                        self.selected_item = (self.selected_item - 1) % len(items)
+                continue
+            if event.key in (pygame.K_DOWN, pygame.K_s):
+                if self.focus == "slots":
+                    self.selected_slot = (self.selected_slot + 1) % len(self.SLOTS)
+                    self.selected_item = 0
+                else:
+                    items = self._items_for_current_slot()
+                    if items:
+                        self.selected_item = (self.selected_item + 1) % len(items)
+                continue
+
+            slot_key = self._current_slot_key()
+            if event.key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+                force_unequip_slot(self.progress, slot_key)
+                continue
+            if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                if self.focus == "slots":
+                    force_unequip_slot(self.progress, slot_key)
+                else:
+                    items = self._items_for_current_slot()
+                    if items:
+                        force_equip_item(self.progress, slot_key, items[self.selected_item])
+        return None
+
+    def draw(self, surface, view=None):
+        self._ensure_fonts()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 220))
+        surface.blit(overlay, (0, 0))
+
+        title = self._title_font.render("All Items (Test Room)", True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 48)))
+
+        slot_x, slot_y, slot_w, slot_h = 40, 110, 300, 52
+        for index, (slot_key, slot_label) in enumerate(self.SLOTS):
+            y = slot_y + index * (slot_h + 8)
+            border = COLOR_WHITE if self.focus == "slots" and index == self.selected_slot else COLOR_GRAY
+            pygame.draw.rect(surface, COLOR_DARK_GRAY, (slot_x, y, slot_w, slot_h))
+            pygame.draw.rect(surface, border, (slot_x, y, slot_w, slot_h), 2)
+            equipped_id = self.progress.equipped_slots.get(slot_key)
+            equipped_name = (
+                ITEM_DATABASE.get(equipped_id, {}).get("name", equipped_id)
+                if equipped_id else "Empty"
+            )
+            header = self._small_font.render(slot_label, True, COLOR_WHITE)
+            value_color = COLOR_WHITE if equipped_id else COLOR_GRAY
+            value = self._font.render(equipped_name, True, value_color)
+            surface.blit(header, (slot_x + 12, y + 6))
+            surface.blit(value, (slot_x + 12, y + 24))
+
+        panel_x, panel_y, panel_w, panel_h = 380, 110, 380, 420
+        panel_border = COLOR_WHITE if self.focus == "items" else COLOR_GRAY
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (panel_x, panel_y, panel_w, panel_h))
+        pygame.draw.rect(surface, panel_border, (panel_x, panel_y, panel_w, panel_h), 2)
+        slot_label = self.SLOTS[self.selected_slot][1]
+        header = self._font.render(f"Items for {slot_label}", True, COLOR_WHITE)
+        surface.blit(header, (panel_x + 12, panel_y + 12))
+
+        items = self._items_for_current_slot()
+        if items:
+            visible_rows = min(len(items), 9)
+            top = max(0, self.selected_item - visible_rows + 1) if self.focus == "items" else 0
+            for offset in range(visible_rows):
+                index = top + offset
+                if index >= len(items):
+                    break
+                item_id = items[index]
+                item_y = panel_y + 56 + offset * 38
+                is_selected = self.focus == "items" and index == self.selected_item
+                color = COLOR_WHITE if is_selected else COLOR_GRAY
+                prefix = "> " if is_selected else "  "
+                name = ITEM_DATABASE[item_id].get("name", item_id)
+                txt = self._font.render(f"{prefix}{name}", True, color)
+                surface.blit(txt, (panel_x + 14, item_y))
+        else:
+            empty = self._font.render("(no compatible items)", True, COLOR_GRAY)
+            surface.blit(empty, (panel_x + 14, panel_y + 64))
+
+        hint = self._small_font.render(
+            "Tab: switch panel  Enter: equip  Backspace: unequip  Esc: back to pause",
+            True, COLOR_WHITE,
+        )
+        surface.blit(hint, (40, SCREEN_HEIGHT - 40))
+
+
+class AllRunesPauseScreen:
+    """Pause sub-screen exposing every rune in the catalog, regardless of ownership.
+
+    Equipping enforces ``RUNE_SLOT_CAPACITY`` per category but bypasses
+    ownership; if a category is full, the oldest rune is dropped.  Used
+    only inside the Tuning Test Room; the surrounding flow restores the
+    pre-test rune loadout on exit.
+    """
+
+    def __init__(self, progress):
+        self.progress = progress
+        self.selected = 0
+        self._font = None
+        self._small_font = None
+        self._title_font = None
+        self._scroll = 0
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 36)
+            self._font = pygame.font.SysFont("consolas", 20)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def _all_rune_ids(self):
+        # Sorted by category (stat → behavior → identity) then by name.
+        ordered = []
+        for rune in RUNE_DATABASE.values():
+            ordered.append(rune)
+        category_order = {"stat": 0, "behavior": 1, "identity": 2}
+        ordered.sort(key=lambda r: (category_order.get(r.category, 99), r.name))
+        return [r.rune_id for r in ordered]
+
+    def _is_equipped(self, rune_id):
+        loadout = getattr(self.progress, "equipped_runes", {}) or {}
+        for category_runes in loadout.values():
+            if rune_id in category_runes:
+                return True
+        return False
+
+    def handle_events(self, events):
+        from rune_rules import force_equip_rune, unequip_rune
+
+        rune_ids = self._all_rune_ids()
+        if not rune_ids:
+            for event in events:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    return "back"
+            return None
+
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return "back"
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.selected = (self.selected - 1) % len(rune_ids)
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected = (self.selected + 1) % len(rune_ids)
+            elif event.key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+                rune_id = rune_ids[self.selected]
+                if self._is_equipped(rune_id):
+                    unequip_rune(self.progress, rune_id)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                rune_id = rune_ids[self.selected]
+                if self._is_equipped(rune_id):
+                    unequip_rune(self.progress, rune_id)
+                else:
+                    force_equip_rune(self.progress, rune_id)
+        return None
+
+    def draw(self, surface, view=None):
+        self._ensure_fonts()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 220))
+        surface.blit(overlay, (0, 0))
+
+        title = self._title_font.render("All Runes (Test Room)", True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 48)))
+
+        loadout = getattr(self.progress, "equipped_runes", {}) or {}
+        cap_y = 90
+        for category in ("stat", "behavior", "identity"):
+            count = len(loadout.get(category, []))
+            cap = RUNE_SLOT_CAPACITY.get(category, 0)
+            line = self._small_font.render(
+                f"{category.capitalize()}: {count}/{cap}", True, COLOR_GRAY,
+            )
+            surface.blit(line, (40, cap_y))
+            cap_y += 20
+
+        rune_ids = self._all_rune_ids()
+        list_x, list_y = 280, 110
+        visible_rows = 18
+        top = max(0, self.selected - visible_rows + 1)
+        for offset in range(visible_rows):
+            index = top + offset
+            if index >= len(rune_ids):
+                break
+            rune_id = rune_ids[index]
+            rune = RUNE_DATABASE.get(rune_id)
+            if rune is None:
+                continue
+            is_selected = index == self.selected
+            equipped = self._is_equipped(rune_id)
+            color = COLOR_WHITE if is_selected else COLOR_GRAY
+            prefix = "> " if is_selected else "  "
+            tag = "[EQUIPPED] " if equipped else ""
+            text = f"{prefix}{tag}{rune.category[:3].upper()}  {rune.name}"
+            line = self._font.render(text, True, color)
+            surface.blit(line, (list_x, list_y + offset * 28))
+
+        hint = self._small_font.render(
+            "Enter: toggle equip (drops oldest if full)  Backspace: unequip  Esc: back to pause",
+            True, COLOR_WHITE,
+        )
+        surface.blit(hint, (40, SCREEN_HEIGHT - 40))
 
 
 # ═════════════════════════════════════════════════════════

@@ -10,6 +10,57 @@ from room_selector import RoomSelector
 
 _BASE_CONTEXT_LABEL = "Base Layout"
 
+# Identifier for the bespoke "Tuning Test Room" surfaced as the first entry
+# in the room-test menu.  The actual layout is hard-coded in
+# Room._build_tuning_test_room (keyed off the same string) so we don't add a
+# real entry to BASE_ROOM_TEMPLATES; instead we synthesise a template_row
+# off the standard_combat shape and prepend a synthetic RoomTestEntry.
+TUNING_TEST_ROOM_ID = "tuning_test_room"
+
+
+def _build_tuning_test_template_row():
+    """Clone the standard_combat template_row with overrides for the tuning room."""
+    base = next(
+        (dict(t) for t in BASE_ROOM_TEMPLATES if t["room_id"] == "standard_combat"),
+        None,
+    )
+    if base is None:
+        return None
+    base.update({
+        "room_id": TUNING_TEST_ROOM_ID,
+        "display_name": "Tuning Test Room",
+        "topology_role": "opener",
+        "min_depth": 0,
+        "max_depth": 0,
+        "enabled": 1,
+        "implementation_status": "implemented",
+        "objective_variant": "",
+        "notes": "Tuning sandbox: every terrain and enemy type in one room.",
+    })
+    return base
+
+
+def _build_tuning_test_entry():
+    template_row = _build_tuning_test_template_row()
+    if template_row is None or not DUNGEONS:
+        return None
+    default_dungeon = DUNGEONS[0]
+    return RoomTestEntry(
+        entry_id=f"base:{TUNING_TEST_ROOM_ID}",
+        room_id=TUNING_TEST_ROOM_ID,
+        display_name="Tuning Test Room",
+        base_display_name="Tuning Test Room",
+        context_label="Tuning",
+        profile_dungeon_id=default_dungeon["id"],
+        profile_dungeon_name=default_dungeon["name"],
+        terrain_type=default_dungeon["terrain_type"],
+        objective_kind=template_row["objective_kind"],
+        objective_variant="",
+        implementation_status="implemented",
+        is_biome_variant=False,
+        template_row=template_row,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class RoomTestEntry:
@@ -49,6 +100,9 @@ def load_room_test_entries():
     }
 
     entries = []
+    tuning_entry = _build_tuning_test_entry()
+    if tuning_entry is not None:
+        entries.append(tuning_entry)
     for base_template in BASE_ROOM_TEMPLATES:
         room_id = base_template["room_id"]
         if room_id not in base_templates:

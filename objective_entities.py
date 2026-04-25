@@ -4,6 +4,7 @@ import math
 
 import pygame
 
+import damage_feedback
 from objective_metadata import get_altar_variant
 from sprites import make_rect_surface
 
@@ -92,6 +93,10 @@ class AltarAnchor(pygame.sprite.Sprite):
             if self._config.get("window_gated"):
                 self._config["window_vulnerable"] = False
             return
+        # Re-sync pulse stats from config so live ritual mutations
+        # (e.g. _empower_remaining_altars) take effect on the sprite.
+        self.pulse_radius = self._config.get("pulse_radius", self.pulse_radius)
+        self.pulse_damage = self._config.get("pulse_damage", self.pulse_damage)
         elapsed = max(0, now_ticks + self.pulse_offset_ms)
         self.pulse_active = elapsed % self.pulse_cycle_ms < self.pulse_active_ms
         if self._config.get("window_gated"):
@@ -130,8 +135,12 @@ class AltarAnchor(pygame.sprite.Sprite):
         if self._config.get("window_gated") and not self._config.get("window_vulnerable", self.pulse_active):
             return False
 
+        previous_hp = self.current_hp
         self.current_hp = max(0, self.current_hp - amount)
         self._config["current_hp"] = self.current_hp
+        damage_dealt = previous_hp - self.current_hp
+        if damage_dealt > 0:
+            damage_feedback.report_damage(self, damage_dealt)
 
         if self.current_hp <= 0:
             self._config["destroyed"] = True
@@ -1010,6 +1019,14 @@ class EscortNPC(pygame.sprite.Sprite):
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=config["pos"])
 
+    @property
+    def current_hp(self):
+        return int(self._config.get("current_hp", 0))
+
+    @property
+    def max_hp(self):
+        return int(self._config.get("max_hp", 0))
+
     def update(self, now_ticks):
         del now_ticks
         self.image = self._build_image()
@@ -1056,8 +1073,12 @@ class EscortNPC(pygame.sprite.Sprite):
             if not self.rect.colliderect(enemy.rect.inflate(6, 6)):
                 continue
 
-            current_hp = max(0, self._config["current_hp"] - enemy.damage)
+            previous_hp = self._config["current_hp"]
+            current_hp = max(0, previous_hp - enemy.damage)
             self._config["current_hp"] = current_hp
+            damage_dealt = previous_hp - current_hp
+            if damage_dealt > 0:
+                damage_feedback.report_damage(self, damage_dealt)
             cooldown_ms = self._config.get("damage_cooldown_ms", 500)
             self._config["damage_cooldown_until"] = now_ticks + cooldown_ms
 
@@ -1140,3 +1161,47 @@ class EscortNPC(pygame.sprite.Sprite):
                     self.rect.bottom = wall.top
                 elif dy < 0:
                     self.rect.top = wall.bottom
+
+
+_HEARTSTONE_FILL = (200, 30, 40)
+_HEARTSTONE_OUTLINE = (110, 10, 20)
+
+
+class Heartstone(pygame.sprite.Sprite):
+    """Carryable heart-shaped relic for the Heartstone Claim room."""
+
+    SIZE = 16
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        del now_ticks
+        # Sync visual position to logical config (the room/rpg loop sets pos
+        # to the player's center while carried, or to the drop spot otherwise).
+        self.rect.center = self._config["pos"]
+
+    @classmethod
+    def _build_image(cls):
+        size = cls.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Two lobes + bottom triangle to form a heart silhouette.
+        lobe_radius = size // 4
+        left_center = (size // 4, size // 3)
+        right_center = (size - size // 4, size // 3)
+        pygame.draw.circle(surface, _HEARTSTONE_FILL, left_center, lobe_radius)
+        pygame.draw.circle(surface, _HEARTSTONE_FILL, right_center, lobe_radius)
+        triangle = [
+            (1, size // 3),
+            (size - 1, size // 3),
+            (size // 2, size - 1),
+        ]
+        pygame.draw.polygon(surface, _HEARTSTONE_FILL, triangle)
+        # Outline overlay
+        pygame.draw.circle(surface, _HEARTSTONE_OUTLINE, left_center, lobe_radius, 1)
+        pygame.draw.circle(surface, _HEARTSTONE_OUTLINE, right_center, lobe_radius, 1)
+        pygame.draw.polygon(surface, _HEARTSTONE_OUTLINE, triangle, 1)
+        return surface

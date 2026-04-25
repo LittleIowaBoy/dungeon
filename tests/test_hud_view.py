@@ -104,6 +104,8 @@ class HUDViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.compass.label, "Relic: E →")
         self.assertTrue(view.objective.visible)
         self.assertEqual(view.objective.label, "Objective: Hold out 2.0s")
+        self.assertFalse(view.objective.extraction_bonus_visible)
+        self.assertEqual(view.objective.extraction_bonus_amount, 0)
         self.assertTrue(view.room_identifier.visible)
         self.assertEqual(view.room_identifier.title, "Room: Survival Holdout")
         self.assertEqual(
@@ -121,6 +123,43 @@ class HUDViewProjectionTests(unittest.TestCase):
         self.assertEqual(victory.title, "DUNGEON CLEARED!")
         self.assertEqual(victory.detail_text, "Coins collected: 23")
         self.assertEqual(victory.prompt_text, "Press R to return to menu")
+
+    def test_objective_view_surfaces_extraction_bonus_badge(self):
+        player = _PlayerStub()
+        dungeon = SimpleNamespace(
+            current_room=SimpleNamespace(
+                objective_hud_state=lambda _t: {
+                    "visible": True,
+                    "label": "Objective: Escape under pressure",
+                },
+                playtest_identifier_state=lambda _t: {"visible": False, "title": "", "detail": ""},
+                timed_extraction_bonus_state=lambda: {"available": True, "amount": 14},
+            ),
+            minimap_snapshot=lambda: {"radius": 1, "rooms": []},
+        )
+
+        view = build_hud_view(player, dungeon, now_ticks=0)
+
+        self.assertTrue(view.objective.extraction_bonus_visible)
+        self.assertEqual(view.objective.extraction_bonus_amount, 14)
+
+    def test_objective_view_surfaces_carrying_heartstone_badge(self):
+        player = _PlayerStub()
+        player.carrying_heartstone = True
+        dungeon = SimpleNamespace(
+            current_room=SimpleNamespace(
+                objective_hud_state=lambda _t: {
+                    "visible": True,
+                    "label": "Objective: Deliver the heartstone",
+                },
+                playtest_identifier_state=lambda _t: {"visible": False, "title": "", "detail": ""},
+            ),
+            minimap_snapshot=lambda: {"radius": 1, "rooms": []},
+        )
+
+        view = build_hud_view(player, dungeon, now_ticks=0)
+
+        self.assertTrue(view.objective.carrying_heartstone)
 
 
 class RuneMetersHUDViewTests(unittest.TestCase):

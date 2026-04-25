@@ -147,6 +147,28 @@ def clear_loadout(holder):
     setattr(holder, "equipped_runes", empty_loadout())
 
 
+def force_equip_rune(holder, rune_id):
+    """Test-room equip: bypass ownership; if category slots are full,
+    drop the oldest entry to make room.  Returns True on success.
+
+    Intended for the test-room pause menu only; persistence is reverted
+    by the surrounding snapshot/restore flow when the test room exits.
+    """
+    rune = get_rune(rune_id)
+    if rune is None:
+        return False
+    loadout = equipped_runes(holder)
+    category_runes = loadout.setdefault(rune.category, [])
+    if rune_id in category_runes:
+        return True
+    capacity = RUNE_SLOT_CAPACITY[rune.category]
+    if len(category_runes) >= capacity:
+        category_runes.pop(0)
+    category_runes.append(rune_id)
+    setattr(holder, "equipped_runes", loadout)
+    return True
+
+
 # ── runtime mirror sync ─────────────────────────────────
 def sync_runtime_to_progress(player, progress):
     """Copy *progress*'s equipped runes onto *player* and reset rune state."""

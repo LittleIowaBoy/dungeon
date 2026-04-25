@@ -12,6 +12,7 @@ import random
 
 import pygame
 
+import damage_feedback
 import status_effects
 from sprites import make_rect_surface
 
@@ -48,7 +49,11 @@ class SkeletonAlly(pygame.sprite.Sprite):
         return now_ticks - self._spawn_ticks >= SKELETON_LIFETIME_MS
 
     def take_damage(self, amount):
+        previous_hp = self.current_hp
         self.current_hp -= amount
+        damage_dealt = previous_hp - max(self.current_hp, 0)
+        if damage_dealt > 0:
+            damage_feedback.report_damage(self, damage_dealt)
         if self.current_hp <= 0:
             self.kill()
 
