@@ -8,7 +8,10 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 import pygame  # noqa: E402
 
 import room as room_module  # noqa: E402
-from enemies import ChaserEnemy, PatrolEnemy, RandomEnemy  # noqa: E402
+from enemies import (  # noqa: E402
+    ChaserEnemy, LauncherEnemy, PatrolEnemy, PulsatorEnemy, RandomEnemy,
+    SentryEnemy,
+)
 from room import (  # noqa: E402
     DOOR,
     FLOOR,
@@ -61,8 +64,31 @@ class TuningTestRoomLayoutTests(unittest.TestCase):
     def test_enemy_configs_cover_all_three_classes(self):
         room = _build_tuning_room()
         classes = {cls for cls, _pos in room.enemy_configs}
-        self.assertEqual(classes, {PatrolEnemy, RandomEnemy, ChaserEnemy})
-        self.assertEqual(len(room.enemy_configs), 3)
+        self.assertEqual(
+            classes,
+            {PatrolEnemy, RandomEnemy, ChaserEnemy, PulsatorEnemy, LauncherEnemy, SentryEnemy},
+        )
+        self.assertEqual(len(room.enemy_configs), 6)
+
+    def test_attacks_disabled_by_default(self):
+        room = _build_tuning_room()
+        self.assertFalse(room.enemy_attacks_enabled)
+
+    def test_toggle_enemy_attacks_flips_flag_and_propagates(self):
+        room = _build_tuning_room()
+        e1 = PatrolEnemy(64, 64, is_frozen=True)
+        e2 = ChaserEnemy(96, 96, is_frozen=True)
+        e1.attacks_disabled = True
+        e2.attacks_disabled = True
+        group = pygame.sprite.Group(e1, e2)
+        room.toggle_enemy_attacks(group)
+        self.assertTrue(room.enemy_attacks_enabled)
+        self.assertFalse(e1.attacks_disabled)
+        self.assertFalse(e2.attacks_disabled)
+        room.toggle_enemy_attacks(group)
+        self.assertFalse(room.enemy_attacks_enabled)
+        self.assertTrue(e1.attacks_disabled)
+        self.assertTrue(e2.attacks_disabled)
 
     def test_grid_contains_every_terrain_type(self):
         room = _build_tuning_room()
@@ -80,7 +106,7 @@ class TuningTestRoomLayoutTests(unittest.TestCase):
         label_texts = {text for text, _pos in room.tuning_test_labels}
         for required in (
             "MUD", "ICE", "WATER", "WALL", "PORTAL", "FLOOR", "DOOR",
-            "PATROL", "RANDOM", "CHASER",
+            "PATROL", "RANDOM", "CHASER", "PULSATOR", "LAUNCHER", "SENTRY",
         ):
             self.assertIn(required, label_texts)
 
@@ -116,9 +142,13 @@ class TuningTestRoomEnemySpawnTests(unittest.TestCase):
         stub = _StubDungeon(room)
         Dungeon._load_room_sprites(stub)
         spawned = list(stub.enemy_group)
-        self.assertEqual(len(spawned), 3)
+        # 6 frozen showcase enemies (5 base + sentry); attacks default OFF.
+        self.assertEqual(len(spawned), 6)
         for enemy in spawned:
             self.assertTrue(getattr(enemy, "is_frozen", False))
+            self.assertTrue(getattr(enemy, "attacks_disabled", False))
+        sentries = [e for e in spawned if isinstance(e, SentryEnemy)]
+        self.assertEqual(len(sentries), 1)
 
 
 if __name__ == "__main__":

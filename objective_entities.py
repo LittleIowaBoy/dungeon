@@ -1205,3 +1205,754 @@ class Heartstone(pygame.sprite.Sprite):
         pygame.draw.circle(surface, _HEARTSTONE_OUTLINE, right_center, lobe_radius, 1)
         pygame.draw.polygon(surface, _HEARTSTONE_OUTLINE, triangle, 1)
         return surface
+
+
+# ── Phase 2.A biome-room entities ───────────────────────
+_VEIN_CRYSTAL_COLORS = {
+    "damage": (240, 120, 200),  # rose quartz — attack boost
+    "speed":  (160, 240, 200),  # mint geode  — move speed boost
+    "armor":  (200, 200, 240),  # pale amethyst — incoming damage reduction
+}
+_VEIN_CRYSTAL_OUTLINE = (40, 30, 60)
+_TREMOR_TELEGRAPH_COLOR = (220, 160, 60, 110)
+_TREMOR_STRIKE_COLOR = (240, 90, 50, 170)
+
+
+class VeinCrystal(pygame.sprite.Sprite):
+    """Destructible crystal that grants a room-scoped buff when broken.
+
+    Config keys:
+        pos:            pixel center
+        max_hp:         hit points
+        buff_stat:      "damage" | "speed" | "armor"
+        buff_magnitude: additive multiplier (0.20 = +20%)
+        destroyed:      bool, set on destruction
+        buff_applied:   bool, set after Room.update_objective grants the buff
+    """
+
+    SIZE = 18
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.max_hp = config.get("max_hp", 1)
+        self.current_hp = config.get("current_hp", self.max_hp)
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        del now_ticks
+        if self._config.get("destroyed"):
+            self.kill()
+            return
+        # Re-render in case damage feedback flashes a recolor someday.
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=self.rect.center)
+
+    def take_damage(self, amount):
+        if self._config.get("destroyed"):
+            return False
+        previous_hp = self.current_hp
+        self.current_hp = max(0, self.current_hp - amount)
+        self._config["current_hp"] = self.current_hp
+        damage_dealt = previous_hp - self.current_hp
+        if damage_dealt > 0:
+            damage_feedback.report_damage(self, damage_dealt)
+        if self.current_hp <= 0:
+            self._config["destroyed"] = True
+            self.kill()
+            return True
+        return False
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        color = _VEIN_CRYSTAL_COLORS.get(
+            self._config.get("buff_stat"), (220, 220, 240)
+        )
+        # Diamond silhouette so crystals are visually distinct from chests.
+        points = [
+            (size // 2, 1),
+            (size - 1, size // 2),
+            (size // 2, size - 1),
+            (1, size // 2),
+        ]
+        pygame.draw.polygon(surface, color, points)
+        pygame.draw.polygon(surface, _VEIN_CRYSTAL_OUTLINE, points, 1)
+        return surface
+
+
+class TremorEmitter(pygame.sprite.Sprite):
+    """Invisible objective entity that periodically stuns the player.
+
+    The stun is suppressed when the player stands on a HEARTH safe-spot
+    tile.  The emitter has no rect for collision; it draws a soft
+    overlay circle covering the whole room while telegraphing/striking.
+
+    Config keys:
+        pos:            pixel center (used only as anchor for overlay)
+        cycle_ms:       full cycle length (telegraph + strike + cooldown)
+        telegraph_ms:   windup window
+        strike_ms:      damage window
+        stun_duration_ms: status duration applied on strike
+        offset_ms:      phase offset
+    """
+
+    SIZE = 1
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.cycle_ms = config.get("cycle_ms", 4000)
+        self.telegraph_ms = config.get("telegraph_ms", 1500)
+        self.strike_ms = config.get("strike_ms", 500)
+        self.stun_duration_ms = config.get("stun_duration_ms", 1000)
+        self.offset_ms = config.get("offset_ms", 0)
+        # Tracks the strike-phase cycle index already applied so a single
+        # strike window can't stun the player every frame.
+        self._last_strike_cycle = -1
+        self.telegraphing = False
+        self.striking = False
+        self._now_ticks = 0
+        # Invisible 1×1 surface — drawing happens via draw_overlay().
+        self.image = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        phase = (now_ticks + self.offset_ms) % self.cycle_ms
+        self.telegraphing = phase < self.telegraph_ms
+        self.striking = (
+            self.telegraph_ms <= phase < self.telegraph_ms + self.strike_ms
+        )
+        # Latch the timestamp so apply_player_pressure (called immediately
+        # afterwards by rpg.py) doesn't have to query pygame's clock — and
+        # so unit tests can drive the entity by calling update(strike_now)
+        # directly without a live pygame timer.
+        self._now_ticks = now_ticks
+
+    def apply_player_pressure(self, player):
+        if not self.striking:
+            return False
+        # Suppress when the player is standing on a HEARTH safe-spot tile.
+        room = self._config.get("room")
+        if room is not None:
+            from room import HEARTH, TILE_SIZE
+            col = player.rect.centerx // TILE_SIZE
+            row = player.rect.centery // TILE_SIZE
+            if room.tile_at(col, row) == HEARTH:
+                return False
+        # Idempotent within a single strike window.
+        now_ticks = self._now_ticks
+        cycle_index = (now_ticks + self.offset_ms) // self.cycle_ms
+        if cycle_index == self._last_strike_cycle:
+            return False
+        self._last_strike_cycle = cycle_index
+        import status_effects
+        status_effects.apply_status(
+            player, status_effects.STUNNED, now_ticks,
+            duration_ms=self.stun_duration_ms,
+        )
+        return True
+
+    def draw_overlay(self, surface):
+        if not (self.telegraphing or self.striking):
+            return
+        color = _TREMOR_STRIKE_COLOR if self.striking else _TREMOR_TELEGRAPH_COLOR
+        overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        overlay.fill(color)
+        surface.blit(overlay, (0, 0))
+
+
+# ── Phase 2.A.3 biome-room entities ─────────────────────
+_SPORE_MUSHROOM_CAP_COLOR = (170, 90, 200)
+_SPORE_MUSHROOM_STEM_COLOR = (235, 220, 200)
+_SPORE_MUSHROOM_OUTLINE = (40, 20, 50)
+_SPORE_MUSHROOM_PULSE_COLOR = (140, 220, 130, 90)
+_COLLAPSE_TELEGRAPH_COLOR = (220, 130, 60, 140)
+_COLLAPSE_BORDER_COLOR = (50, 30, 20)
+_MINING_CART_BODY_COLOR = (140, 90, 50)
+_MINING_CART_TRIM_COLOR = (60, 40, 25)
+
+
+class SporeMushroom(pygame.sprite.Sprite):
+    """Destructible spore-emitter that periodically poisons the player.
+
+    Pulse cycle is identical in shape to ``AltarAnchor`` but the payload is
+    a :data:`status_effects.POISONED` application instead of HP damage.
+    Destroying the mushroom (HP→0) silences its pulses for the rest of
+    the room.
+
+    Config keys:
+        pos:                pixel center
+        max_hp:             hit points (default 3)
+        pulse_cycle_ms:     full cycle length (default 3000)
+        pulse_active_ms:    pulse window length (default 700)
+        pulse_offset_ms:    phase offset for variety
+        pulse_radius:       poison ring radius in px (default 80)
+        poison_duration_ms: status duration on hit (default 5000)
+        destroyed:          bool, set on destruction
+    """
+
+    SIZE = 22
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.max_hp = config.get("max_hp", 3)
+        self.current_hp = config.get("current_hp", self.max_hp)
+        self.pulse_cycle_ms = config.get("pulse_cycle_ms", 3000)
+        self.pulse_active_ms = config.get("pulse_active_ms", 700)
+        self.pulse_offset_ms = config.get("pulse_offset_ms", 0)
+        self.pulse_radius = config.get("pulse_radius", 80)
+        self.poison_duration_ms = config.get("poison_duration_ms", 5000)
+        self.pulse_active = False
+        self._last_pulse_cycle = -1
+        self._now_ticks = 0
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        if self._config.get("destroyed"):
+            self.pulse_active = False
+            self.kill()
+            return
+        elapsed = max(0, now_ticks + self.pulse_offset_ms)
+        self.pulse_active = elapsed % self.pulse_cycle_ms < self.pulse_active_ms
+        self._now_ticks = now_ticks
+
+    def apply_player_pressure(self, player):
+        if not self.pulse_active or self._config.get("destroyed"):
+            return False
+        dx = player.rect.centerx - self.rect.centerx
+        dy = player.rect.centery - self.rect.centery
+        if dx * dx + dy * dy > self.pulse_radius * self.pulse_radius:
+            return False
+        # Idempotent within one pulse window.
+        now_ticks = self._now_ticks
+        cycle_index = (now_ticks + self.pulse_offset_ms) // self.pulse_cycle_ms
+        if cycle_index == self._last_pulse_cycle:
+            return False
+        self._last_pulse_cycle = cycle_index
+        import status_effects
+        status_effects.apply_status(
+            player, status_effects.POISONED, now_ticks,
+            duration_ms=self.poison_duration_ms,
+        )
+        return True
+
+    def take_damage(self, amount):
+        if self._config.get("destroyed"):
+            return False
+        previous_hp = self.current_hp
+        self.current_hp = max(0, self.current_hp - amount)
+        self._config["current_hp"] = self.current_hp
+        damage_dealt = previous_hp - self.current_hp
+        if damage_dealt > 0:
+            damage_feedback.report_damage(self, damage_dealt)
+        if self.current_hp <= 0:
+            self._config["destroyed"] = True
+            self.kill()
+            return True
+        return False
+
+    def draw_overlay(self, surface):
+        if not self.pulse_active or self._config.get("destroyed"):
+            return
+        ring = pygame.Surface(
+            (self.pulse_radius * 2, self.pulse_radius * 2), pygame.SRCALPHA
+        )
+        pygame.draw.circle(
+            ring, _SPORE_MUSHROOM_PULSE_COLOR,
+            (self.pulse_radius, self.pulse_radius),
+            self.pulse_radius,
+        )
+        surface.blit(
+            ring,
+            (self.rect.centerx - self.pulse_radius,
+             self.rect.centery - self.pulse_radius),
+        )
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Stem.
+        stem_rect = pygame.Rect(size // 2 - 2, size // 2, 4, size // 2 - 1)
+        surface.fill(_SPORE_MUSHROOM_STEM_COLOR, stem_rect)
+        # Cap (semicircle).
+        pygame.draw.circle(
+            surface, _SPORE_MUSHROOM_CAP_COLOR,
+            (size // 2, size // 2),
+            size // 2 - 1,
+            draw_top_left=True, draw_top_right=True,
+        )
+        pygame.draw.circle(
+            surface, _SPORE_MUSHROOM_OUTLINE,
+            (size // 2, size // 2),
+            size // 2 - 1, 1,
+            draw_top_left=True, draw_top_right=True,
+        )
+        return surface
+
+
+class CollapseEmitter(pygame.sprite.Sprite):
+    """Cycle-driven floor-tile collapser for the Cave-In room.
+
+    Each cycle: pick a random FLOOR cell during the telegraph window, paint
+    a warning marker, then convert it to ``PIT_TILE`` at the strike instant.
+    Stops once ``max_collapses`` cells have been converted so the room
+    doesn't end up as a wall-to-wall pit field.
+
+    Config keys:
+        pos:            anchor pixel (room centre, used for sprite rect only)
+        cycle_ms:       full cycle length (default 5000)
+        telegraph_ms:   windup window during which the warning is shown
+        max_collapses:  cap on total tiles converted (default 4)
+        offset_ms:      phase offset
+        room:           live Room reference (required for grid mutation)
+    """
+
+    SIZE = 1
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.cycle_ms = config.get("cycle_ms", 5000)
+        self.telegraph_ms = config.get("telegraph_ms", 1500)
+        self.max_collapses = config.get("max_collapses", 4)
+        self.offset_ms = config.get("offset_ms", 0)
+        self.collapses_done = config.get("collapses_done", 0)
+        self.telegraphing = False
+        self._pending_cell = None  # (col, row) or None
+        self._last_strike_cycle = -1
+        self._now_ticks = 0
+        self.image = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        self._now_ticks = now_ticks
+        if self.collapses_done >= self.max_collapses:
+            self.telegraphing = False
+            self._pending_cell = None
+            return
+        phase = (now_ticks + self.offset_ms) % self.cycle_ms
+        in_telegraph = phase < self.telegraph_ms
+        cycle_index = (now_ticks + self.offset_ms) // self.cycle_ms
+
+        if in_telegraph:
+            if self._pending_cell is None or cycle_index != self._last_strike_cycle - 1:
+                # Pick a fresh victim cell at the start of each telegraph.
+                if cycle_index != self._last_strike_cycle:
+                    self._pending_cell = self._pick_target_cell()
+            self.telegraphing = self._pending_cell is not None
+        else:
+            # Strike the moment we leave the telegraph window.
+            if cycle_index != self._last_strike_cycle and self._pending_cell is not None:
+                self._collapse_cell(self._pending_cell)
+                self._last_strike_cycle = cycle_index
+                self._pending_cell = None
+            self.telegraphing = False
+
+    def _pick_target_cell(self):
+        room = self._config.get("room")
+        if room is None:
+            return None
+        from room import FLOOR, ROOM_COLS, ROOM_ROWS
+        candidates = [
+            (c, r)
+            for r in range(2, ROOM_ROWS - 2)
+            for c in range(2, ROOM_COLS - 2)
+            if room.grid[r][c] == FLOOR
+        ]
+        if not candidates:
+            return None
+        import random as _random
+        return _random.choice(candidates)
+
+    def _collapse_cell(self, cell):
+        room = self._config.get("room")
+        if room is None:
+            return
+        from room import FLOOR, PIT_TILE
+        col, row = cell
+        if room.grid[row][col] != FLOOR:
+            return
+        room.grid[row][col] = PIT_TILE
+        self.collapses_done += 1
+        self._config["collapses_done"] = self.collapses_done
+
+    def draw_overlay(self, surface):
+        if not self.telegraphing or self._pending_cell is None:
+            return
+        from room import TILE_SIZE
+        col, row = self._pending_cell
+        rect = pygame.Rect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+        marker = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        marker.fill(_COLLAPSE_TELEGRAPH_COLOR)
+        pygame.draw.rect(marker, _COLLAPSE_BORDER_COLOR, marker.get_rect(), 2)
+        surface.blit(marker, rect.topleft)
+
+
+class MiningCart(pygame.sprite.Sprite):
+    """Auto-rolling cart that travels along a CART_RAIL row.
+
+    Wraps around the room horizontally; on contact with the player applies
+    damage + horizontal knockback (rate-limited via ``damage_cooldown_ms``).
+
+    Config keys:
+        pos:                  initial pixel center
+        speed:                px per frame (positive = right, negative = left)
+        damage:               HP damage on hit (default 8)
+        knockback_px:         horizontal displacement applied on hit
+        damage_cooldown_ms:   minimum gap between successive hits
+    """
+
+    SIZE = 24
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.speed = config.get("speed", 2.4)
+        self.damage = config.get("damage", 8)
+        self.knockback_px = config.get("knockback_px", 24)
+        self.damage_cooldown_ms = config.get("damage_cooldown_ms", 600)
+        self._last_hit_at = -10**9
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        del now_ticks
+        from room import ROOM_COLS, TILE_SIZE
+        room_width = ROOM_COLS * TILE_SIZE
+        self.rect.x += self.speed
+        # Wrap when the entire sprite has cleared either side.
+        if self.rect.left > room_width:
+            self.rect.right = 0
+        elif self.rect.right < 0:
+            self.rect.left = room_width
+
+    def apply_player_pressure(self, player):
+        if not self.rect.colliderect(player.rect):
+            return False
+        import pygame as _pg
+        now_ticks = _pg.time.get_ticks()
+        if now_ticks - self._last_hit_at < self.damage_cooldown_ms:
+            return False
+        self._last_hit_at = now_ticks
+        player.take_damage(self.damage)
+        # Knock the player back along the cart's travel direction.
+        kx = self.knockback_px if self.speed >= 0 else -self.knockback_px
+        player.rect.x += kx
+        return True
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        body_rect = pygame.Rect(2, size // 3, size - 4, size // 2)
+        surface.fill(_MINING_CART_BODY_COLOR, body_rect)
+        pygame.draw.rect(surface, _MINING_CART_TRIM_COLOR, body_rect, 1)
+        # Wheels.
+        wheel_y = body_rect.bottom
+        pygame.draw.circle(surface, _MINING_CART_TRIM_COLOR, (5, wheel_y), 3)
+        pygame.draw.circle(surface, _MINING_CART_TRIM_COLOR, (size - 5, wheel_y), 3)
+        return surface
+
+
+# ── Phase 2.A.4 biome-room entities ─────────────────────
+_BURROW_MOUND_COLOR = (110, 75, 50)
+_BURROW_MOUND_OUTLINE = (50, 30, 20)
+_BURROW_TELEGRAPH_COLOR = (240, 180, 60, 130)
+
+
+class BurrowSpawner(pygame.sprite.Sprite):
+    """Periodically telegraphs then spawns an enemy at its position.
+
+    The actual ``enemy_group.add`` happens in :meth:`Room.update_objective`
+    (via a ``spawn_enemies`` update), which polls each spawner's
+    ``config["pending_spawn"]`` flag.  The spawner sets that flag the
+    moment it transitions from telegraph → strike, then clears it after
+    the room has consumed it.
+
+    Config keys:
+        pos:            pixel center (used as spawn point)
+        cycle_ms:       full cycle length (default 4500)
+        telegraph_ms:   windup window (mound visible, no spawn yet)
+        max_spawns:     cap on total enemies spawned (default 4)
+        offset_ms:      phase offset
+        enemy_cls:      ``ChaserEnemy`` (or any constructor accepting (x, y))
+        spawns_done:    int counter, persisted on the config
+        pending_spawn:  bool flag the room reads & resets each tick
+    """
+
+    SIZE = 24
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.cycle_ms = config.get("cycle_ms", 4500)
+        self.telegraph_ms = config.get("telegraph_ms", 1500)
+        self.max_spawns = config.get("max_spawns", 4)
+        self.offset_ms = config.get("offset_ms", 0)
+        self.spawns_done = config.get("spawns_done", 0)
+        self.telegraphing = False
+        self._last_strike_cycle = -1
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        if self.spawns_done >= self.max_spawns:
+            self.telegraphing = False
+            return
+        phase = (now_ticks + self.offset_ms) % self.cycle_ms
+        cycle_index = (now_ticks + self.offset_ms) // self.cycle_ms
+        in_telegraph = phase < self.telegraph_ms
+        self.telegraphing = in_telegraph
+        if not in_telegraph and cycle_index != self._last_strike_cycle:
+            # Transition to strike: arm a spawn for the room to harvest.
+            self._last_strike_cycle = cycle_index
+            self._config["pending_spawn"] = True
+            self.spawns_done += 1
+            self._config["spawns_done"] = self.spawns_done
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Earth mound: half-circle with a dirt rim.
+        pygame.draw.circle(
+            surface, _BURROW_MOUND_COLOR,
+            (size // 2, size // 2),
+            size // 2 - 1,
+        )
+        pygame.draw.circle(
+            surface, _BURROW_MOUND_OUTLINE,
+            (size // 2, size // 2),
+            size // 2 - 1, 1,
+        )
+        return surface
+
+    def draw_overlay(self, surface):
+        if not self.telegraphing:
+            return
+        radius = self.SIZE // 2 + 4
+        ring = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(
+            ring, _BURROW_TELEGRAPH_COLOR,
+            (radius, radius), radius,
+        )
+        surface.blit(
+            ring,
+            (self.rect.centerx - radius, self.rect.centery - radius),
+        )
+
+
+# ── Phase 2.A.5 biome-room entities ─────────────────────
+_BOULDER_COLOR = (115, 95, 75)
+_BOULDER_OUTLINE = (55, 40, 25)
+_BOULDER_TELEGRAPH_COLOR = (240, 140, 60, 130)
+_SHRINE_GLYPH_COLOR = (220, 200, 130)
+_SHRINE_GLYPH_OUTLINE = (120, 95, 50)
+_SHRINE_AURA_COLOR = (240, 220, 140, 90)
+
+
+class Boulder(pygame.sprite.Sprite):
+    """Telegraphed lane-roller hazard.
+
+    Each cycle: telegraph window (boulder hidden offscreen, lane arrow shown
+    via ``draw_overlay``), then strike phase where the boulder rolls across
+    the lane at high speed.  On contact during the strike phase the player
+    takes damage + lane-direction knockback (rate-limited).
+
+    Config keys:
+        lane_y:               pixel center y of the lane
+        direction:            +1 (rolls right) or -1 (rolls left)
+        cycle_ms:             full cycle length (default 3600)
+        telegraph_ms:         windup window (default 900)
+        speed:                px per frame during strike (default 6)
+        damage:               HP damage on hit (default 10)
+        knockback_px:         horizontal displacement applied on hit
+        damage_cooldown_ms:   minimum gap between successive hits
+        offset_ms:            phase offset
+    """
+
+    SIZE = 32
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.lane_y = config["lane_y"]
+        self.direction = 1 if config.get("direction", 1) >= 0 else -1
+        self.cycle_ms = config.get("cycle_ms", 3600)
+        self.telegraph_ms = config.get("telegraph_ms", 900)
+        self.speed = config.get("speed", 6) * self.direction
+        self.damage = config.get("damage", 10)
+        self.knockback_px = config.get("knockback_px", 32)
+        self.damage_cooldown_ms = config.get("damage_cooldown_ms", 700)
+        self.offset_ms = config.get("offset_ms", 0)
+        self._last_hit_at = -10**9
+        self._strike_cycle = -1
+        self.telegraphing = False
+        self.rolling = False
+        self.image = self._build_image()
+        # Park well offscreen until the first strike begins.
+        self.rect = self.image.get_rect(center=(-1000, self.lane_y))
+
+    # Lane geometry helpers --------------------------------------------------
+    def _lane_start_x(self):
+        from room import ROOM_COLS, TILE_SIZE
+        room_width = ROOM_COLS * TILE_SIZE
+        # Spawn just off the entry edge so the boulder sweeps across.
+        return -self.SIZE if self.direction > 0 else room_width + self.SIZE
+
+    def _is_offscreen(self):
+        from room import ROOM_COLS, TILE_SIZE
+        room_width = ROOM_COLS * TILE_SIZE
+        if self.direction > 0:
+            return self.rect.left > room_width
+        return self.rect.right < 0
+
+    def update(self, now_ticks):
+        phase = (now_ticks + self.offset_ms) % self.cycle_ms
+        cycle_index = (now_ticks + self.offset_ms) // self.cycle_ms
+        in_telegraph = phase < self.telegraph_ms
+        if in_telegraph:
+            self.telegraphing = True
+            self.rolling = False
+            self.rect.center = (-1000, self.lane_y)
+            return
+        # Strike phase.
+        self.telegraphing = False
+        if cycle_index != self._strike_cycle:
+            self._strike_cycle = cycle_index
+            self.rolling = True
+            self.rect.centery = self.lane_y
+            self.rect.centerx = self._lane_start_x()
+        if self.rolling:
+            self.rect.x += self.speed
+            if self._is_offscreen():
+                self.rolling = False
+                self.rect.center = (-1000, self.lane_y)
+
+    def apply_player_pressure(self, player):
+        if not self.rolling:
+            return False
+        if not self.rect.colliderect(player.rect):
+            return False
+        import pygame as _pg
+        now_ticks = _pg.time.get_ticks()
+        if now_ticks - self._last_hit_at < self.damage_cooldown_ms:
+            return False
+        self._last_hit_at = now_ticks
+        player.take_damage(self.damage)
+        kx = self.knockback_px if self.direction > 0 else -self.knockback_px
+        player.rect.x += kx
+        return True
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        pygame.draw.circle(
+            surface, _BOULDER_COLOR,
+            (size // 2, size // 2), size // 2 - 1,
+        )
+        pygame.draw.circle(
+            surface, _BOULDER_OUTLINE,
+            (size // 2, size // 2), size // 2 - 1, 2,
+        )
+        # A couple of rocky speckles for texture.
+        pygame.draw.circle(surface, _BOULDER_OUTLINE, (size // 3, size // 3), 2)
+        pygame.draw.circle(surface, _BOULDER_OUTLINE, (2 * size // 3, 2 * size // 3), 2)
+        return surface
+
+    def draw_overlay(self, surface):
+        if not self.telegraphing:
+            return
+        from room import ROOM_COLS, TILE_SIZE
+        room_width = ROOM_COLS * TILE_SIZE
+        # Draw a translucent arrow along the lane indicating travel direction.
+        height = 18
+        arrow = pygame.Surface((room_width, height), pygame.SRCALPHA)
+        arrow.fill(_BOULDER_TELEGRAPH_COLOR)
+        surface.blit(arrow, (0, self.lane_y - height // 2))
+
+
+class ShrineGlyph(pygame.sprite.Sprite):
+    """Centerpiece shrine that weakens enemies while the player stands on it.
+
+    The glyph itself is decorative — the active "weaken" effect is applied
+    by :meth:`apply_room_pressure` which rpg.py invokes each tick with the
+    current ``enemy_group`` and player.  When the player's tile is one of
+    the shrine's GLYPH_TILE positions, every enemy receives a short SLOWED
+    refresh; the entity's own ``active`` flag drives a pulsing aura.
+
+    Config keys:
+        pos:           pixel center
+        glyph_tiles:   set of (col, row) tile coords that count as "on shrine"
+        slow_ms:       SLOWED status duration applied to enemies (default 600)
+    """
+
+    SIZE = 24
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.glyph_tiles = set(config.get("glyph_tiles", ()))
+        self.slow_ms = config.get("slow_ms", 600)
+        self.active = False
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def _player_on_shrine(self, player):
+        from room import TILE_SIZE
+        col = player.rect.centerx // TILE_SIZE
+        row = player.rect.centery // TILE_SIZE
+        return (col, row) in self.glyph_tiles
+
+    def apply_room_pressure(self, player, enemy_group):
+        on_shrine = self._player_on_shrine(player)
+        self.active = on_shrine
+        if not on_shrine:
+            return False
+        import pygame as _pg
+        import status_effects
+        now_ticks = _pg.time.get_ticks()
+        for enemy in enemy_group:
+            status_effects.apply_status(
+                enemy, status_effects.SLOWED, now_ticks,
+                duration_ms=self.slow_ms,
+            )
+        return True
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Carved stone disk with a glyph cross.
+        pygame.draw.circle(
+            surface, _SHRINE_GLYPH_COLOR,
+            (size // 2, size // 2), size // 2 - 1,
+        )
+        pygame.draw.circle(
+            surface, _SHRINE_GLYPH_OUTLINE,
+            (size // 2, size // 2), size // 2 - 1, 2,
+        )
+        pygame.draw.line(
+            surface, _SHRINE_GLYPH_OUTLINE,
+            (size // 2, 4), (size // 2, size - 4), 2,
+        )
+        pygame.draw.line(
+            surface, _SHRINE_GLYPH_OUTLINE,
+            (4, size // 2), (size - 4, size // 2), 2,
+        )
+        return surface
+
+    def draw_overlay(self, surface):
+        if not self.active:
+            return
+        radius = self.SIZE // 2 + 8
+        aura = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(
+            aura, _SHRINE_AURA_COLOR,
+            (radius, radius), radius,
+        )
+        surface.blit(
+            aura,
+            (self.rect.centerx - radius, self.rect.centery - radius),
+        )

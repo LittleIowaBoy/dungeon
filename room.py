@@ -14,13 +14,19 @@ from settings import (
     DIR_OFFSETS, OPPOSITE_DIR,
     COLOR_FLOOR, COLOR_WALL, COLOR_MUD, COLOR_ICE, COLOR_WATER,
     COLOR_DOOR, COLOR_PORTAL,
+    COLOR_QUICKSAND, COLOR_SPIKE_PATCH, COLOR_PIT_TILE, COLOR_CURRENT,
+    COLOR_THIN_ICE, COLOR_HEARTH, COLOR_CART_RAIL, COLOR_GLYPH_TILE,
     COLOR_BLACK, COLOR_WHITE,
     ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM,
+    ENEMY_DOOR_BUFFER_TILES, ROOM_MAX_DISTINCT_ENEMY_TYPES,
     CHEST_SPAWN_CHANCE,
     TERRAIN_PATCH_MIN, TERRAIN_PATCH_MAX,
     TERRAIN_PATCH_SIZE_MIN, TERRAIN_PATCH_SIZE_MAX,
 )
-from enemies import ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy
+from enemies import (
+    ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy,
+    PulsatorEnemy, LauncherEnemy, SentryEnemy,
+)
 
 # tile type constants
 FLOOR = "floor"
@@ -31,6 +37,32 @@ WATER = "water"
 DOOR  = "door"
 PORTAL = "portal"
 
+# Biome-room hazard tile constants (Phase 1 of biome room expansion).
+# These tiles are walkable but trigger effects via terrain_effects.py:
+# QUICKSAND   — drowning timer; lethal if player remains in the patch.
+# SPIKE_PATCH — small passive tick damage on contact.
+# PIT_TILE    — lethal-on-step (collapsed cell from cave-in / thin ice).
+# CURRENT     — directional push (vector stored on the tile via Room helper).
+# THIN_ICE    — normal floor that progresses to PIT_TILE under prolonged use.
+# HEARTH      — safe spot that suppresses room-wide auras for the player.
+# CART_RAIL   — cosmetic (mining-cart entities navigate along it).
+# GLYPH_TILE  — puzzle tile that records ordered touches.
+QUICKSAND  = "quicksand"
+SPIKE_PATCH = "spike_patch"
+PIT_TILE   = "pit_tile"
+CURRENT    = "current"
+THIN_ICE   = "thin_ice"
+HEARTH     = "hearth"
+CART_RAIL  = "cart_rail"
+GLYPH_TILE = "glyph_tile"
+
+# Tiles that block player and enemy movement (treated as walls).  Only
+# WALL itself qualifies today; biome-room hazard tiles are walkable.
+WALKABLE_HAZARD_TILES = (
+    QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT,
+    THIN_ICE, HEARTH, CART_RAIL, GLYPH_TILE,
+)
+
 TERRAIN_COLORS = {
     FLOOR:  COLOR_FLOOR,
     WALL:   COLOR_WALL,
@@ -39,10 +71,27 @@ TERRAIN_COLORS = {
     WATER:  COLOR_WATER,
     DOOR:   COLOR_DOOR,
     PORTAL: COLOR_PORTAL,
+    QUICKSAND:   COLOR_QUICKSAND,
+    SPIKE_PATCH: COLOR_SPIKE_PATCH,
+    PIT_TILE:    COLOR_PIT_TILE,
+    CURRENT:     COLOR_CURRENT,
+    THIN_ICE:    COLOR_THIN_ICE,
+    HEARTH:      COLOR_HEARTH,
+    CART_RAIL:   COLOR_CART_RAIL,
+    GLYPH_TILE:  COLOR_GLYPH_TILE,
 }
 
 # terrain types that can be randomly placed (default pool)
 _TERRAIN_POOL = [MUD, ICE, WATER]
+
+# Biome-room IDs whose terrain patches are replaced with a hazard tile
+# instead of the biome's default terrain.  Patch count/size still come from
+# the room template; only the tile kind is swapped.
+HAZARD_ROOM_TERRAIN = {
+    "earth_stalagmite_field": SPIKE_PATCH,
+    "earth_quicksand_trap":   QUICKSAND,
+    "earth_tremor_chamber":   HEARTH,
+}
 
 # Identifier for the bespoke "Tuning Test Room" used by the room-test menu.
 # When a room is built from a plan with this room_id, the standard random
@@ -227,6 +276,12 @@ class Room:
                 self._enemy_count_range = self.room_plan.enemy_count_range
             if self.room_plan.enemy_type_weights:
                 self._enemy_type_weights = self.room_plan.enemy_type_weights
+            # Hazard-tile rooms override the biome default terrain so the
+            # patches placed by ``_place_terrain`` carry the biome-room
+            # mechanic (spike tick damage, drowning, etc.).
+            hazard_kind = HAZARD_ROOM_TERRAIN.get(self.room_plan.room_id)
+            if hazard_kind is not None:
+                self._terrain_type = hazard_kind
 
         self._portal_cells = []
         self._portal_active = True
@@ -266,6 +321,16 @@ class Room:
             if self.room_plan and self.room_plan.objective_rule not in {"immediate", "avoid_alarm_zones"}:
                 self._set_portal_active(False)
 
+        # ── Phase 1 biome-room infrastructure ─────────────
+        # Initialised here (before _build_objective_configs) so per-room
+        # builders can override these defaults — e.g. earth_echo_cavern
+        # narrows ``vision_radius`` to enable the fog-of-war camera pass.
+        self.vision_radius: int | None = None
+        self.current_vectors: dict[tuple[int, int], tuple[float, float]] = {}
+        self._room_buffs: list[dict] = []
+        self._quicksand_drown_ms: int = 0
+        self._hazard_last_tick_ms: int = 0
+
         # spawn configs (created once, enemies re-instantiated on each visit)
         self.enemy_configs = self._gen_enemy_configs()
         self._build_objective_configs()
@@ -279,7 +344,18 @@ class Room:
         # the random terrain/enemy placement with hand-tuned sections so each
         # terrain and enemy type can be exercised in isolation.
         self.frozen_enemies = False
+        # Test-room knob: when False, every spawned enemy in this room has
+        # ``attacks_disabled = True`` so designers can inspect them safely.
+        # Toggle at runtime in the tuning test room (see RpgRuntime keymap).
+        self.enemy_attacks_enabled = True
         self.tuning_test_labels: list[tuple[str, tuple[int, int]]] = []
+
+        # ── Phase 1 biome-room infrastructure (legacy comment block) ──
+        # The fields above were moved up so per-room ``_build_objective_configs``
+        # branches (notably ``earth_echo_cavern``'s vision_radius assignment)
+        # take effect.  This block is kept as a doc comment for clarity:
+        # vision_radius / current_vectors / _room_buffs / _quicksand_drown_ms /
+        # _hazard_last_tick_ms.
         if self.room_plan and self.room_plan.room_id == TUNING_TEST_ROOM_ID:
             self._build_tuning_test_room()
 
@@ -314,9 +390,62 @@ class Room:
         col = int(px) // TILE_SIZE
         row = int(py) // TILE_SIZE
         t = self.tile_at(col, row)
-        if t in (FLOOR, MUD, ICE, WATER, DOOR, PORTAL):
-            return t if t in (MUD, ICE, WATER) else "floor"
+        if t in (MUD, ICE, WATER):
+            return t
+        if t in WALKABLE_HAZARD_TILES:
+            return t
+        if t in (FLOOR, DOOR, PORTAL):
+            return "floor"
         return "floor"
+
+    # ── biome-room helpers (Phase 1) ────────────────────
+    def current_vector_at_pixel(self, px, py):
+        """Return the (dx, dy) push vector for a CURRENT tile, else None."""
+        col = int(px) // TILE_SIZE
+        row = int(py) // TILE_SIZE
+        if self.tile_at(col, row) != CURRENT:
+            return None
+        return self.current_vectors.get((col, row))
+
+    def add_room_buff(self, stat, magnitude, expires_at=None):
+        """Add a transient room-only buff (e.g., crystal vein pickup).
+
+        ``stat`` is a free-form string (e.g., ``"speed"``, ``"damage"``).
+        ``magnitude`` is the modifier (additive 0.20 = +20%).
+        ``expires_at`` is a pygame tick timestamp, or None for room-lifetime.
+        Buffs do not survive room transitions; ``Dungeon._load_room_sprites``
+        clears them via :meth:`reset_room_buffs` on entry.
+        """
+        self._room_buffs.append({
+            "stat": stat,
+            "magnitude": float(magnitude),
+            "expires_at": expires_at,
+        })
+
+    def active_room_buff_total(self, stat, now_ticks):
+        """Return summed magnitude of un-expired buffs for *stat*."""
+        total = 0.0
+        for buff in self._room_buffs:
+            if buff["stat"] != stat:
+                continue
+            exp = buff["expires_at"]
+            if exp is not None and now_ticks >= exp:
+                continue
+            total += buff["magnitude"]
+        return total
+
+    def prune_expired_room_buffs(self, now_ticks):
+        """Drop buffs whose ``expires_at`` has passed (called each frame)."""
+        self._room_buffs = [
+            b for b in self._room_buffs
+            if b["expires_at"] is None or now_ticks < b["expires_at"]
+        ]
+
+    def reset_room_buffs(self):
+        """Clear the room-buff registry (called on room entry / quit)."""
+        self._room_buffs = []
+        self._quicksand_drown_ms = 0
+        self._hazard_last_tick_ms = 0
 
     def get_wall_rects(self):
         """Return a list of pygame.Rects for all WALL tiles.
@@ -769,6 +898,38 @@ class Room:
             else:
                 self.objective_status = "active"
                 self._set_portal_active(False)
+            # Crystal Vein: grant a room-scoped buff for each crystal the
+            # player has destroyed since the last poll.  Buffs persist for
+            # the room lifetime (cleared on room exit by Dungeon).
+            if self.room_plan.room_id == "earth_crystal_vein":
+                for cfg in self.objective_entity_configs:
+                    if cfg.get("kind") != "vein_crystal":
+                        continue
+                    if cfg.get("destroyed") and not cfg.get("buff_applied"):
+                        self.add_room_buff(
+                            cfg["buff_stat"],
+                            cfg["buff_magnitude"],
+                            expires_at=None,
+                        )
+                        cfg["buff_applied"] = True
+            # Burrower Den: harvest pending spawn flags from each spawner
+            # and emit a single ``spawn_enemies`` update so rpg.py can
+            # add the new enemies to the live group.
+            if self.room_plan.room_id == "earth_burrower_den":
+                fresh_configs = []
+                for cfg in self.objective_entity_configs:
+                    if cfg.get("kind") != "burrow_spawner":
+                        continue
+                    if cfg.get("pending_spawn"):
+                        cfg["pending_spawn"] = False
+                        fresh_configs.append((ChaserEnemy, cfg["pos"]))
+                if fresh_configs:
+                    self.enemy_configs.extend(fresh_configs)
+                    return {
+                        "kind": "spawn_enemies",
+                        "source": "burrower_den",
+                        "enemy_configs": fresh_configs,
+                    }
             return None
 
         if rule == "destroy_altars":
@@ -1905,6 +2066,7 @@ class Room:
                     "patrol_points": self._stealth_patrol_points(
                         pos,
                         self.room_plan.objective_patrol_offset,
+                        shape=self.room_plan.objective_patrol_shape,
                     ),
                     "patrol_cycle_ms": 1800 + index * 250,
                     "vision_angle_deg": 75,
@@ -1913,6 +2075,241 @@ class Room:
             ]
         elif self.room_plan.objective_rule == "rune_altar":
             self.objective_entity_configs = self._build_rune_altar_configs()
+        elif self.room_plan.room_id == "earth_crystal_vein":
+            self.objective_entity_configs = self._build_crystal_vein_configs()
+        elif self.room_plan.room_id == "earth_tremor_chamber":
+            self.objective_entity_configs = self._build_tremor_chamber_configs()
+        elif self.room_plan.room_id == "earth_mushroom_grove":
+            self.objective_entity_configs = self._build_mushroom_grove_configs()
+        elif self.room_plan.room_id == "earth_cave_in":
+            self.objective_entity_configs = self._build_cave_in_configs()
+        elif self.room_plan.room_id == "earth_mining_carts":
+            self.objective_entity_configs = self._build_mining_carts_configs()
+        elif self.room_plan.room_id == "earth_burrower_den":
+            self.objective_entity_configs = self._build_burrower_den_configs()
+        elif self.room_plan.room_id == "earth_echo_cavern":
+            # Echo Cavern is a fog-of-war room — no entities to spawn,
+            # just narrow the camera vision radius.  Set this here so
+            # rooms re-built (e.g. on revisit) keep the effect.
+            self.vision_radius = 96
+        elif self.room_plan.room_id == "earth_boulder_run":
+            self.objective_entity_configs = self._build_boulder_run_configs()
+        elif self.room_plan.room_id == "earth_shrine_circle":
+            self.objective_entity_configs = self._build_shrine_circle_configs()
+
+    def _build_crystal_vein_configs(self):
+        """Place 3-4 destructible vein crystals on FLOOR cells.
+
+        Each crystal advertises a single buff (``damage`` / ``speed`` /
+        ``armor``) granted via ``Room.add_room_buff`` when destroyed.  See
+        :meth:`update_objective` rule branch ``crystal_vein``.
+        """
+        crystal_count = random.randint(3, 4)
+        buff_pool = (
+            ("damage", 0.20),
+            ("speed",  0.20),
+            ("armor",  0.15),
+        )
+        positions = self._sample_floor_positions(crystal_count)
+        return [
+            {
+                "kind": "vein_crystal",
+                "pos": pos,
+                "max_hp": 1,
+                "current_hp": 1,
+                "buff_stat": stat,
+                "buff_magnitude": magnitude,
+                "destroyed": False,
+                "buff_applied": False,
+            }
+            for pos, (stat, magnitude) in zip(
+                positions,
+                random.choices(buff_pool, k=crystal_count),
+            )
+        ]
+
+    def _build_tremor_chamber_configs(self):
+        """Single invisible tremor emitter centred in the room."""
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        return [
+            {
+                "kind": "tremor_emitter",
+                "pos": (cx, cy),
+                "cycle_ms": 4000,
+                "telegraph_ms": 1500,
+                "strike_ms": 500,
+                "stun_duration_ms": 1000,
+                "offset_ms": 0,
+                # Live room reference so the emitter can poll HEARTH safe
+                # tiles when checking whether to suppress a stun strike.
+                "room": self,
+            }
+        ]
+
+    def _sample_floor_positions(self, count):
+        """Pick up to ``count`` random pixel-centres on FLOOR cells."""
+        candidates = [
+            (c, r)
+            for r in range(2, ROOM_ROWS - 2)
+            for c in range(2, ROOM_COLS - 2)
+            if self.grid[r][c] == FLOOR
+        ]
+        random.shuffle(candidates)
+        chosen = candidates[:count]
+        return [
+            (c * TILE_SIZE + TILE_SIZE // 2, r * TILE_SIZE + TILE_SIZE // 2)
+            for c, r in chosen
+        ]
+
+    def _build_mushroom_grove_configs(self):
+        """Place 3-4 destructible spore mushrooms with staggered pulse phases."""
+        mushroom_count = random.randint(3, 4)
+        positions = self._sample_floor_positions(mushroom_count)
+        cycle_ms = 3000
+        return [
+            {
+                "kind": "spore_mushroom",
+                "pos": pos,
+                "max_hp": 3,
+                "current_hp": 3,
+                "pulse_cycle_ms": cycle_ms,
+                "pulse_active_ms": 700,
+                "pulse_offset_ms": (cycle_ms // mushroom_count) * index,
+                "pulse_radius": 80,
+                "poison_duration_ms": 5000,
+                "destroyed": False,
+            }
+            for index, pos in enumerate(positions)
+        ]
+
+    def _build_cave_in_configs(self):
+        """Single collapse emitter centred in the room."""
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        return [
+            {
+                "kind": "collapse_emitter",
+                "pos": (cx, cy),
+                "cycle_ms": 5000,
+                "telegraph_ms": 1500,
+                "max_collapses": 4,
+                "offset_ms": 0,
+                "collapses_done": 0,
+                # Live room reference: the emitter mutates ``room.grid``
+                # directly when a tile collapses to PIT_TILE.
+                "room": self,
+            }
+        ]
+
+    def _build_mining_carts_configs(self):
+        """Lay 2-3 horizontal CART_RAIL rows and spawn one cart per row."""
+        # Choose 2-3 rail rows spaced across the play area.
+        candidate_rows = [3, 6, 9, 12]
+        cart_count = random.randint(2, 3)
+        random.shuffle(candidate_rows)
+        rail_rows = sorted(candidate_rows[:cart_count])
+
+        # Lay the rail tiles (only over FLOOR — preserves walls/doors).
+        for row in rail_rows:
+            for col in range(1, ROOM_COLS - 1):
+                if self.grid[row][col] == FLOOR:
+                    self.grid[row][col] = CART_RAIL
+
+        configs = []
+        room_width = ROOM_COLS * TILE_SIZE
+        for index, row in enumerate(rail_rows):
+            cy = row * TILE_SIZE + TILE_SIZE // 2
+            # Alternate direction + stagger horizontal offset for variety.
+            direction = 1 if index % 2 == 0 else -1
+            start_x = (room_width // (cart_count + 1)) * (index + 1)
+            configs.append({
+                "kind": "mining_cart",
+                "pos": (start_x, cy),
+                "speed": 2.4 * direction,
+                "damage": 8,
+                "knockback_px": 24,
+                "damage_cooldown_ms": 600,
+            })
+        return configs
+
+    def _build_burrower_den_configs(self):
+        """Place 3-4 burrow spawners on FLOOR cells with staggered phases."""
+        spawner_count = random.randint(3, 4)
+        positions = self._sample_floor_positions(spawner_count)
+        cycle_ms = 4500
+        return [
+            {
+                "kind": "burrow_spawner",
+                "pos": pos,
+                "cycle_ms": cycle_ms,
+                "telegraph_ms": 1500,
+                "max_spawns": 4,
+                "offset_ms": (cycle_ms // spawner_count) * index,
+                "spawns_done": 0,
+                "pending_spawn": False,
+            }
+            for index, pos in enumerate(positions)
+        ]
+
+    def _build_boulder_run_configs(self):
+        """Pick 2-3 lane rows and spawn one telegraphed boulder per lane.
+
+        Lanes alternate direction; phases are staggered so boulders don't
+        all strike on the same beat.
+        """
+        candidate_rows = [3, 6, 9, 12]
+        boulder_count = random.randint(2, 3)
+        random.shuffle(candidate_rows)
+        lane_rows = sorted(candidate_rows[:boulder_count])
+        cycle_ms = 3600
+        configs = []
+        for index, row in enumerate(lane_rows):
+            cy = row * TILE_SIZE + TILE_SIZE // 2
+            direction = 1 if index % 2 == 0 else -1
+            configs.append({
+                "kind": "boulder",
+                "lane_y": cy,
+                "pos": (-1000, cy),
+                "direction": direction,
+                "cycle_ms": cycle_ms,
+                "telegraph_ms": 900,
+                "speed": 6,
+                "damage": 10,
+                "knockback_px": 32,
+                "damage_cooldown_ms": 700,
+                "offset_ms": (cycle_ms // boulder_count) * index,
+            })
+        return configs
+
+    def _build_shrine_circle_configs(self):
+        """Lay a 3x3 GLYPH_TILE shrine in the room centre + place the glyph entity.
+
+        The entity tracks the glyph tile coords; while the player stands
+        on any of them, ``apply_room_pressure`` slows every enemy in the
+        room (see ShrineGlyph).
+        """
+        cx_col = ROOM_COLS // 2
+        cy_row = ROOM_ROWS // 2
+        glyph_tiles = set()
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                col = cx_col + dc
+                row = cy_row + dr
+                if 1 <= col < ROOM_COLS - 1 and 1 <= row < ROOM_ROWS - 1:
+                    if self.grid[row][col] == FLOOR:
+                        self.grid[row][col] = GLYPH_TILE
+                        glyph_tiles.add((col, row))
+        cx = cx_col * TILE_SIZE + TILE_SIZE // 2
+        cy = cy_row * TILE_SIZE + TILE_SIZE // 2
+        return [
+            {
+                "kind": "shrine_glyph",
+                "pos": (cx, cy),
+                "glyph_tiles": glyph_tiles,
+                "slow_ms": 600,
+            }
+        ]
 
     def _build_rune_altar_configs(self):
         """Generate one rune altar centred in the room with three rune offers.
@@ -2540,7 +2937,7 @@ class Room:
             positions.append(self._offset_to_pixel(offset))
         return tuple(positions)
 
-    def _stealth_patrol_points(self, position, patrol_offset=None):
+    def _stealth_patrol_points(self, position, patrol_offset=None, shape="line"):
         if patrol_offset is None:
             center_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
             center_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
@@ -2552,12 +2949,43 @@ class Room:
             else:
                 patrol_offset = (2, 0)
 
-        offset_x = patrol_offset[0] * TILE_SIZE
-        offset_y = patrol_offset[1] * TILE_SIZE
+        ox = patrol_offset[0] * TILE_SIZE
+        oy = patrol_offset[1] * TILE_SIZE
+        # Perpendicular vector for shapes that need a second axis.
+        px = -patrol_offset[1] * TILE_SIZE
+        py = patrol_offset[0] * TILE_SIZE
+
+        shape_key = (shape or "line").strip().lower()
+        if shape_key == "triangle":
+            offsets = [
+                (0, 0),
+                (ox, oy),
+                (px // 2, py // 2),
+            ]
+        elif shape_key == "square":
+            offsets = [
+                (0, 0),
+                (ox, oy),
+                (ox + px, oy + py),
+                (px, py),
+            ]
+        elif shape_key == "zigzag":
+            offsets = [
+                (0, 0),
+                (ox // 2, oy // 2 + py // 2),
+                (ox, oy),
+                (ox + ox // 2, oy + oy // 2 - py // 2),
+            ]
+        else:  # line (default)
+            offsets = [
+                (0, 0),
+                (ox, oy),
+                (-ox, -oy),
+            ]
+
         patrol_points = [
-            self._clamp_objective_pixel(position),
-            self._clamp_objective_pixel((position[0] + offset_x, position[1] + offset_y)),
-            self._clamp_objective_pixel((position[0] - offset_x, position[1] - offset_y)),
+            self._clamp_objective_pixel((position[0] + dx, position[1] + dy))
+            for dx, dy in offsets
         ]
         return tuple(dict.fromkeys(patrol_points))
 
@@ -2898,20 +3326,107 @@ class Room:
         variant_id = self.room_plan.objective_variant if self.room_plan else DEFAULT_RELIC_VARIANT
         return get_relic_variant(variant_id or DEFAULT_RELIC_VARIANT)["label"]
 
-    def _random_floor_pos(self, margin=3):
-        """Return a (px, py) on a FLOOR tile at least *margin* tiles from edges."""
+    def _random_floor_pos(self, margin=3, door_buffer_tiles=None):
+        """Return a (px, py) on a FLOOR tile.
+
+        ``margin`` keeps the candidate ``margin`` tiles inside the room
+        border.  ``door_buffer_tiles`` (defaults to
+        ``ENEMY_DOOR_BUFFER_TILES``) rejects any tile within that
+        Chebyshev distance of an open-door opening so enemies never
+        spawn directly on top of an entry point.
+        """
+        if door_buffer_tiles is None:
+            door_buffer_tiles = ENEMY_DOOR_BUFFER_TILES
+        door_tiles = self._door_tile_set() if door_buffer_tiles > 0 else ()
         for _ in range(200):
             c = random.randint(margin, ROOM_COLS - 1 - margin)
             r = random.randint(margin, ROOM_ROWS - 1 - margin)
-            if self.grid[r][c] == FLOOR:
-                return (c * TILE_SIZE + TILE_SIZE // 2,
-                        r * TILE_SIZE + TILE_SIZE // 2)
+            if self.grid[r][c] != FLOOR:
+                continue
+            if door_tiles and self._near_door_tile(c, r, door_tiles, door_buffer_tiles):
+                continue
+            return (c * TILE_SIZE + TILE_SIZE // 2,
+                    r * TILE_SIZE + TILE_SIZE // 2)
         # fallback: center
         return (ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2,
                 ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2)
 
+    def _door_tile_set(self):
+        """Return the set of (col, row) tiles forming each open-door opening."""
+        mid_col = ROOM_COLS // 2
+        mid_row = ROOM_ROWS // 2
+        half = DOOR_WIDTH // 2
+        tiles = set()
+        if self.doors.get("top"):
+            for dc in range(-half, half + 1):
+                tiles.add((mid_col + dc, 0))
+        if self.doors.get("bottom"):
+            for dc in range(-half, half + 1):
+                tiles.add((mid_col + dc, ROOM_ROWS - 1))
+        if self.doors.get("left"):
+            for dr in range(-half, half + 1):
+                tiles.add((0, mid_row + dr))
+        if self.doors.get("right"):
+            for dr in range(-half, half + 1):
+                tiles.add((ROOM_COLS - 1, mid_row + dr))
+        return tiles
+
+    @staticmethod
+    def _near_door_tile(col, row, door_tiles, buffer_tiles):
+        for dc, dr in door_tiles:
+            if max(abs(col - dc), abs(row - dr)) <= buffer_tiles:
+                return True
+        return False
+
     def _gen_enemy_configs(self):
         return self._gen_enemy_configs_for_range(self._enemy_count_range)
+
+    def _build_enemy_palette(self):
+        """Pick up to ``ROOM_MAX_DISTINCT_ENEMY_TYPES`` distinct classes.
+
+        Sampling is weighted by ``self._enemy_type_weights`` (truncated or
+        padded to match ``ENEMY_CLASSES``) and uses no-replacement so the
+        same class never appears twice in the palette.  The result is
+        cached on the room so reinforcement spawns reuse it.
+        """
+        cached = getattr(self, "_enemy_palette", None)
+        if cached:
+            return cached
+        weights = list(self._enemy_type_weights or [])
+        # Pad/truncate to match ENEMY_CLASSES length.
+        if len(weights) < len(ENEMY_CLASSES):
+            weights = weights + [0] * (len(ENEMY_CLASSES) - len(weights))
+        elif len(weights) > len(ENEMY_CLASSES):
+            weights = weights[: len(ENEMY_CLASSES)]
+        if all(w <= 0 for w in weights):
+            weights = [1] * len(ENEMY_CLASSES)
+
+        cap = ROOM_MAX_DISTINCT_ENEMY_TYPES
+        # If sentries are spawned by an objective in this room, reserve one
+        # slot so total visible types still fits in ``ROOM_MAX_DISTINCT_ENEMY_TYPES``.
+        if self._room_uses_sentries():
+            cap = max(1, cap - 1)
+
+        pool_classes = list(ENEMY_CLASSES)
+        pool_weights = list(weights)
+        chosen = []
+        chosen_weights = []
+        while pool_classes and len(chosen) < cap:
+            if all(w <= 0 for w in pool_weights):
+                break
+            idx = random.choices(range(len(pool_classes)), weights=pool_weights, k=1)[0]
+            chosen.append(pool_classes.pop(idx))
+            chosen_weights.append(pool_weights.pop(idx))
+        self._enemy_palette = (tuple(chosen), tuple(chosen_weights))
+        return self._enemy_palette
+
+    def _room_uses_sentries(self):
+        if self.room_plan is not None and self.room_plan.objective_rule == "avoid_alarm_zones":
+            return True
+        for cfg in getattr(self, "objective_entity_configs", ()) or ():
+            if cfg.get("kind") == "alarm_beacon":
+                return True
+        return False
 
     def _gen_enemy_configs_for_range(self, enemy_count_range):
         if enemy_count_range:
@@ -2919,12 +3434,13 @@ class Room:
         else:
             lo, hi = ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM
         count = random.randint(lo, hi)
+        palette_classes, palette_weights = self._build_enemy_palette()
         configs = []
         for _ in range(count):
-            if self._enemy_type_weights:
-                cls = random.choices(
-                    ENEMY_CLASSES, weights=self._enemy_type_weights, k=1
-                )[0]
+            if palette_classes and any(w > 0 for w in palette_weights):
+                cls = random.choices(palette_classes, weights=palette_weights, k=1)[0]
+            elif palette_classes:
+                cls = random.choice(palette_classes)
             else:
                 cls = random.choice(ENEMY_CLASSES)
             pos = self._random_floor_pos(margin=4)
@@ -2967,6 +3483,25 @@ class Room:
                 for c in range(col, col + 3):
                     self.grid[r][c] = terrain
 
+        # Hazard-tile showcase (Phase 1 biome-room foundations).  Each
+        # hazard gets a single 1×1 cell on row 7 with a label above on row 6.
+        hazard_sections = (
+            (SPIKE_PATCH, 2,  "SPIKE"),
+            (QUICKSAND,   4,  "QUICKSAND"),
+            (PIT_TILE,    6,  "PIT"),
+            (CURRENT,     8,  "CURRENT"),
+            (THIN_ICE,    10, "THIN ICE"),
+            (HEARTH,      12, "HEARTH"),
+            (CART_RAIL,   14, "RAIL"),
+            (GLYPH_TILE,  16, "GLYPH"),
+        )
+        hazard_row = 7
+        for tile, col, _label in hazard_sections:
+            self.grid[hazard_row][col] = tile
+        # Wire a sample push vector for the CURRENT showcase cell so
+        # apply_terrain_effects has something to push the player with.
+        self.current_vectors[(8, hazard_row)] = (1.0, 0.0)
+
         # Single PORTAL tile in the upper-right corner; its cell is tracked
         # so portal_center_pixel() / level-complete logic still works.
         portal_row, portal_col = 3, 18
@@ -2976,11 +3511,16 @@ class Room:
 
         # Frozen enemy showcase placed along row 9.  Order mirrors the
         # ENEMY_CLASSES tuple so adding a new enemy type just means
-        # appending a row here.
+        # appending a row here.  SentryEnemy is included even though it
+        # lives outside ``ENEMY_CLASSES`` so the test room can exercise its
+        # sprite/attack telegraph alongside the rest.
         enemy_sections = (
-            (PatrolEnemy, 4,  "PATROL"),
-            (RandomEnemy, 10, "RANDOM"),
-            (ChaserEnemy, 16, "CHASER"),
+            (PatrolEnemy,   2,  "PATROL"),
+            (RandomEnemy,   5,  "RANDOM"),
+            (ChaserEnemy,   8,  "CHASER"),
+            (PulsatorEnemy, 11, "PULSATOR"),
+            (LauncherEnemy, 14, "LAUNCHER"),
+            (SentryEnemy,   17, "SENTRY"),
         )
         enemy_row = 9
         self.enemy_configs = [
@@ -2989,6 +3529,9 @@ class Room:
             for cls, col, _label in enemy_sections
         ]
         self.frozen_enemies = True
+        # Attacks start disabled in the test room; F2 toggles them on/off
+        # at runtime via :meth:`Room.toggle_enemy_attacks`.
+        self.enemy_attacks_enabled = False
         # Slain test enemies respawn 2 seconds after death so designers can
         # repeatedly exercise damage / death effects without leaving the room.
         self.respawn_enemies_after_ms = 2000
@@ -3002,12 +3545,16 @@ class Room:
         for terrain, col, label in terrain_sections:
             del terrain
             labels.append((label, _cell_center(col + 1, 1)))
+        for tile, col, label in hazard_sections:
+            del tile
+            labels.append((label, _cell_center(col, hazard_row - 1)))
         labels.append(("PORTAL", _cell_center(portal_col, 1)))
         labels.append(("FLOOR", _cell_center(10, 6)))
         labels.append(("DOOR", _cell_center(2, ROOM_ROWS // 2)))
         for cls, col, label in enemy_sections:
             del cls
             labels.append((label, _cell_center(col, enemy_row + 2)))
+        labels.append(("F2: TOGGLE ATTACKS", _cell_center(10, ROOM_ROWS - 2)))
         labels.append(("PLAYER SPAWN", _cell_center(3, 12)))
         self.tuning_test_labels = labels
 
@@ -3016,6 +3563,19 @@ class Room:
         self.objective_entity_configs = []
         # No chest in the test room: keep visual focus on the sections.
         self.chest_pos = None
+
+    def toggle_enemy_attacks(self, enemy_group=None):
+        """Flip ``enemy_attacks_enabled`` and propagate to live enemies.
+
+        The dungeon owns the live ``enemy_group``; pass it in so spawned
+        enemies have their ``attacks_disabled`` flag updated immediately.
+        Returns the new ``enemy_attacks_enabled`` value.
+        """
+        self.enemy_attacks_enabled = not self.enemy_attacks_enabled
+        if enemy_group is not None:
+            for enemy in enemy_group:
+                enemy.attacks_disabled = not self.enemy_attacks_enabled
+        return self.enemy_attacks_enabled
 
     def update_enemy_respawns(self, now_ticks, enemy_group):
         """Return ``[(cls, (px, py)), ...]`` of test enemies due for respawn.

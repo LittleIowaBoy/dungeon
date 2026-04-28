@@ -47,6 +47,7 @@ class RoomTemplate:
     objective_layout_offsets: str = ""
     objective_spawn_offset: str = ""
     objective_patrol_offset: str = ""
+    objective_patrol_shape: str = "line"
     objective_radius: int = 0
     objective_trigger_padding: int = 0
     objective_max_hp: int = 0
@@ -103,6 +104,7 @@ class RoomTemplate:
             objective_layout_offsets=row.get("objective_layout_offsets", ""),
             objective_spawn_offset=row.get("objective_spawn_offset", ""),
             objective_patrol_offset=row.get("objective_patrol_offset", ""),
+            objective_patrol_shape=row.get("objective_patrol_shape", "line") or "line",
             objective_radius=row.get("objective_radius", 0),
             objective_trigger_padding=row.get("objective_trigger_padding", 0),
             objective_max_hp=row.get("objective_max_hp", 0),
@@ -155,6 +157,7 @@ class RoomPlan:
     objective_layout_offsets: tuple[tuple[int, int], ...] = ()
     objective_spawn_offset: tuple[int, int] | None = None
     objective_patrol_offset: tuple[int, int] | None = None
+    objective_patrol_shape: str = "line"
     objective_radius: int = 0
     objective_trigger_padding: int = 0
     objective_max_hp: int = 0

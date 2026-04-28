@@ -41,7 +41,7 @@ SEAL_DOOR_THEMES = {
 class Camera:
     """Renders the current room (room == screen, no scrolling)."""
 
-    def draw(self, surface, room, sprite_groups, dungeon=None):
+    def draw(self, surface, room, sprite_groups, dungeon=None, player=None):
         """
         Parameters
         ----------
@@ -75,10 +75,63 @@ class Camera:
         if dungeon is not None:
             self._draw_one_way_door_markers(surface, dungeon)
             self._draw_sealed_door_markers(surface, dungeon)
+            self._draw_enemy_attack_hitboxes(surface, dungeon)
+            # Fog-of-war pass for vision-radius rooms (echo cavern, blizzard,
+            # anglerfish lure).  Drawn after gameplay sprites so it occludes
+            # them, but before world-space text labels so HUD text stays
+            # readable.
+            self._draw_fog_of_war(surface, room, player)
 
         # bespoke world-space overlays (e.g., tuning test room section labels)
         if hasattr(room, "draw_overlay_labels"):
             room.draw_overlay_labels(surface)
+
+    def _draw_enemy_attack_hitboxes(self, surface, dungeon):
+        """Outline enemy attack hitboxes for designer visibility.
+
+        Yellow outline during TELEGRAPH (incoming swing preview); red
+        translucent fill + outline during STRIKE (active damage frame).
+        Pulsator rings and launcher projectiles are visible as their own
+        sprites so they need no extra overlay here.
+        """
+        enemy_group = getattr(dungeon, "enemy_group", None)
+        if enemy_group is None:
+            return
+        telegraph_color = (255, 220, 0)
+        strike_color = (255, 40, 40)
+        strike_fill = (255, 40, 40, 90)
+        for enemy in enemy_group:
+            if not enemy.alive():
+                continue
+            for rect in getattr(enemy, "telegraph_hitboxes", lambda: ())():
+                pygame.draw.rect(surface, telegraph_color, rect, width=2)
+            strike_rects = getattr(enemy, "active_hitboxes", lambda: ())()
+            for rect in strike_rects:
+                fill = pygame.Surface(rect.size, pygame.SRCALPHA)
+                fill.fill(strike_fill)
+                surface.blit(fill, rect.topleft)
+                pygame.draw.rect(surface, strike_color, rect, width=2)
+
+    def _draw_fog_of_war(self, surface, room, player):
+        """Hard-circle fog-of-war for ``Room.vision_radius`` rooms.
+
+        Renders a near-opaque dark overlay with a transparent hole around
+        the player.  Soft falloff is intentionally deferred to a polish
+        pass; a hard circle is cheap and reads clearly to designers.
+        """
+        radius = getattr(room, "vision_radius", None)
+        if not radius or radius <= 0:
+            return
+        if player is None or not hasattr(player, "rect"):
+            return
+        w, h = surface.get_size()
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 215))
+        pygame.draw.circle(
+            overlay, (0, 0, 0, 0),
+            player.rect.center, int(radius),
+        )
+        surface.blit(overlay, (0, 0))
 
     def _draw_one_way_door_markers(self, surface, dungeon):
         marker_margin = 2

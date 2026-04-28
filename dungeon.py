@@ -12,7 +12,6 @@ from enemies import Enemy
 from dungeon_topology import TopologyPlan, TopologyPlanner, TopologyRoom
 from dungeon_config import get_difficulty_preset
 from objective_entities import (
-    AlarmBeacon,
     AltarAnchor,
     EscortNPC,
     HoldoutStabilizer,
@@ -24,6 +23,14 @@ from objective_entities import (
     TrapSafeSpot,
     TrapSweeper,
     TrapVentLane,
+    TremorEmitter,
+    VeinCrystal,
+    SporeMushroom,
+    CollapseEmitter,
+    MiningCart,
+    BurrowSpawner,
+    Boulder,
+    ShrineGlyph,
 )
 from room_selector import RoomSelector
 
@@ -187,6 +194,9 @@ class Dungeon:
         self.objective_group: pygame.sprite.Group = pygame.sprite.Group()
         self.hitbox_group: pygame.sprite.Group = pygame.sprite.Group()
         self.ally_group: pygame.sprite.Group = pygame.sprite.Group()
+        # Telegraphed-attack secondary entities (rings + projectiles).
+        self.enemy_projectile_group: pygame.sprite.Group = pygame.sprite.Group()
+        self.pulsator_ring_group: pygame.sprite.Group = pygame.sprite.Group()
 
     # ── public API ──────────────────────────────────────
     @property
@@ -394,14 +404,24 @@ class Dungeon:
         self.objective_group.empty()
         self.hitbox_group.empty()
         self.ally_group.empty()
+        if hasattr(self, "enemy_projectile_group"):
+            self.enemy_projectile_group.empty()
+        if hasattr(self, "pulsator_ring_group"):
+            self.pulsator_ring_group.empty()
 
         room = self.current_room
+        # Phase 1 biome-room infra: per-room buffs / hazard timers do not
+        # persist across room transitions.
+        if hasattr(room, "reset_room_buffs"):
+            room.reset_room_buffs()
 
         # enemies: skip if already cleared this run
         if not room.enemies_cleared:
             frozen = bool(getattr(room, "frozen_enemies", False))
+            attacks_enabled = bool(getattr(room, "enemy_attacks_enabled", True))
             for cls, (px, py) in room.enemy_configs:
                 enemy = cls(px, py, is_frozen=frozen)
+                enemy.attacks_disabled = not attacks_enabled
                 self.enemy_group.add(enemy)
 
         # chest
@@ -421,7 +441,13 @@ class Dungeon:
             elif config["kind"] == "pressure_plate":
                 self.objective_group.add(PressurePlate(config))
             elif config["kind"] == "alarm_beacon":
-                self.objective_group.add(AlarmBeacon(config))
+                from enemies import SentryEnemy
+                pos = config["pos"]
+                self.enemy_group.add(SentryEnemy(
+                    pos[0], pos[1],
+                    patrol_points=config.get("patrol_points"),
+                    alarm_config=config,
+                ))
             elif config["kind"] == "escort_npc" and not config["destroyed"]:
                 self.objective_group.add(EscortNPC(config))
             elif config["kind"] == "trap_lane_switch":
@@ -436,6 +462,22 @@ class Dungeon:
                 self.objective_group.add(TrapSafeSpot(config))
             elif config["kind"] == "rune_altar" and not config.get("consumed"):
                 self.objective_group.add(RuneAltar(config))
+            elif config["kind"] == "vein_crystal" and not config.get("destroyed"):
+                self.objective_group.add(VeinCrystal(config))
+            elif config["kind"] == "tremor_emitter":
+                self.objective_group.add(TremorEmitter(config))
+            elif config["kind"] == "spore_mushroom" and not config.get("destroyed"):
+                self.objective_group.add(SporeMushroom(config))
+            elif config["kind"] == "collapse_emitter":
+                self.objective_group.add(CollapseEmitter(config))
+            elif config["kind"] == "mining_cart":
+                self.objective_group.add(MiningCart(config))
+            elif config["kind"] == "burrow_spawner":
+                self.objective_group.add(BurrowSpawner(config))
+            elif config["kind"] == "boulder":
+                self.objective_group.add(Boulder(config))
+            elif config["kind"] == "shrine_glyph":
+                self.objective_group.add(ShrineGlyph(config))
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

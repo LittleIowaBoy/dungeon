@@ -139,6 +139,17 @@ class RoomContentBootstrapTests(unittest.TestCase):
             "stealth_passage",
             "timed_extraction",
             "rune_altar_chamber",
+            "earth_stalagmite_field",
+            "earth_quicksand_trap",
+            "earth_crystal_vein",
+            "earth_tremor_chamber",
+            "earth_mushroom_grove",
+            "earth_cave_in",
+            "earth_mining_carts",
+            "earth_burrower_den",
+            "earth_echo_cavern",
+            "earth_boulder_run",
+            "earth_shrine_circle",
         })
         self.assertEqual(seeded_templates["standard_combat"], (1, "implemented", "", 0, 1, "avoid", 0, "any", "immediate", "", 0, 0, 0, 0, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
         self.assertEqual(seeded_templates["survival_holdout"], (1, "prototype", "", 4, 4, "prefer", 2, "finale", "holdout_timer", "1,2,3", 96, 0, 1, 1500, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))

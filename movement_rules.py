@@ -65,18 +65,44 @@ def update_motion(player, wall_rects, terrain_at, keys):
 
 
 def move_axis(player, dx, dy, wall_rects):
-    player.rect.x += dx
-    player.rect.y += dy
+    move_axis_with_walls(player.rect, dx, dy, wall_rects)
+
+
+def move_axis_with_walls(rect, dx, dy, wall_rects):
+    """Move *rect* by (dx, dy) and resolve wall collisions per axis.
+
+    Returns ``(moved_x, moved_y, blocked_axes)`` where ``blocked_axes`` is a
+    set containing any of ``{"x", "y"}`` whose attempted motion was clipped
+    by a wall.  Mirrors the original per-axis collision behaviour used by
+    both player and enemy movement.
+    """
+    blocked = set()
+    start_x = rect.x
+    start_y = rect.y
+
+    rect.x += dx
+    rect.y += dy
     for wall in wall_rects:
-        if player.rect.colliderect(wall):
+        if rect.colliderect(wall):
             if dx > 0:
-                player.rect.right = wall.left
+                rect.right = wall.left
+                blocked.add("x")
             elif dx < 0:
-                player.rect.left = wall.right
+                rect.left = wall.right
+                blocked.add("x")
             if dy > 0:
-                player.rect.bottom = wall.top
+                rect.bottom = wall.top
+                blocked.add("y")
             elif dy < 0:
-                player.rect.top = wall.bottom
+                rect.top = wall.bottom
+                blocked.add("y")
+
+    if dx != 0 and rect.x == start_x:
+        blocked.add("x")
+    if dy != 0 and rect.y == start_y:
+        blocked.add("y")
+
+    return (rect.x - start_x, rect.y - start_y, blocked)
 
 
 def _read_input_vector(keys):

@@ -4,7 +4,7 @@ Each dungeon now represents a single exploration floor rather than a five-level
 campaign.  Generation parameters (grid size, minimum start-to-portal distance)
 are driven by the selected difficulty preset rather than a level index.
 """
-from enemies import PatrolEnemy, RandomEnemy, ChaserEnemy
+from enemies import PatrolEnemy, RandomEnemy, ChaserEnemy, PulsatorEnemy, LauncherEnemy
 
 
 # ── Difficulty presets ─────────────────────────────────
@@ -50,11 +50,13 @@ def _run_profile(
 
 
 # ── Per-dungeon run profiles ──────────────────────────
-# Enemy type weights: [PatrolEnemy, RandomEnemy, ChaserEnemy]
+# Enemy type weights: [PatrolEnemy, RandomEnemy, ChaserEnemy, PulsatorEnemy, LauncherEnemy]
+# (SentryEnemy is NOT in this list — it spawns only via stealth-room
+# objective configs, not the random palette.)
 
-_MUD_PROFILE   = _run_profile((1, 4), [35, 35, 30], branch_count_range=(1, 3), branch_length_range=(1, 3), pacing_profile="balanced")
-_ICE_PROFILE   = _run_profile((1, 4), [25, 25, 50], branch_count_range=(1, 3), branch_length_range=(1, 4), pacing_profile="frontloaded")
-_WATER_PROFILE = _run_profile((1, 4), [30, 40, 30], branch_count_range=(2, 3), branch_length_range=(1, 3), pacing_profile="backloaded")
+_MUD_PROFILE   = _run_profile((1, 4), [30, 30, 25, 10, 5],  branch_count_range=(1, 3), branch_length_range=(1, 3), pacing_profile="balanced")
+_ICE_PROFILE   = _run_profile((1, 4), [20, 20, 40, 10, 10], branch_count_range=(1, 3), branch_length_range=(1, 4), pacing_profile="frontloaded")
+_WATER_PROFILE = _run_profile((1, 4), [25, 30, 25, 10, 10], branch_count_range=(2, 3), branch_length_range=(1, 3), pacing_profile="backloaded")
 
 
 # ── Dungeon definitions ────────────────────────────────
@@ -85,7 +87,7 @@ DUNGEONS = [
 ]
 
 # The enemy classes list whose order corresponds to the weight indices.
-ENEMY_CLASSES_ORDERED = [PatrolEnemy, RandomEnemy, ChaserEnemy]
+ENEMY_CLASSES_ORDERED = [PatrolEnemy, RandomEnemy, ChaserEnemy, PulsatorEnemy, LauncherEnemy]
 
 
 def get_dungeon(dungeon_id):

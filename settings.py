@@ -99,6 +99,16 @@ COLOR_DOOR_ONE_WAY = (235, 215, 70)
 COLOR_DOOR_NONE    = (210, 70, 70)
 COLOR_DOOR_SEALED  = (180, 90, 30)
 
+# biome-room hazard tiles (Phase 1 of biome room expansion)
+COLOR_QUICKSAND  = (155, 130, 80)   # earth: drowning patch
+COLOR_SPIKE_PATCH = (130, 110, 90)  # earth: stalagmites / water: coral (re-tinted in render)
+COLOR_PIT_TILE   = (15, 15, 25)     # earth/ice: collapsed pit (lethal)
+COLOR_CURRENT    = (40, 110, 170)   # water: directional current
+COLOR_THIN_ICE   = (200, 230, 250)  # ice: cracks under foot
+COLOR_HEARTH     = (220, 110, 40)   # ice: warming safe spot
+COLOR_CART_RAIL  = (70, 60, 50)     # earth: rail tile (cosmetic)
+COLOR_GLYPH_TILE = (90, 160, 200)   # water: ordered-touch puzzle glyph
+
 # items
 COLOR_HEALTH_POTION = (30, 200, 60)
 COLOR_COIN          = (240, 220, 40)
@@ -211,16 +221,83 @@ ATTACK_DURATION_MS = 150     # how long the hitbox sprite lives
 PATROL_HP      = 30
 PATROL_SPEED   = 1.5
 PATROL_DAMAGE  = 10
+PATROL_ATTACK_TRIGGER  = 2.0 * TILE_SIZE   # range to begin telegraph
+PATROL_ATTACK_RADIUS   = 1.5 * TILE_SIZE   # radius of 360° strike
+PATROL_ATTACK_DAMAGE   = 12
+PATROL_ATTACK_WINDUP_MS  = 450
+PATROL_ATTACK_STRIKE_MS  = 180
+PATROL_ATTACK_COOLDOWN_MS = 1200
 
 RANDOM_HP      = 20
 RANDOM_SPEED   = 1.8
 RANDOM_DAMAGE  = 8
+RANDOM_ATTACK_TRIGGER = 4.0 * TILE_SIZE
+RANDOM_ATTACK_RANGE   = 4.0 * TILE_SIZE   # length of forward line
+RANDOM_ATTACK_WIDTH   = int(0.75 * TILE_SIZE)
+RANDOM_ATTACK_DAMAGE  = 10
+RANDOM_ATTACK_WINDUP_MS  = 500
+RANDOM_ATTACK_STRIKE_MS  = 160
+RANDOM_ATTACK_COOLDOWN_MS = 1500
 
 CHASER_HP      = 40
 CHASER_SPEED   = 1.8        # 60 % of player base applied later
 CHASER_DAMAGE  = 12
 CHASE_RADIUS   = 6 * TILE_SIZE   # pixels
 CHASE_LOST_RADIUS = 8 * TILE_SIZE
+CHASER_ATTACK_TRIGGER = 1.5 * TILE_SIZE
+CHASER_ATTACK_SIZE    = 2 * TILE_SIZE
+CHASER_ATTACK_OFFSET  = int(0.75 * TILE_SIZE)
+CHASER_ATTACK_DAMAGE  = 14
+CHASER_ATTACK_WINDUP_MS  = 350
+CHASER_ATTACK_STRIKE_MS  = 160
+CHASER_ATTACK_COOLDOWN_MS = 900
+
+# Pulsator: stationary-section enemy that emits expanding damage rings.
+COLOR_PULSATOR  = (180, 90, 200)
+PULSATOR_HP     = 35
+PULSATOR_SPEED  = 1.2
+PULSATOR_ANCHOR_RADIUS_TILES = 3
+PULSATOR_ANCHOR_WAIT_MS  = 300
+PULSATOR_WINDUP_MS       = 600
+PULSATOR_RING_SPEED      = 3.5            # pixels per frame
+PULSATOR_RING_THICKNESS  = int(0.6 * TILE_SIZE)
+PULSATOR_RING_MAX_RADIUS = 5 * TILE_SIZE
+PULSATOR_RING_DAMAGE     = 14
+PULSATOR_COOLDOWN_MS     = 250            # short rest after ring dissipates
+
+# Launcher: ranged enemy that fires a slow projectile then retreats.
+COLOR_LAUNCHER  = (60, 150, 200)
+LAUNCHER_HP     = 25
+LAUNCHER_SPEED  = 1.4                      # base move speed
+LAUNCHER_RETREAT_SPEED = 1.0
+LAUNCHER_RANGE  = 7 * TILE_SIZE            # detection range
+LAUNCHER_ATTACK_WINDUP_MS = 500
+LAUNCHER_ATTACK_STRIKE_MS = 80             # brief "fire" frame
+LAUNCHER_ATTACK_COOLDOWN_MS = 1600
+LAUNCHER_RETREAT_MS = 1400
+LAUNCHER_PROJECTILE_SPEED  = 4.5
+LAUNCHER_PROJECTILE_RANGE  = 9 * TILE_SIZE
+LAUNCHER_PROJECTILE_DAMAGE = 12
+LAUNCHER_PROJECTILE_SIZE   = 12
+
+# Sentry: stealth-room patroller that explodes on contact.
+COLOR_SENTRY    = (220, 220, 60)
+SENTRY_HP       = 25
+SENTRY_PATROL_SPEED  = 1.2
+SENTRY_CHASE_SPEED   = 2.6
+SENTRY_SIGHT_RADIUS  = 4 * TILE_SIZE
+SENTRY_DETONATE_RADIUS = int(1.0 * TILE_SIZE)
+SENTRY_EXPLOSION_RADIUS = int(2.0 * TILE_SIZE)
+SENTRY_EXPLOSION_DAMAGE = 45
+SENTRY_ALERT_FLASH_MS   = 200
+SENTRY_ARM_MS           = 600
+
+# ── Spawn placement ─────────────────────────────────────
+ENEMY_DOOR_BUFFER_TILES = 3
+ROOM_MAX_DISTINCT_ENEMY_TYPES = 3
+
+# Telegraph flash cadence (shared across all enemies).
+ENEMY_TELEGRAPH_FLASH_INTERVAL_MS = 80
 
 # Default enemy counts (overridden per-level via dungeon_config.py)
 ENEMY_MIN_PER_ROOM = 1
@@ -242,8 +319,30 @@ TERRAIN_SPEED = {
     "mud":   0.5,
     "water": 0.75,
     "ice":   1.0,   # ice uses momentum, not a simple multiplier
+    # Biome-room hazard tiles.  ``pit_tile`` is lethal so its speed is
+    # nominal; ``quicksand`` uses the slowest non-zero multiplier so the
+    # player can still attempt to escape before the drowning timer fires.
+    "quicksand":   0.3,
+    "spike_patch": 1.0,
+    "pit_tile":    1.0,
+    "current":     1.0,
+    "thin_ice":    1.0,
+    "hearth":      1.0,
+    "cart_rail":   1.0,
+    "glyph_tile":  1.0,
 }
 ICE_FRICTION = 0.92          # velocity *= friction each frame on ice
+
+# ── Hazard tile tuning (Phase 1 biome-room expansion) ───
+# Passive hazards (spike_patch, coral, frostbite) deal a small consistent
+# tick.  Active hazards (thin_ice collapse, cave-in burst, etc.) telegraph
+# via the existing enemy attack-state pattern and live in their entities.
+HAZARD_TICK_MS = 500
+HAZARD_TICK_DAMAGE = 1
+# Quicksand drowning: total time to lethal once player enters the patch.
+QUICKSAND_DROWN_MS = 3000
+# Current tile push speed (pixels / frame, applied additively after movement).
+CURRENT_PUSH_SPEED = 1.6
 
 # ── Terrain generation ──────────────────────────────────
 TERRAIN_PATCH_MIN = 2

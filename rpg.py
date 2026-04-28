@@ -58,11 +58,13 @@ import behavior_runes
 import damage_feedback
 import dodge_rules
 import enemy_collision_rules
+import enemy_attack_rules
 import identity_runes
 import rune_rules
 import stat_runes
 import status_effects
 import time_rules
+import terrain_effects
 
 
 class Game:
@@ -496,6 +498,13 @@ class Game:
             elif event.key == pygame.K_F3:
                 self._toggle_room_identifier()
 
+            elif event.key == pygame.K_F2:
+                # Test-room utility: toggle whether enemies in the current
+                # room may attack.  Movement (frozen) state is unaffected.
+                room = self.dungeon.current_room
+                if room is not None and hasattr(room, "toggle_enemy_attacks"):
+                    room.toggle_enemy_attacks(self.dungeon.enemy_group)
+
             # pause menu
             if event.key == pygame.K_ESCAPE:
                 self._pause_screen.selected = 0
@@ -506,6 +515,15 @@ class Game:
         scaled = stat_runes.modify_outgoing_damage(
             self.player, enemy, hitbox.damage
         )
+        # Crystal Vein room buff: each shattered crystal grants +N% damage
+        # for the rest of the room.  No-op when no buffs are registered.
+        room = self.dungeon.current_room if self.dungeon is not None else None
+        if room is not None and hasattr(room, "active_room_buff_total"):
+            damage_buff = room.active_room_buff_total(
+                "damage", pygame.time.get_ticks()
+            )
+            if damage_buff:
+                scaled = int(round(scaled * (1.0 + damage_buff)))
         # The Conduit: split damage across primary + nearest other enemy.
         primary_damage, splash_damage = identity_runes.conduit_split_damage(
             self.player, scaled
@@ -560,6 +578,13 @@ class Game:
         # player movement
         prev_center = self.player.rect.center
         self.player.update(walls, room.terrain_at_pixel)
+        # Biome-room hazard tile effects (spike tick, quicksand drown,
+        # current push, pit lethal-on-step).  Runs after movement so the
+        # tile under the player's new position is what triggers the effect.
+        terrain_effects.apply_terrain_effects(
+            self.player, room, now_ticks, self.clock.get_time(),
+        )
+        room.prune_expired_room_buffs(now_ticks)
         is_moving = self.player.rect.center != prev_center
         stat_runes.update_movement_state(
             self.player, now_ticks, self.clock.get_time(), is_moving
@@ -628,6 +653,8 @@ class Game:
                 objective.sync_player_overlap(self.player)
             if hasattr(objective, "apply_player_pressure"):
                 objective.apply_player_pressure(self.player)
+            if hasattr(objective, "apply_room_pressure"):
+                objective.apply_room_pressure(self.player, self.dungeon.enemy_group)
 
         enemy_focus_rect = self.player.rect
         for objective in self.dungeon.objective_group:
@@ -640,7 +667,21 @@ class Game:
         # enemies AI + movement
         time_scale = time_rules.get_time_scale(self.player)
         for enemy in self.dungeon.enemy_group:
+            # Drive telegraphed-attack state machine first so movement-blocked
+            # enemies (TELEGRAPH/STRIKE) properly halt this tick.  Frozen
+            # enemies still tick their attack machine when ``attacks_disabled``
+            # is False — this is what powers the test-room attack toggle.
+            if hasattr(enemy, "update_attack_state"):
+                enemy.update_attack_state(enemy_focus_rect, now_ticks)
             if getattr(enemy, "is_frozen", False):
+                # Drain any rings/projectiles emitted while frozen attacks fire,
+                # but skip movement entirely.
+                if hasattr(enemy, "consume_emitted_rings"):
+                    for ring in enemy.consume_emitted_rings():
+                        self.dungeon.pulsator_ring_group.add(ring)
+                if hasattr(enemy, "consume_emitted_projectiles"):
+                    for proj in enemy.consume_emitted_projectiles():
+                        self.dungeon.enemy_projectile_group.add(proj)
                 continue
             if status_effects.is_immobilized(enemy, now_ticks):
                 continue
@@ -653,6 +694,13 @@ class Game:
                     enemy.speed = original_speed
             else:
                 enemy.update_movement(enemy_focus_rect, walls)
+            # Drain any rings/projectiles emitted by this enemy's strike.
+            if hasattr(enemy, "consume_emitted_rings"):
+                for ring in enemy.consume_emitted_rings():
+                    self.dungeon.pulsator_ring_group.add(ring)
+            if hasattr(enemy, "consume_emitted_projectiles"):
+                for proj in enemy.consume_emitted_projectiles():
+                    self.dungeon.enemy_projectile_group.add(proj)
 
         # Necromancer: spawn a SkeletonAlly when a kill milestone is pending.
         if identity_runes.necromancer_consume_pending(self.player):
@@ -696,19 +744,28 @@ class Game:
                 if hitbox.try_hit(objective):
                     objective.take_damage(hitbox.damage)
 
-        # enemy → player contact damage
-        if not self.player.is_invincible:
-            hits = pygame.sprite.spritecollide(self.player, self.dungeon.enemy_group, False)
-            for enemy in hits:
-                if getattr(enemy, "is_frozen", False):
-                    continue
-                pre_hp = self.player.current_hp
-                self.player.take_damage(enemy.damage)
-                damage_taken = pre_hp - self.player.current_hp
-                reflect = stat_runes.compute_reflect(self.player, damage_taken)
-                if reflect > 0:
-                    enemy.take_damage(reflect)
-                break
+        # enemy → player/ally damage via telegraphed attacks (no contact damage)
+        enemy_attack_rules.apply_enemy_attacks(
+            self.dungeon.enemy_group,
+            self.player,
+            self.dungeon.ally_group,
+            now_ticks,
+        )
+        # Pulsator rings expand and tick once per target.
+        self.dungeon.pulsator_ring_group.update()
+        enemy_attack_rules.apply_pulsator_rings(
+            self.dungeon.pulsator_ring_group,
+            self.player,
+            self.dungeon.ally_group,
+        )
+        # Launcher projectiles travel, hit, or despawn on walls.
+        self.dungeon.enemy_projectile_group.update()
+        enemy_attack_rules.apply_launcher_projectiles(
+            self.dungeon.enemy_projectile_group,
+            self.player,
+            self.dungeon.ally_group,
+            walls,
+        )
 
         for objective in self.dungeon.objective_group:
             if hasattr(objective, "apply_enemy_contact"):
@@ -745,10 +802,13 @@ class Game:
         # after their per-room delay so designers can keep testing damage.
         if room.respawn_enemies_after_ms is not None:
             frozen = bool(getattr(room, "frozen_enemies", False))
+            attacks_enabled = bool(getattr(room, "enemy_attacks_enabled", True))
             for cls, (px, py) in room.update_enemy_respawns(
                 now_ticks, self.dungeon.enemy_group
             ):
-                self.dungeon.enemy_group.add(cls(px, py, is_frozen=frozen))
+                enemy = cls(px, py, is_frozen=frozen)
+                enemy.attacks_disabled = not attacks_enabled
+                self.dungeon.enemy_group.add(enemy)
         col = self.player.rect.centerx // TILE_SIZE
         row = self.player.rect.centery // TILE_SIZE
         if room.tile_at(col, row) == PORTAL:
@@ -965,10 +1025,13 @@ class Game:
                         self.dungeon.item_group,
                         self.dungeon.chest_group,
                         self.dungeon.objective_group,
+                        self.dungeon.pulsator_ring_group,
+                        self.dungeon.enemy_projectile_group,
                         self.player_group,
                         self.dungeon.hitbox_group,
                     ],
                     self.dungeon,
+                    player=self.player,
                 )
                 hud_view = build_hud_view(
                     self.player,
