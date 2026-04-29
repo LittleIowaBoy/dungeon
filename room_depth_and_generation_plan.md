@@ -43,7 +43,7 @@ This plan now doubles as a resume point for the current implementation state.
 
 ### Still shallow relative to the full plan
 
-- puzzle rooms still lack broader anti-camping reactions and alternate solve routes beyond their ordered, staggered, and paired rule sets.
+- puzzle rooms now ship the full P1–P4 progression (ordered/staggered/paired variants with telegraphing, anti-camping camp pulses, ordered-and-paired stabilizer skips, and per-biome motif tuning across Mud Caverns, Frozen Depths, and Sunken Ruins).
 - holdout rooms still lack rotating hazard phases and optional pressure-reduction side actions.
 - escort rooms still lack checkpoints, reward grading, and biome-specific variants.
 - ritual rooms now cover the first linked-state/payoff slice, but still lack timing windows, tether variants, and biome-specific ritual layouts.
@@ -471,6 +471,41 @@ Recommended next continuation order:
 2. implement `Survival Holdout` Phase H3 so the player gets optional side actions that reduce pressure during longer finales,
 3. return to `Ritual Disruption` for timing-window or tether variants only after another family gains comparable depth,
 4. leave escort reward grading and branch archetype specialization for a later pass once puzzle and holdout depth are in place.
+
+## Handoff Snapshot (2026-04-28d)
+
+- Milestone 2 (`Puzzle-Gated Doors`) closes out **P4 (per-dungeon puzzle motifs)**. All three biome puzzle overrides now consistently use the P1–P3 plumbing in a biome-flavored way:
+  - **Mud Caverns / Rune Lock Gallery (`ordered_plates`)** opts in to a stabilizer (`count=1, hp=10`) read as a "crumbling buried glyph" and to a slow camp pulse (`damage=1, interval=1100ms, grace=1200ms, radius=38`) framed as cave-in dust.
+  - **Frozen Depths / Mirror Rune Gallery (`paired_runes`)** keeps its pair-skip stabilizer and adds a frostbite camp pulse (`damage=1, interval=1200ms, grace=1100ms, radius=36`).
+  - **Sunken Ruins / Tidal Counter-Seals (`staggered_plates`)** retains the existing tide-pulse + glyph-skip combo from P2/P3.
+- No new code was needed — only tuning of `content_db.py` overrides plus updated `notes` strings that surface each motif in the playtest hint via the existing `_playtest_identifier_detail` plumbing.
+- Test coverage extended in `tests/test_content_db.py` to assert each biome's stabilizer count/HP, camp-pulse damage/interval, and motif-flavored notes substrings (`"cave-in dust"`, `"frostbite"`, `"staggered tidal glyph order"`). Existing puzzle behavior tests in `tests/test_room_objectives.py` continue to use `_plan` defaults so their exact-string assertions are unaffected.
+- Verified during this handoff pass: `python -m unittest tests.test_room_objectives tests.test_content_db tests.test_room_test_catalog tests.test_room_selector` (104 OK) and the full `python -m unittest discover -s tests` suite (589 tests; only the pre-existing `test_build_shop_view_projects_item_rows_and_scroll_hints` shop-scroll failure remains, unrelated and present on `main`).
+- **Milestone 2 (Puzzle-Gated Doors) is now complete** across all four planned slices. Recommended next milestone: **Milestone 3 / Survival Holdout H1 (defend-a-zone refinements)** — extend the existing `holdout_zone` to support contested-ground rules (zone shrink/move, partial-credit on relief uptime) so kiting forever stops being optimal. Alternatively pivot to **Ritual Disruption R2 (altar role inter-links so kill order matters)** since altars already telegraph roles via `ritual_role_script`.
+
+## Handoff Snapshot (2026-04-28c)
+
+- Milestone 2 (`Puzzle-Gated Doors`) advances into **P3 (alternate solve routes)** by extending the optional puzzle stabilizer to the `paired_runes` variant. `Room._maybe_append_puzzle_stabilizer` no longer short-circuits on paired puzzles, and `PuzzleStabilizer._apply_skip` now branches on `controller["variant"]`: ordered/staggered keep their existing "advance the next expected plate" behavior, while paired_runes resolves an entire pair (preferring whichever pair the player has already half-primed via `pending_pair_label`, otherwise the first un-activated pair in `pair_labels` order). Both branches share the existing skip-suffix HUD beat, the cancel-pending-stall safeguard, and the `consumed=True` marker.
+- The paired_runes HUD branch now appends the existing `_puzzle_skip_suffix(now_ticks)` so the "Stabilizer skip" banner shows up consistently across all charge_plates variants. The playtest hint for paired_runes also picks up the existing `shortcut_suffix` ("Shatter the optional stabilizer to skip one step.") whenever a stabilizer is configured.
+- Frozen Depths' `Mirror Rune Gallery` opts in: `puzzle_stabilizer_count=1, puzzle_stabilizer_hp=12`, with notes that mention the pair-skip shortcut. Tests updated accordingly: `test_puzzle_stabilizer_is_not_built_for_paired_runes` is replaced by `test_puzzle_stabilizer_skips_one_pair_for_paired_runes`, which half-primes pair B, smashes the stabilizer, and asserts that both B plates flip to activated, the pending-pair label clears, the HUD shows `Stabilizer skip`, and the playtest hint surfaces the shortcut.
+- Verified during this handoff pass: `python -m unittest tests.test_room_objectives tests.test_content_db tests.test_room_test_catalog` (82 OK) and the full `python -m unittest discover -s tests` suite (589 tests; only the pre-existing `test_build_shop_view_projects_item_rows_and_scroll_hints` shop-scroll failure remains, unrelated to this slice and present on `main`).
+- Recommended immediate next slice: continue Milestone 2 with **P4 (per-dungeon puzzle motifs)** — give Mud Caverns and Frozen Depths their own `puzzle_gated_doors` overrides so each biome's puzzle reads visually and mechanically distinct (e.g., decay timers, terrain hazards on the wrong-step path) — or pivot to **Milestone 3 / Holdout H1 (defend-a-zone refinements)**. Either way, rerun the same focused suites before widening scope.
+
+## Handoff Snapshot (2026-04-28b)
+
+- Milestone 2 (`Puzzle-Gated Doors`) advances into **P2 (anti-camping response events)**. Activated `pressure_plate` configs now stamp an `activated_at` timestamp and gain a `PressurePlate.apply_player_pressure(player)` hook that emits periodic damage pulses when the player lingers on a solved plate. Pulses stay disabled unless the puzzle controller has both `camp_pulse_damage` and `camp_pulse_interval_ms` set, and only fire after a configurable grace window. The HUD pressure suffix now distinguishes `Camp pulse` from the existing `Pressure spike` reset feedback.
+- New per-template fields `puzzle_camp_pulse_damage`, `puzzle_camp_pulse_interval_ms`, `puzzle_camp_pulse_grace_ms`, and `puzzle_camp_pulse_radius` flow through `content_db.py`, `RoomTemplate`, `RoomPlan`, `RoomSelector`, and `Room._build_puzzle_plate_configs`. The Sunken Ruins `Tidal Counter-Seals` override opts in (`damage=2, interval=900ms, grace=900ms, radius=42px`) and its playtest hint now mentions both the stabilizer skip and the solved-seal tide pulse. Stall resets clear `activated_at` and `last_camp_pulse_at` so reset plates restart cleanly.
+- The existing `rpg.GameLoop` objective-iteration loop already calls `apply_player_pressure(player)` on any objective sprite that exposes it (used by ritual altars), so plates were wired in without touching dungeon plumbing.
+- Verified during this handoff pass: `python -m unittest tests.test_room_objectives tests.test_content_db tests.test_room_test_catalog` (82 tests, OK) and the full `python -m unittest discover -s tests` suite (589 tests; only the pre-existing `test_build_shop_view_projects_item_rows_and_scroll_hints` shop-scroll failure remains, unrelated to this slice and present on `main`).
+- Recommended immediate next slice: continue Milestone 2 with **P3 (more alternate solve routes)** — extend stabilizer support to the base `puzzle_gated_doors` template at higher path stages or wire a paired-rune-friendly shortcut — or pivot to **Milestone 3 / Holdout H1 (defend-a-zone refinements)**. Either way, rerun the same focused suites before widening scope.
+
+## Handoff Snapshot (2026-04-28)
+
+- Milestone 2 (`Puzzle-Gated Doors` P1) continues. Ordered and staggered puzzle rooms now support an optional **puzzle stabilizer** alternate-solve route: a destructible hex-shaped objective entity that, when shattered, auto-activates the next-expected plate, advances the puzzle progress index, suppresses any pending stall reaction, and surfaces a short "Stabilizer skip" HUD suffix. Paired-rune puzzles deliberately do not spawn the stabilizer in this slice because they have no linear next-target to advance.
+- New per-template fields `puzzle_stabilizer_count` and `puzzle_stabilizer_hp` flow through `content_db.py`, `RoomTemplate`, `RoomPlan`, `RoomSelector`, and `Room._build_puzzle_plate_configs`. The Sunken Ruins `Tidal Counter-Seals` override now opts in with `count=1, hp=12` and an updated playtest hint.
+- New sprite `PuzzleStabilizer` lives in `objective_entities.py`; `dungeon.py` instantiates it from configs whose `kind == "puzzle_stabilizer"`. `Room.remaining_puzzle_plates` and the puzzle HUD totals were tightened to count only `pressure_plate` configs so the stabilizer cannot accidentally satisfy completion or inflate the plate denominator.
+- Verified during this handoff pass: `python -m unittest tests.test_room_objectives tests.test_content_db tests.test_room_test_catalog` (80 tests, OK) plus the focused `tests.test_menu_view -k room_test_select_view` projection check (1 test, OK).
+- Recommended immediate next slice: keep iterating Milestone 2 by adding a puzzle-specific anti-camping reaction (e.g. periodic hazard pulse near solved plates) or by wiring the stabilizer into the base `puzzle_gated_doors` template at higher path stages, then rerun the same focused suites before widening scope.
 
 ## Handoff Snapshot (2026-04-23)
 

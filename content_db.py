@@ -70,6 +70,12 @@ ROOM_TEMPLATE_COLUMNS = (
     "objective_damage_cooldown_ms",
     "puzzle_reinforcement_count",
     "puzzle_stall_duration_ms",
+    "puzzle_stabilizer_count",
+    "puzzle_stabilizer_hp",
+    "puzzle_camp_pulse_damage",
+    "puzzle_camp_pulse_interval_ms",
+    "puzzle_camp_pulse_grace_ms",
+    "puzzle_camp_pulse_radius",
     "notes",
 )
 
@@ -110,6 +116,12 @@ def _plan_shape(
     objective_damage_cooldown_ms=0,
     puzzle_reinforcement_count=0,
     puzzle_stall_duration_ms=0,
+    puzzle_stabilizer_count=0,
+    puzzle_stabilizer_hp=0,
+    puzzle_camp_pulse_damage=0,
+    puzzle_camp_pulse_interval_ms=0,
+    puzzle_camp_pulse_grace_ms=0,
+    puzzle_camp_pulse_radius=0,
 ):
     return {
         "objective_rule": objective_rule,
@@ -146,6 +158,12 @@ def _plan_shape(
         "objective_damage_cooldown_ms": objective_damage_cooldown_ms,
         "puzzle_reinforcement_count": puzzle_reinforcement_count,
         "puzzle_stall_duration_ms": puzzle_stall_duration_ms,
+        "puzzle_stabilizer_count": puzzle_stabilizer_count,
+        "puzzle_stabilizer_hp": puzzle_stabilizer_hp,
+        "puzzle_camp_pulse_damage": puzzle_camp_pulse_damage,
+        "puzzle_camp_pulse_interval_ms": puzzle_camp_pulse_interval_ms,
+        "puzzle_camp_pulse_grace_ms": puzzle_camp_pulse_grace_ms,
+        "puzzle_camp_pulse_radius": puzzle_camp_pulse_radius,
     }
 
 BASE_ROOM_TEMPLATES = (
@@ -861,7 +879,13 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             objective_label="Rune",
             puzzle_reinforcement_count=1,
             puzzle_stall_duration_ms=3000,
-            notes="Follow the numbered rune order while the room punishes resets.",
+            puzzle_stabilizer_count=1,
+            puzzle_stabilizer_hp=10,
+            puzzle_camp_pulse_damage=1,
+            puzzle_camp_pulse_interval_ms=1100,
+            puzzle_camp_pulse_grace_ms=1200,
+            puzzle_camp_pulse_radius=38,
+            notes="Follow the numbered rune order while cave-in dust pulses solved glyphs, or shatter the crumbling buried glyph to skip a step.",
         ),
         _override_template(
             "ritual_disruption",
@@ -1013,7 +1037,13 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             objective_entity_count=4,
             puzzle_reinforcement_count=2,
             puzzle_stall_duration_ms=1800,
-            notes="Match rune pairs in the right sequence while the room telegraphs the next symbol.",
+            puzzle_stabilizer_count=1,
+            puzzle_stabilizer_hp=12,
+            puzzle_camp_pulse_damage=1,
+            puzzle_camp_pulse_interval_ms=1200,
+            puzzle_camp_pulse_grace_ms=1100,
+            puzzle_camp_pulse_radius=36,
+            notes="Match rune pairs in the right sequence while solved mirrors radiate frostbite, or shatter the optional stabilizer to skip an entire pair.",
         ),
         _override_template(
             "ritual_disruption",
@@ -1098,7 +1128,13 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             objective_entity_count=4,
             puzzle_reinforcement_count=2,
             puzzle_stall_duration_ms=2200,
-            notes="Follow the staggered tidal glyph order while waves punish resets and lingering on the wrong marker.",
+            puzzle_stabilizer_count=1,
+            puzzle_stabilizer_hp=12,
+            puzzle_camp_pulse_damage=2,
+            puzzle_camp_pulse_interval_ms=900,
+            puzzle_camp_pulse_grace_ms=900,
+            puzzle_camp_pulse_radius=42,
+            notes="Follow the staggered tidal glyph order, or shatter the optional stabilizer to skip a glyph while waves punish resets and solved seals tide-pulse anyone lingering on them.",
         ),
         _override_template(
             "ritual_disruption",
@@ -1173,6 +1209,12 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     objective_damage_cooldown_ms INTEGER NOT NULL DEFAULT 0,
     puzzle_reinforcement_count INTEGER NOT NULL DEFAULT 0,
     puzzle_stall_duration_ms INTEGER NOT NULL DEFAULT 0,
+    puzzle_stabilizer_count INTEGER NOT NULL DEFAULT 0,
+    puzzle_stabilizer_hp INTEGER NOT NULL DEFAULT 0,
+    puzzle_camp_pulse_damage INTEGER NOT NULL DEFAULT 0,
+    puzzle_camp_pulse_interval_ms INTEGER NOT NULL DEFAULT 0,
+    puzzle_camp_pulse_grace_ms INTEGER NOT NULL DEFAULT 0,
+    puzzle_camp_pulse_radius INTEGER NOT NULL DEFAULT 0,
     notes TEXT NOT NULL DEFAULT ''
 );
 """
@@ -1318,6 +1360,12 @@ def _ensure_schema_columns(conn):
         "objective_damage_cooldown_ms": "INTEGER NOT NULL DEFAULT 0",
         "puzzle_reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
         "puzzle_stall_duration_ms": "INTEGER NOT NULL DEFAULT 0",
+        "puzzle_stabilizer_count": "INTEGER NOT NULL DEFAULT 0",
+        "puzzle_stabilizer_hp": "INTEGER NOT NULL DEFAULT 0",
+        "puzzle_camp_pulse_damage": "INTEGER NOT NULL DEFAULT 0",
+        "puzzle_camp_pulse_interval_ms": "INTEGER NOT NULL DEFAULT 0",
+        "puzzle_camp_pulse_grace_ms": "INTEGER NOT NULL DEFAULT 0",
+        "puzzle_camp_pulse_radius": "INTEGER NOT NULL DEFAULT 0",
     }
     for table_name in (BASE_ROOM_TEMPLATE_TABLE, *DUNGEON_ROOM_TEMPLATE_TABLES.values()):
         existing = {

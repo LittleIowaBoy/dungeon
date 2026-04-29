@@ -15,6 +15,9 @@ _PLATE_PRIMED_COLOR = (170, 200, 255)
 _PLATE_TARGET_COLOR = (255, 245, 170)
 _PLATE_PENALTY_RESET_COLOR = (255, 120, 110)
 _PLATE_PENALTY_STALL_COLOR = (255, 175, 90)
+_PLATE_STABILIZER_COLOR = (180, 140, 230)
+_PLATE_STABILIZER_DAMAGED_COLOR = (140, 90, 200)
+_PLATE_STABILIZER_BURST_COLOR = (235, 210, 255)
 _ALARM_IDLE_COLOR = (120, 230, 190)
 _ALARM_TRIGGERED_COLOR = (255, 110, 90)
 _HOLDOUT_IDLE_COLOR = (245, 210, 120)
@@ -207,6 +210,50 @@ class PressurePlate(pygame.sprite.Sprite):
         del amount
         return False
 
+    def apply_player_pressure(self, player):
+        """Punish camping on solved plates by emitting periodic damage pulses.
+
+        Disabled unless the puzzle controller has both ``camp_pulse_damage``
+        and ``camp_pulse_interval_ms`` configured. Pulses begin only after
+        the configured grace period since the plate was activated.
+        """
+        if not self._config.get("activated"):
+            return False
+        controller = self._config.get("controller")
+        if controller is None:
+            return False
+        damage = int(controller.get("camp_pulse_damage", 0))
+        interval = int(controller.get("camp_pulse_interval_ms", 0))
+        if damage <= 0 or interval <= 0:
+            return False
+        now_ticks = controller.get("now_ticks")
+        if now_ticks is None:
+            return False
+        activated_at = self._config.get("activated_at")
+        if activated_at is None:
+            return False
+        grace = int(controller.get("camp_pulse_grace_ms", 0))
+        if now_ticks - activated_at < grace:
+            return False
+        last_pulse_at = self._config.get("last_camp_pulse_at")
+        if last_pulse_at is not None and now_ticks - last_pulse_at < interval:
+            return False
+        radius = int(controller.get("camp_pulse_radius", 0))
+        if radius <= 0:
+            radius = self.SIZE // 2 + max(0, int(self._config.get("trigger_padding", 0)))
+            if radius <= 0:
+                radius = self.SIZE
+        dx = player.rect.centerx - self.rect.centerx
+        dy = player.rect.centery - self.rect.centery
+        if dx * dx + dy * dy > radius * radius:
+            return False
+
+        player.take_damage(damage)
+        self._config["last_camp_pulse_at"] = now_ticks
+        controller["last_penalty_at"] = now_ticks
+        controller["last_penalty_reason"] = "camp"
+        return True
+
     def draw_overlay(self, surface):
         flash_state = self._penalty_flash_state()
         if flash_state is not None:
@@ -285,6 +332,8 @@ class PressurePlate(pygame.sprite.Sprite):
             for config in controller.get("configs", ()): 
                 config["activated"] = False
                 config["primed"] = False
+                config["activated_at"] = None
+                config["last_camp_pulse_at"] = None
             controller["progress_index"] = 0
             controller["reaction_pending"] = True
             controller["reaction_reason"] = "reset"
@@ -294,6 +343,8 @@ class PressurePlate(pygame.sprite.Sprite):
             return True
 
         self._config["activated"] = True
+        if current_tick is not None:
+            self._config["activated_at"] = current_tick
         controller["progress_index"] = controller.get("progress_index", 0) + 1
         controller["last_reset_label"] = ""
         if current_tick is not None:
@@ -325,7 +376,11 @@ class PressurePlate(pygame.sprite.Sprite):
                 if config.get("pair_label") == pair_label and (config.get("primed") or config is self._config):
                     config["primed"] = False
                     config["activated"] = True
+                    if current_tick is not None:
+                        config["activated_at"] = current_tick
             self._config["activated"] = True
+            if current_tick is not None:
+                self._config["activated_at"] = current_tick
             controller["pending_pair_label"] = None
             controller["last_reset_label"] = ""
             if current_tick is not None:
@@ -346,6 +401,147 @@ class PressurePlate(pygame.sprite.Sprite):
             config["primed"] = False
         active_config["primed"] = True
         controller["pending_pair_label"] = pair_label
+
+
+class PuzzleStabilizer(pygame.sprite.Sprite):
+    """Optional puzzle shortcut. Destroying it skips the next-expected plate.
+
+    Config keys:
+        pos:               pixel center
+        max_hp/current_hp: durability the player must spend to claim the skip
+        controller:        shared puzzle controller dict (see ``Room._build_puzzle_plate_configs``)
+        trigger_padding:   reserved for future overlap-based interactions
+        destroyed:         flipped to True once the stabilizer is shattered
+        consumed:          flipped to True once the skip has been applied
+    """
+
+    SIZE = 18
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.max_hp = config.get("max_hp", 1)
+        self.current_hp = config.get("current_hp", self.max_hp)
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=config["pos"])
+
+    def update(self, now_ticks):
+        controller = self._config.get("controller")
+        if controller is not None:
+            controller["now_ticks"] = now_ticks
+        if self._config.get("destroyed"):
+            self.kill()
+            return
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=self.rect.center)
+
+    def take_damage(self, amount):
+        if self._config.get("destroyed"):
+            return False
+        previous_hp = self.current_hp
+        self.current_hp = max(0, self.current_hp - amount)
+        self._config["current_hp"] = self.current_hp
+        damage_dealt = previous_hp - self.current_hp
+        if damage_dealt > 0:
+            damage_feedback.report_damage(self, damage_dealt)
+        if self.current_hp <= 0:
+            self._config["destroyed"] = True
+            self._apply_skip()
+            self.kill()
+            return True
+        self.image = self._build_image()
+        self.rect = self.image.get_rect(center=self.rect.center)
+        return False
+
+    def draw_overlay(self, surface):
+        if self._config.get("destroyed"):
+            return
+        radius = self.SIZE // 2 + 4
+        color = _PLATE_STABILIZER_DAMAGED_COLOR if self.current_hp < self.max_hp else _PLATE_STABILIZER_COLOR
+        pygame.draw.circle(surface, color, self.rect.center, radius, 2)
+
+    def _apply_skip(self):
+        controller = self._config.get("controller")
+        if controller is None:
+            return
+        if controller.get("variant") == "paired_runes":
+            if not self._apply_paired_skip(controller):
+                return
+        else:
+            if not self._apply_ordered_skip(controller):
+                return
+        controller["last_skip_label"] = self._config.get("label", "Stabilizer")
+        controller["last_skip_at"] = controller.get("now_ticks")
+        # Cancel any pending stall reaction so the skip does not also
+        # immediately spawn reinforcements after the strike.
+        controller["reaction_pending"] = False
+        controller["reaction_reason"] = ""
+        self._config["consumed"] = True
+
+    def _apply_ordered_skip(self, controller):
+        configs = controller.get("configs", ())
+        sequence = controller.get("target_sequence") or tuple(range(len(configs)))
+        progress_index = controller.get("progress_index", 0)
+        if progress_index < 0 or progress_index >= len(sequence):
+            return False
+        expected_plate_id = sequence[progress_index]
+        for plate_config in configs:
+            plate_id = plate_config.get("plate_id", plate_config.get("order_index", 0))
+            if plate_id == expected_plate_id and not plate_config.get("activated"):
+                plate_config["activated"] = True
+                plate_config["primed"] = False
+                break
+        controller["progress_index"] = progress_index + 1
+        controller["last_progress_at"] = controller.get("now_ticks")
+        return True
+
+    def _apply_paired_skip(self, controller):
+        configs = controller.get("configs", ())
+        # Skip the first pair that still has any un-activated plate. Prefer the
+        # pair the player has already half-primed so the shortcut fits the
+        # player's intent; otherwise walk pair_labels in their authored order.
+        pending_label = controller.get("pending_pair_label")
+        candidate_labels = []
+        if pending_label:
+            candidate_labels.append(pending_label)
+        for label in controller.get("pair_labels", ()):
+            if label not in candidate_labels:
+                candidate_labels.append(label)
+        for label in candidate_labels:
+            pair_configs = [
+                config
+                for config in configs
+                if config.get("kind") == "pressure_plate" and config.get("pair_label") == label
+            ]
+            if not pair_configs or all(config.get("activated") for config in pair_configs):
+                continue
+            for config in pair_configs:
+                config["activated"] = True
+                config["primed"] = False
+                if controller.get("now_ticks") is not None:
+                    config["activated_at"] = controller["now_ticks"]
+            controller["pending_pair_label"] = None
+            controller["last_reset_label"] = ""
+            controller["last_progress_at"] = controller.get("now_ticks")
+            return True
+        return False
+
+    def _build_image(self):
+        size = self.SIZE
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        color = _PLATE_STABILIZER_DAMAGED_COLOR if self.current_hp < self.max_hp else _PLATE_STABILIZER_COLOR
+        # Hexagon silhouette so stabilizers read distinctly from plates and crystals.
+        points = [
+            (size // 2, 0),
+            (size - 1, size // 4),
+            (size - 1, size * 3 // 4),
+            (size // 2, size - 1),
+            (0, size * 3 // 4),
+            (0, size // 4),
+        ]
+        pygame.draw.polygon(surface, color, points)
+        pygame.draw.polygon(surface, _PLATE_STABILIZER_BURST_COLOR, points, 1)
+        return surface
 
 
 class AlarmBeacon(pygame.sprite.Sprite):

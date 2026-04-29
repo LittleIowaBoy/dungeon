@@ -57,6 +57,12 @@ class RoomTemplate:
     objective_damage_cooldown_ms: int = 0
     puzzle_reinforcement_count: int = 0
     puzzle_stall_duration_ms: int = 0
+    puzzle_stabilizer_count: int = 0
+    puzzle_stabilizer_hp: int = 0
+    puzzle_camp_pulse_damage: int = 0
+    puzzle_camp_pulse_interval_ms: int = 0
+    puzzle_camp_pulse_grace_ms: int = 0
+    puzzle_camp_pulse_radius: int = 0
     notes: str = ""
 
     @classmethod
@@ -114,6 +120,12 @@ class RoomTemplate:
             objective_damage_cooldown_ms=row.get("objective_damage_cooldown_ms", 0),
             puzzle_reinforcement_count=row.get("puzzle_reinforcement_count", 0),
             puzzle_stall_duration_ms=row.get("puzzle_stall_duration_ms", 0),
+            puzzle_stabilizer_count=row.get("puzzle_stabilizer_count", 0),
+            puzzle_stabilizer_hp=row.get("puzzle_stabilizer_hp", 0),
+            puzzle_camp_pulse_damage=row.get("puzzle_camp_pulse_damage", 0),
+            puzzle_camp_pulse_interval_ms=row.get("puzzle_camp_pulse_interval_ms", 0),
+            puzzle_camp_pulse_grace_ms=row.get("puzzle_camp_pulse_grace_ms", 0),
+            puzzle_camp_pulse_radius=row.get("puzzle_camp_pulse_radius", 0),
             notes=row["notes"],
         )
 
@@ -167,6 +179,12 @@ class RoomPlan:
     objective_damage_cooldown_ms: int = 0
     puzzle_reinforcement_count: int = 0
     puzzle_stall_duration_ms: int = 0
+    puzzle_stabilizer_count: int = 0
+    puzzle_stabilizer_hp: int = 0
+    puzzle_camp_pulse_damage: int = 0
+    puzzle_camp_pulse_interval_ms: int = 0
+    puzzle_camp_pulse_grace_ms: int = 0
+    puzzle_camp_pulse_radius: int = 0
 
     @property
     def room_id(self):

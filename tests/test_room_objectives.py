@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pygame
 
-from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, PressurePlate, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
+from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, PressurePlate, PuzzleStabilizer, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
 from room import FLOOR, PORTAL, WALL, Room
 from room_plan import RoomPlan, RoomTemplate
 from settings import ROOM_COLS, ROOM_ROWS, TILE_SIZE
@@ -72,6 +72,12 @@ def _plan(
     objective_damage_cooldown_ms=0,
     puzzle_reinforcement_count=0,
     puzzle_stall_duration_ms=0,
+    puzzle_stabilizer_count=0,
+    puzzle_stabilizer_hp=0,
+    puzzle_camp_pulse_damage=0,
+    puzzle_camp_pulse_interval_ms=0,
+    puzzle_camp_pulse_grace_ms=0,
+    puzzle_camp_pulse_radius=0,
 ):
     return RoomPlan(
         position=(0, 0),
@@ -118,6 +124,12 @@ def _plan(
         objective_damage_cooldown_ms=objective_damage_cooldown_ms,
         puzzle_reinforcement_count=puzzle_reinforcement_count,
         puzzle_stall_duration_ms=puzzle_stall_duration_ms,
+        puzzle_stabilizer_count=puzzle_stabilizer_count,
+        puzzle_stabilizer_hp=puzzle_stabilizer_hp,
+        puzzle_camp_pulse_damage=puzzle_camp_pulse_damage,
+        puzzle_camp_pulse_interval_ms=puzzle_camp_pulse_interval_ms,
+        puzzle_camp_pulse_grace_ms=puzzle_camp_pulse_grace_ms,
+        puzzle_camp_pulse_radius=puzzle_camp_pulse_radius,
     )
 
 
@@ -526,6 +538,267 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["kind"], "spawn_reinforcements")
         self.assertEqual(len(update["enemy_configs"]), 2)
         self.assertIsNotNone(first_a_sprite._penalty_flash_state())
+
+    def test_puzzle_stabilizer_skips_next_expected_plate_when_destroyed(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                enemy_count_range=(1, 1),
+                objective_variant="staggered_plates",
+                objective_label="Glyph",
+                objective_entity_count=4,
+                puzzle_reinforcement_count=2,
+                puzzle_stall_duration_ms=2200,
+                puzzle_stabilizer_count=1,
+                puzzle_stabilizer_hp=10,
+            ),
+        )
+        room.on_enter(1000)
+
+        stabilizer_config = next(
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "puzzle_stabilizer"
+        )
+        plate_one = next(
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and config.get("telegraph_text") == "1"
+        )
+
+        # Charge the first staggered plate (sequence 1, 3, 2, 4) so the next
+        # expected plate becomes telegraph 3.
+        plate_one_sprite = PressurePlate(plate_one)
+        plate_one_sprite.update(1050)
+        plate_one_sprite.sync_player_overlap(SimpleNamespace(rect=plate_one_sprite.rect.copy()))
+        self.assertEqual(room.objective_hud_state(1100)["label"], "Objective: Charge glyphs 1/4 | Next 3")
+
+        # Smash the stabilizer to claim the optional skip.
+        stabilizer_sprite = PuzzleStabilizer(stabilizer_config)
+        stabilizer_sprite.update(1200)
+        destroyed = stabilizer_sprite.take_damage(stabilizer_config["max_hp"])
+        self.assertTrue(destroyed)
+        self.assertTrue(stabilizer_config["destroyed"])
+        self.assertTrue(stabilizer_config["consumed"])
+
+        plate_three = next(
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and config.get("telegraph_text") == "3"
+        )
+        self.assertTrue(plate_three["activated"])
+        self.assertEqual(room._puzzle_controller()["progress_index"], 2)
+
+        # The HUD should report the skip and the next expected target should
+        # advance to telegraph 2 (third entry in the staggered sequence).
+        hud_label = room.objective_hud_state(1200)["label"]
+        self.assertIn("Charge glyphs 2/4", hud_label)
+        self.assertIn("Next 2", hud_label)
+        self.assertIn("Stabilizer skip", hud_label)
+
+        # Skip cancels any pending stall reaction so the destroy strike does
+        # not also immediately summon reinforcements.
+        self.assertIsNone(room.update_objective(1300, []))
+
+    def test_puzzle_stabilizer_skips_one_pair_for_paired_runes(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                enemy_count_range=(1, 1),
+                objective_variant="paired_runes",
+                objective_label="Rune",
+                objective_entity_count=4,
+                puzzle_reinforcement_count=2,
+                puzzle_stall_duration_ms=2200,
+                puzzle_stabilizer_count=1,
+                puzzle_stabilizer_hp=10,
+            ),
+        )
+        room.on_enter(1000)
+
+        stabilizer_config = next(
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "puzzle_stabilizer"
+        )
+        pair_a_configs = [
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and config.get("pair_label") == "A"
+        ]
+        pair_b_configs = [
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and config.get("pair_label") == "B"
+        ]
+        self.assertEqual(len(pair_a_configs), 2)
+        self.assertEqual(len(pair_b_configs), 2)
+        self.assertEqual(room.remaining_puzzle_plates(), 4)
+
+        # Half-prime pair B so the stabilizer should prefer to finish it.
+        first_b_sprite = PressurePlate(pair_b_configs[0])
+        first_b_sprite.update(1050)
+        first_b_sprite.sync_player_overlap(SimpleNamespace(rect=first_b_sprite.rect.copy()))
+        controller = room._puzzle_controller()
+        self.assertEqual(controller["pending_pair_label"], "B")
+
+        stabilizer_sprite = PuzzleStabilizer(stabilizer_config)
+        stabilizer_sprite.update(1200)
+        destroyed = stabilizer_sprite.take_damage(stabilizer_config["max_hp"])
+        self.assertTrue(destroyed)
+        self.assertTrue(stabilizer_config["consumed"])
+
+        # Both B plates should now be activated and the half-primed state cleared.
+        self.assertTrue(all(config.get("activated") for config in pair_b_configs))
+        self.assertFalse(any(config.get("primed") for config in pair_b_configs))
+        self.assertIsNone(controller["pending_pair_label"])
+        self.assertEqual(room.remaining_puzzle_plates(), 2)
+
+        hud_label = room.objective_hud_state(1200)["label"]
+        self.assertIn("Stabilizer skip", hud_label)
+
+        # Skip cancels any pending stall reaction.
+        self.assertIsNone(room.update_objective(1300, []))
+
+        # Playtest hint advertises the shortcut for paired_runes too.
+        fresh = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                enemy_count_range=(1, 1),
+                objective_variant="paired_runes",
+                objective_label="Rune",
+                objective_entity_count=4,
+                puzzle_stabilizer_count=1,
+                puzzle_stabilizer_hp=10,
+            ),
+        )
+        fresh.on_enter(0)
+        self.assertIn(
+            "Shatter the optional stabilizer to skip one step.",
+            fresh._playtest_identifier_detail(0),
+        )
+
+    def test_solved_plate_camp_pulse_damages_lingering_player(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                enemy_count_range=(1, 1),
+                objective_variant="staggered_plates",
+                objective_label="Glyph",
+                objective_entity_count=4,
+                puzzle_reinforcement_count=2,
+                puzzle_stall_duration_ms=10000,  # keep stall reaction inert
+                puzzle_camp_pulse_damage=3,
+                puzzle_camp_pulse_interval_ms=500,
+                puzzle_camp_pulse_grace_ms=400,
+                puzzle_camp_pulse_radius=40,
+            ),
+        )
+        room.on_enter(0)
+
+        plate_one_config = next(
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and config.get("telegraph_text") == "1"
+        )
+        plate_one = PressurePlate(plate_one_config)
+        plate_one.update(0)
+        plate_one.sync_player_overlap(SimpleNamespace(rect=plate_one.rect.copy()))
+        self.assertTrue(plate_one_config["activated"])
+        self.assertEqual(plate_one_config["activated_at"], 0)
+
+        damage_log = []
+
+        class _StubPlayer:
+            def __init__(self, rect):
+                self.rect = rect
+
+            def take_damage(self, amount):
+                damage_log.append(amount)
+
+        on_plate = _StubPlayer(plate_one.rect.copy())
+        far_away = _StubPlayer(pygame.Rect(0, 0, 16, 16))
+
+        # Inside grace window: no pulse yet.
+        plate_one.update(200)
+        self.assertFalse(plate_one.apply_player_pressure(on_plate))
+        self.assertEqual(damage_log, [])
+
+        # Outside the radius: still no pulse even after grace.
+        plate_one.update(500)
+        self.assertFalse(plate_one.apply_player_pressure(far_away))
+        self.assertEqual(damage_log, [])
+
+        # On the plate after grace expires: first pulse fires, HUD penalty
+        # tagged as a camp pulse.
+        plate_one.update(500)
+        self.assertTrue(plate_one.apply_player_pressure(on_plate))
+        self.assertEqual(damage_log, [3])
+        controller = room._puzzle_controller()
+        self.assertEqual(controller["last_penalty_at"], 500)
+        self.assertEqual(controller["last_penalty_reason"], "camp")
+        self.assertIn("Camp pulse", room.objective_hud_state(500)["label"])
+
+        # Second call within the interval is gated.
+        plate_one.update(800)
+        self.assertFalse(plate_one.apply_player_pressure(on_plate))
+        self.assertEqual(damage_log, [3])
+
+        # Once the interval elapses another pulse lands.
+        plate_one.update(1100)
+        self.assertTrue(plate_one.apply_player_pressure(on_plate))
+        self.assertEqual(damage_log, [3, 3])
+
+    def test_solved_plate_camp_pulse_disabled_when_unconfigured(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                enemy_count_range=(1, 1),
+                objective_variant="staggered_plates",
+                objective_label="Glyph",
+                objective_entity_count=4,
+            ),
+        )
+        room.on_enter(0)
+
+        plate_one_config = next(
+            config
+            for config in room.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and config.get("telegraph_text") == "1"
+        )
+        plate_one = PressurePlate(plate_one_config)
+        plate_one.update(0)
+        plate_one.sync_player_overlap(SimpleNamespace(rect=plate_one.rect.copy()))
+
+        damage_log = []
+
+        class _StubPlayer:
+            def __init__(self, rect):
+                self.rect = rect
+
+            def take_damage(self, amount):
+                damage_log.append(amount)
+
+        plate_one.update(5000)
+        self.assertFalse(
+            plate_one.apply_player_pressure(_StubPlayer(plate_one.rect.copy()))
+        )
+        self.assertEqual(damage_log, [])
 
     def test_playtest_identifier_describes_holdout_circle_room(self):
         room = Room(

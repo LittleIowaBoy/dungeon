@@ -402,6 +402,12 @@ class RoomSelector:
         objective_damage_cooldown_ms = max(0, int(template.objective_damage_cooldown_ms or 0))
         puzzle_reinforcement_count = max(0, int(template.puzzle_reinforcement_count or 0))
         puzzle_stall_duration_ms = max(0, int(template.puzzle_stall_duration_ms or 0))
+        puzzle_stabilizer_count = max(0, int(template.puzzle_stabilizer_count or 0))
+        puzzle_stabilizer_hp = max(0, int(template.puzzle_stabilizer_hp or 0))
+        puzzle_camp_pulse_damage = max(0, int(template.puzzle_camp_pulse_damage or 0))
+        puzzle_camp_pulse_interval_ms = max(0, int(template.puzzle_camp_pulse_interval_ms or 0))
+        puzzle_camp_pulse_grace_ms = max(0, int(template.puzzle_camp_pulse_grace_ms or 0))
+        puzzle_camp_pulse_radius = max(0, int(template.puzzle_camp_pulse_radius or 0))
 
         if objective_rule == "charge_plates":
             if puzzle_reinforcement_count <= 0:
@@ -495,4 +501,10 @@ class RoomSelector:
             objective_damage_cooldown_ms=objective_damage_cooldown_ms,
             puzzle_reinforcement_count=puzzle_reinforcement_count,
             puzzle_stall_duration_ms=puzzle_stall_duration_ms,
+            puzzle_stabilizer_count=puzzle_stabilizer_count,
+            puzzle_stabilizer_hp=puzzle_stabilizer_hp,
+            puzzle_camp_pulse_damage=puzzle_camp_pulse_damage,
+            puzzle_camp_pulse_interval_ms=puzzle_camp_pulse_interval_ms,
+            puzzle_camp_pulse_grace_ms=puzzle_camp_pulse_grace_ms,
+            puzzle_camp_pulse_radius=puzzle_camp_pulse_radius,
         )

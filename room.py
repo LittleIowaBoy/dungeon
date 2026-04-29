@@ -238,6 +238,11 @@ _DEFAULT_PUZZLE_REINFORCEMENT_COUNT = 1
 _PUZZLE_PENALTY_HUD_MS = 1600
 _PUZZLE_PENALTY_FLASH_MS = 700
 _PUZZLE_STALL_DURATION_MS = 2500
+_PUZZLE_SKIP_HUD_MS = 1800
+_DEFAULT_PUZZLE_STABILIZER_HP = 12
+_DEFAULT_PUZZLE_STABILIZER_OFFSET = (0, -1)
+_DEFAULT_PUZZLE_CAMP_PULSE_RADIUS = 32
+_PUZZLE_CAMP_HUD_LABEL = "Camp pulse"
 _STEALTH_SEARCH_WINDOW_MS = 2200
 
 
@@ -1131,6 +1136,7 @@ class Room:
             controller = self._puzzle_controller() or {}
             variant = self._puzzle_variant()
             pressure_suffix = self._puzzle_pressure_suffix(now_ticks)
+            skip_suffix = self._puzzle_skip_suffix(now_ticks)
             if variant == "paired_runes":
                 total_pairs = len(controller.get("pair_labels", ())) or 1
                 completed_pairs = self._completed_puzzle_pairs()
@@ -1139,10 +1145,14 @@ class Room:
                 label = pluralize_label(self._plate_label()).lower()
                 return {
                     "visible": True,
-                    "label": f"Objective: Match {label} {completed_pairs}/{total_pairs}{suffix}{pressure_suffix}",
+                    "label": f"Objective: Match {label} {completed_pairs}/{total_pairs}{suffix}{pressure_suffix}{skip_suffix}",
                 }
 
-            total = len(self.objective_entity_configs)
+            total = sum(
+                1
+                for config in self.objective_entity_configs
+                if config.get("kind") == "pressure_plate"
+            )
             activated = total - self.remaining_puzzle_plates()
             label = pluralize_label(self._plate_label()).lower()
             next_target = self._puzzle_expected_label(controller)
@@ -1152,7 +1162,7 @@ class Room:
             next_suffix = f" | Next {next_target}" if next_target else ""
             return {
                 "visible": True,
-                "label": f"Objective: Charge {label} {activated}/{total}{next_suffix}{reset_suffix}{pressure_suffix}",
+                "label": f"Objective: Charge {label} {activated}/{total}{next_suffix}{reset_suffix}{pressure_suffix}{skip_suffix}",
             }
 
         if rule in {"escort_to_exit", "escort_bomb_to_exit"} and self.is_exit:
@@ -1312,12 +1322,18 @@ class Room:
 
         if rule == "charge_plates":
             label = pluralize_label(self._plate_label()).lower()
+            shortcut_suffix = ""
+            if self._has_unused_puzzle_stabilizer():
+                shortcut_suffix = " Shatter the optional stabilizer to skip one step."
+            camp_suffix = ""
+            if self._puzzle_has_camp_pulses():
+                camp_suffix = " Solved plates pulse damage if you linger on them."
             if self._puzzle_variant() == "paired_runes":
-                return f"Solve: Match two {label} with the same symbol. Changing symbols or waiting too long summons reinforcements."
+                return f"Solve: Match two {label} with the same symbol. Changing symbols or waiting too long summons reinforcements.{shortcut_suffix}{camp_suffix}"
             if self._puzzle_variant() == "staggered_plates":
                 sequence = ", ".join(self._puzzle_sequence_labels())
-                return f"Solve: Follow the staggered {label} order {sequence}. Wrong steps or stalling summon reinforcements."
-            return f"Solve: Activate the numbered {label} in order to unlock the exit. Wrong steps or stalling summon reinforcements."
+                return f"Solve: Follow the staggered {label} order {sequence}. Wrong steps or stalling summon reinforcements.{shortcut_suffix}{camp_suffix}"
+            return f"Solve: Activate the numbered {label} in order to unlock the exit. Wrong steps or stalling summon reinforcements.{shortcut_suffix}{camp_suffix}"
 
         if rule == "escort_to_exit":
             escort = self._escort_config() or {}
@@ -1863,7 +1879,9 @@ class Room:
 
     def _puzzle_target_configs(self):
         active_plates = [
-            config for config in self.objective_entity_configs if not config.get("activated")
+            config
+            for config in self.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and not config.get("activated")
         ]
         if not active_plates:
             return []
@@ -1912,7 +1930,32 @@ class Room:
             return ""
         if now_ticks - last_penalty_at > _PUZZLE_PENALTY_HUD_MS:
             return ""
+        if controller.get("last_penalty_reason") == "camp":
+            return f" | {_PUZZLE_CAMP_HUD_LABEL}"
         return " | Pressure spike"
+
+    def _puzzle_skip_suffix(self, now_ticks):
+        controller = self._puzzle_controller() or {}
+        last_skip_at = controller.get("last_skip_at")
+        if last_skip_at is None:
+            return ""
+        if now_ticks - last_skip_at > _PUZZLE_SKIP_HUD_MS:
+            return ""
+        label = controller.get("last_skip_label", "Stabilizer")
+        return f" | {label} skip"
+
+    def _has_unused_puzzle_stabilizer(self):
+        return any(
+            config.get("kind") == "puzzle_stabilizer" and not config.get("destroyed")
+            for config in self.objective_entity_configs
+        )
+
+    def _puzzle_has_camp_pulses(self):
+        controller = self._puzzle_controller() or {}
+        return (
+            int(controller.get("camp_pulse_damage", 0)) > 0
+            and int(controller.get("camp_pulse_interval_ms", 0)) > 0
+        )
 
     def _maybe_trigger_puzzle_reaction(self, now_ticks):
         controller = self._puzzle_controller()
@@ -1964,6 +2007,8 @@ class Room:
             for config in controller.get("configs", ()): 
                 config["activated"] = False
                 config["primed"] = False
+                config["activated_at"] = None
+                config["last_camp_pulse_at"] = None
             controller["progress_index"] = 0
             controller["last_reset_label"] = next_label
 
@@ -1976,7 +2021,11 @@ class Room:
         return sum(1 for config in self.objective_entity_configs if not config["destroyed"])
 
     def remaining_puzzle_plates(self):
-        return sum(1 for config in self.objective_entity_configs if not config.get("activated"))
+        return sum(
+            1
+            for config in self.objective_entity_configs
+            if config.get("kind") == "pressure_plate" and not config.get("activated")
+        )
 
     def _build_objective_configs(self):
         if self.room_plan is None:
@@ -2486,6 +2535,10 @@ class Room:
                 int(self.room_plan.puzzle_reinforcement_count or _DEFAULT_PUZZLE_REINFORCEMENT_COUNT),
             ),
             "penalty_flash_ms": _PUZZLE_PENALTY_FLASH_MS,
+            "camp_pulse_damage": max(0, int(self.room_plan.puzzle_camp_pulse_damage or 0)),
+            "camp_pulse_interval_ms": max(0, int(self.room_plan.puzzle_camp_pulse_interval_ms or 0)),
+            "camp_pulse_grace_ms": max(0, int(self.room_plan.puzzle_camp_pulse_grace_ms or 0)),
+            "camp_pulse_radius": max(0, int(self.room_plan.puzzle_camp_pulse_radius or 0)),
         }
         configs = []
         if variant == "paired_runes":
@@ -2525,7 +2578,36 @@ class Room:
                 )
             controller["target_sequence"] = self._puzzle_target_sequence(variant, plate_count)
         controller["configs"] = configs
+        self._maybe_append_puzzle_stabilizer(controller, configs, variant)
         return configs
+
+    def _maybe_append_puzzle_stabilizer(self, controller, configs, variant):
+        del variant  # supported by every charge_plates variant since P3.
+        stabilizer_count = max(0, int(self.room_plan.puzzle_stabilizer_count or 0))
+        if stabilizer_count <= 0:
+            return
+
+        stabilizer_hp = max(
+            1,
+            int(self.room_plan.puzzle_stabilizer_hp or _DEFAULT_PUZZLE_STABILIZER_HP),
+        )
+        position = self._spawn_position_from_offset(
+            None,
+            _DEFAULT_PUZZLE_STABILIZER_OFFSET,
+        )
+        configs.append(
+            {
+                "kind": "puzzle_stabilizer",
+                "label": "Stabilizer",
+                "pos": position,
+                "max_hp": stabilizer_hp,
+                "current_hp": stabilizer_hp,
+                "controller": controller,
+                "destroyed": False,
+                "consumed": False,
+                "trigger_padding": 12,
+            }
+        )
 
     def _trap_sweeper_config(self, controller, orientation, offset, lane_count, lane_index):
         travel_min = 4 * TILE_SIZE + TILE_SIZE // 2

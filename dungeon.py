@@ -17,6 +17,7 @@ from objective_entities import (
     HoldoutStabilizer,
     HoldoutZone,
     PressurePlate,
+    PuzzleStabilizer,
     RuneAltar,
     TrapCrusher,
     TrapLaneSwitch,
@@ -440,6 +441,8 @@ class Dungeon:
                 self.objective_group.add(HoldoutStabilizer(config))
             elif config["kind"] == "pressure_plate":
                 self.objective_group.add(PressurePlate(config))
+            elif config["kind"] == "puzzle_stabilizer" and not config.get("destroyed"):
+                self.objective_group.add(PuzzleStabilizer(config))
             elif config["kind"] == "alarm_beacon":
                 from enemies import SentryEnemy
                 pos = config["pos"]
