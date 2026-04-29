@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS player (
     speed_cap        REAL    NOT NULL DEFAULT 1.5,
     armor_hp         INTEGER NOT NULL DEFAULT 0,
     compass_uses     INTEGER NOT NULL DEFAULT 0,
-    difficulty_preference TEXT NOT NULL DEFAULT 'default'
+    difficulty_preference TEXT NOT NULL DEFAULT 'default',
+    meta_keystones   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS dungeon_progress (
@@ -55,6 +56,12 @@ CREATE TABLE IF NOT EXISTS equipped_runes (
     rune_id    TEXT    NOT NULL,
     PRIMARY KEY (category, slot_index)
 );
+
+CREATE TABLE IF NOT EXISTS biome_meta (
+    terrain     TEXT    PRIMARY KEY,
+    completions INTEGER NOT NULL DEFAULT 0,
+    attunements INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -81,6 +88,13 @@ def _get_conn():
         )
         cur.execute("UPDATE dungeon_progress SET is_alive=1, completed=0")
 
+    # Migrate: meta_keystones permanent counter (T11).
+    if "meta_keystones" not in player_cols:
+        cur.execute(
+            "ALTER TABLE player ADD COLUMN "
+            "meta_keystones INTEGER NOT NULL DEFAULT 0"
+        )
+
     conn.commit()
     return conn
 
@@ -97,15 +111,17 @@ def save_progress(progress: PlayerProgress):
         # player row (upsert)
         cur.execute(
             "INSERT INTO player "
-            "(id, coins, max_hp, speed_cap, armor_hp, compass_uses, difficulty_preference) "
-            "VALUES (1, ?, ?, ?, ?, ?, ?) "
+            "(id, coins, max_hp, speed_cap, armor_hp, compass_uses, "
+            "difficulty_preference, meta_keystones) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET coins=excluded.coins, "
             "max_hp=excluded.max_hp, speed_cap=excluded.speed_cap, "
             "armor_hp=excluded.armor_hp, compass_uses=excluded.compass_uses, "
-            "difficulty_preference=excluded.difficulty_preference",
+            "difficulty_preference=excluded.difficulty_preference, "
+            "meta_keystones=excluded.meta_keystones",
             (progress.coins, progress.max_hp, progress.speed_cap,
              progress.armor_hp, progress.compass_uses,
-             progress.difficulty_preference),
+             progress.difficulty_preference, progress.meta_keystones),
         )
 
         # dungeon progress (upsert each)
@@ -161,6 +177,20 @@ def save_progress(progress: PlayerProgress):
                     (category, slot_index, rune_id),
                 )
 
+        # T17: biome meta-progression (completions + attunements per terrain).
+        cur.execute("DELETE FROM biome_meta")
+        terrains = set(progress.biome_completions) | set(progress.biome_attunements)
+        for terrain in terrains:
+            cur.execute(
+                "INSERT INTO biome_meta (terrain, completions, attunements) "
+                "VALUES (?, ?, ?)",
+                (
+                    terrain,
+                    int(progress.biome_completions.get(terrain, 0)),
+                    int(progress.biome_attunements.get(terrain, 0)),
+                ),
+            )
+
         conn.commit()
     finally:
         conn.close()
@@ -186,7 +216,7 @@ def load_progress() -> PlayerProgress:
 
         # player
         cur.execute("SELECT coins, max_hp, speed_cap, armor_hp, compass_uses, "
-                    "difficulty_preference FROM player WHERE id=1")
+                    "difficulty_preference, meta_keystones FROM player WHERE id=1")
         row = cur.fetchone()
         if row:
             progress.coins = row[0]
@@ -195,6 +225,7 @@ def load_progress() -> PlayerProgress:
             progress.armor_hp = row[3]
             progress.compass_uses = row[4]
             progress.difficulty_preference = row[5]
+            progress.meta_keystones = row[6]
 
         # dungeon progress
         cur.execute("SELECT dungeon_id, is_alive, completed FROM dungeon_progress")
@@ -235,6 +266,16 @@ def load_progress() -> PlayerProgress:
             for category, _slot_index, rune_id in rune_rows:
                 grouped.setdefault(category, []).append(rune_id)
             progress.equipped_runes = rune_rules.normalize_loadout(grouped)
+
+        # T17: biome meta-progression.
+        progress.biome_completions = {}
+        progress.biome_attunements = {}
+        cur.execute("SELECT terrain, completions, attunements FROM biome_meta")
+        for terrain, completions, attunements in cur.fetchall():
+            if int(completions) > 0:
+                progress.biome_completions[terrain] = int(completions)
+            if int(attunements) > 0:
+                progress.biome_attunements[terrain] = int(attunements)
 
         progress.migrate_legacy_state()
 

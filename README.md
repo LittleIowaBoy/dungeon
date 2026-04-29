@@ -74,6 +74,9 @@ python -m unittest tests.test_player tests.test_runtime_rules tests.test_rpg_run
 - `5`: use speed boost
 - `6`: use attack boost
 - `7`: use compass
+- `8`: use Boulder Stat Shard (permanent +max HP, biome reward)
+- `9`: use Frost Tempo Rune (extended attack-boost window, biome reward)
+- `0`: use Tide Mobility Charge (short, sharp speed burst, biome reward)
 - `Esc`: pause menu
 - `F3`: toggle the play-test room identifier overlay during a run
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pygame
 
-from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, PressurePlate, PuzzleStabilizer, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
+from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, HoldoutZone, PressurePlate, PuzzleStabilizer, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
 from room import FLOOR, PORTAL, WALL, Room
 from room_plan import RoomPlan, RoomTemplate
 from settings import ROOM_COLS, ROOM_ROWS, TILE_SIZE
@@ -52,13 +52,19 @@ def _plan(
     objective_entity_count=0,
     scripted_wave_sizes=(),
     holdout_zone_radius=0,
+    holdout_zone_min_radius=0,
+    holdout_zone_shrink_ms=0,
+    holdout_zone_migrate_ms=0,
+    holdout_zone_migration_offsets=(),
     holdout_relief_count=0,
     holdout_relief_delay_ms=0,
+    holdout_stabilizer_migration_delay_ms=0,
     ritual_role_script=(),
     ritual_reinforcement_count=0,
     ritual_link_mode="",
     ritual_payoff_kind="",
     ritual_payoff_label="",
+    ritual_wrong_strike_spawn_count=0,
     objective_label="",
     objective_layout_offsets=(),
     objective_spawn_offset=None,
@@ -78,6 +84,9 @@ def _plan(
     puzzle_camp_pulse_interval_ms=0,
     puzzle_camp_pulse_grace_ms=0,
     puzzle_camp_pulse_radius=0,
+    trap_intensity_scale=1.0,
+    trap_speed_scale=1.0,
+    trap_challenge_reward_kind="chest_upgrade",
 ):
     return RoomPlan(
         position=(0, 0),
@@ -104,13 +113,19 @@ def _plan(
         objective_entity_count=objective_entity_count,
         scripted_wave_sizes=scripted_wave_sizes,
         holdout_zone_radius=holdout_zone_radius,
+        holdout_zone_min_radius=holdout_zone_min_radius,
+        holdout_zone_shrink_ms=holdout_zone_shrink_ms,
+        holdout_zone_migrate_ms=holdout_zone_migrate_ms,
+        holdout_zone_migration_offsets=holdout_zone_migration_offsets,
         holdout_relief_count=holdout_relief_count,
         holdout_relief_delay_ms=holdout_relief_delay_ms,
+        holdout_stabilizer_migration_delay_ms=holdout_stabilizer_migration_delay_ms,
         ritual_role_script=ritual_role_script,
         ritual_reinforcement_count=ritual_reinforcement_count,
         ritual_link_mode=ritual_link_mode,
         ritual_payoff_kind=ritual_payoff_kind,
         ritual_payoff_label=ritual_payoff_label,
+        ritual_wrong_strike_spawn_count=ritual_wrong_strike_spawn_count,
         objective_label=objective_label,
         objective_layout_offsets=objective_layout_offsets,
         objective_spawn_offset=objective_spawn_offset,
@@ -130,6 +145,9 @@ def _plan(
         puzzle_camp_pulse_interval_ms=puzzle_camp_pulse_interval_ms,
         puzzle_camp_pulse_grace_ms=puzzle_camp_pulse_grace_ms,
         puzzle_camp_pulse_radius=puzzle_camp_pulse_radius,
+        trap_intensity_scale=trap_intensity_scale,
+        trap_speed_scale=trap_speed_scale,
+        trap_challenge_reward_kind=trap_challenge_reward_kind,
     )
 
 
@@ -235,9 +253,106 @@ class RoomObjectiveTests(unittest.TestCase):
 
         update = room.update_objective(1000, [])
 
-        self.assertEqual(update, {"kind": "upgrade_reward_chest", "reward_tier": "finale_bonus"})
+        self.assertEqual(update, {"kind": "upgrade_reward_chest", "reward_tier": "finale_bonus", "reward_kind": "chest_upgrade"})
         self.assertEqual(room.chest_reward_tier(), "finale_bonus")
         self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Challenge lane Bottom | Reward upgraded")
+
+    def test_trap_challenge_lane_payload_carries_biome_reward_kind(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                reward_tier="branch_bonus",
+                trap_challenge_reward_kind="stat_shard",
+            ),
+        )
+        challenge_switch = next(
+            config
+            for config in room.objective_entity_configs
+            if config["kind"] == "trap_lane_switch" and config["lane_index"] == 2
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(challenge_switch).rect.copy())
+        TrapLaneSwitch(challenge_switch).sync_player_overlap(player)
+
+        update = room.update_objective(1000, [])
+
+        self.assertEqual(update["reward_kind"], "stat_shard")
+        self.assertEqual(
+            room.objective_hud_state(1000)["label"],
+            "Objective: Challenge lane Bottom | Stat shard claimed",
+        )
+
+    def test_trap_challenge_lane_label_reflects_tempo_rune_reward(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                reward_tier="branch_bonus",
+                trap_challenge_reward_kind="tempo_rune",
+            ),
+        )
+        challenge_switch = next(
+            config
+            for config in room.objective_entity_configs
+            if config["kind"] == "trap_lane_switch" and config["lane_index"] == 2
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(challenge_switch).rect.copy())
+        TrapLaneSwitch(challenge_switch).sync_player_overlap(player)
+        update = room.update_objective(1000, [])
+
+        self.assertEqual(update["reward_kind"], "tempo_rune")
+        self.assertEqual(
+            room.objective_hud_state(1000)["label"],
+            "Objective: Challenge lane Bottom | Tempo rune claimed",
+        )
+
+    def test_trap_challenge_lane_label_reflects_mobility_consumable_reward(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                reward_tier="branch_bonus",
+                trap_challenge_reward_kind="mobility_consumable",
+            ),
+        )
+        challenge_switch = next(
+            config
+            for config in room.objective_entity_configs
+            if config["kind"] == "trap_lane_switch" and config["lane_index"] == 2
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(challenge_switch).rect.copy())
+        TrapLaneSwitch(challenge_switch).sync_player_overlap(player)
+        update = room.update_objective(1000, [])
+
+        self.assertEqual(update["reward_kind"], "mobility_consumable")
+        self.assertEqual(
+            room.objective_hud_state(1000)["label"],
+            "Objective: Challenge lane Bottom | Mobility charge claimed",
+        )
 
     def test_trap_gauntlet_can_build_vent_lane_variant(self):
         room = Room(
@@ -371,6 +486,159 @@ class RoomObjectiveTests(unittest.TestCase):
             room._playtest_identifier_detail(1000),
             "Solve: Use the entry and checkpoint switches to reroute through mixed trap lanes. The challenge lane keeps every hazard live but upgrades the chest.",
         )
+
+    def test_trap_gauntlet_default_intensity_keeps_base_hazard_damage(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+                trap_intensity_scale=1.0,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        vents = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        crushers = [c for c in room.objective_entity_configs if c["kind"] == "trap_crusher"]
+        self.assertEqual(sweepers[0]["damage"], 8)
+        self.assertEqual(vents[0]["damage"], 7)
+        self.assertEqual(crushers[0]["damage"], 9)
+
+    def test_trap_gauntlet_high_intensity_scales_hazard_damage_up(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+                trap_intensity_scale=1.4,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        vents = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        crushers = [c for c in room.objective_entity_configs if c["kind"] == "trap_crusher"]
+        self.assertEqual(sweepers[0]["damage"], 11)  # round(8 * 1.4)
+        self.assertEqual(vents[0]["damage"], 10)  # round(7 * 1.4)
+        self.assertEqual(crushers[0]["damage"], 13)  # round(9 * 1.4)
+
+    def test_trap_gauntlet_low_intensity_scales_hazard_damage_down(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+                trap_intensity_scale=0.8,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        vents = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        crushers = [c for c in room.objective_entity_configs if c["kind"] == "trap_crusher"]
+        self.assertEqual(sweepers[0]["damage"], 6)  # round(8 * 0.8)
+        self.assertEqual(vents[0]["damage"], 6)  # round(7 * 0.8)
+        self.assertEqual(crushers[0]["damage"], 7)  # round(9 * 0.8)
+
+    def test_trap_gauntlet_default_speed_scale_keeps_base_hazard_timings(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+                trap_speed_scale=1.0,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        vents = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        crushers = [c for c in room.objective_entity_configs if c["kind"] == "trap_crusher"]
+        self.assertAlmostEqual(sweepers[0]["speed"], 1.5)
+        self.assertAlmostEqual(sweepers[0]["challenge_speed"], 0.9)
+        self.assertEqual(vents[0]["cycle_ms"], 2800)
+        self.assertEqual(vents[0]["active_ms"], 1800)
+        self.assertEqual(vents[0]["challenge_cycle_ms"], 2200)
+        self.assertEqual(crushers[0]["cycle_ms"], 2400)
+        self.assertEqual(crushers[0]["challenge_active_ms"], 1200)
+
+    def test_trap_gauntlet_high_speed_scale_quickens_hazard_timings(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+                trap_speed_scale=1.25,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        vents = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        crushers = [c for c in room.objective_entity_configs if c["kind"] == "trap_crusher"]
+        self.assertAlmostEqual(sweepers[0]["speed"], 1.5 * 1.25)
+        self.assertAlmostEqual(sweepers[0]["challenge_speed"], 0.9 * 1.25)
+        self.assertEqual(vents[0]["cycle_ms"], round(2800 / 1.25))  # 2240
+        self.assertEqual(vents[0]["active_ms"], round(1800 / 1.25))  # 1440
+        self.assertEqual(crushers[0]["cycle_ms"], round(2400 / 1.25))  # 1920
+        self.assertEqual(crushers[0]["challenge_active_ms"], round(1200 / 1.25))  # 960
+
+    def test_trap_gauntlet_low_speed_scale_slows_hazard_timings(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Gate Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+                trap_speed_scale=0.85,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        vents = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        crushers = [c for c in room.objective_entity_configs if c["kind"] == "trap_crusher"]
+        self.assertAlmostEqual(sweepers[0]["speed"], 1.5 * 0.85)
+        self.assertAlmostEqual(sweepers[0]["challenge_speed"], 0.9 * 0.85)
+        self.assertEqual(vents[0]["cycle_ms"], round(2800 / 0.85))  # 3294
+        self.assertEqual(crushers[0]["cycle_ms"], round(2400 / 0.85))  # 2824
+        self.assertEqual(crushers[0]["active_ms"], round(1300 / 0.85))  # 1529
 
     def test_ordered_puzzle_resets_when_player_activates_wrong_plate(self):
         room = Room(
@@ -1016,6 +1284,385 @@ class RoomObjectiveTests(unittest.TestCase):
 
         self.assertEqual(delayed_wave["kind"], "spawn_enemies")
         self.assertEqual(len(delayed_wave["enemy_configs"]), 1)
+
+    def test_holdout_zone_radius_shrinks_to_contested_floor_over_duration(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=8000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1,),
+                holdout_zone_radius=100,
+                holdout_zone_min_radius=50,
+                holdout_zone_shrink_ms=4000,
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+        holdout_zone["occupied"] = True
+        self.assertEqual(holdout_zone["radius"], 100)
+        self.assertEqual(holdout_zone["initial_radius"], 100)
+        self.assertEqual(holdout_zone["min_radius"], 50)
+
+        # Halfway through the shrink window the radius should be ~halfway down.
+        room.update_objective(3000, [])
+        self.assertEqual(holdout_zone["radius"], 75)
+        hud_label = room.objective_hud_state(3000)["label"]
+        self.assertIn("Zone 75%", hud_label)
+
+        # Past the shrink window the radius clamps at the contested-ground floor.
+        room.update_objective(6000, [])
+        self.assertEqual(holdout_zone["radius"], 50)
+        self.assertIn("Zone 50%", room.objective_hud_state(6000)["label"])
+
+        # Playtest hint surfaces the contested-ground rule.
+        detail = room.playtest_identifier_state(6000)["detail"]
+        self.assertIn("shrinks to contested ground", detail)
+
+    def test_holdout_zone_without_shrink_keeps_initial_radius_and_hides_zone_suffix(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=6000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1, 2),
+                holdout_zone_radius=96,
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+        holdout_zone["occupied"] = True
+        self.assertEqual(holdout_zone["radius"], 96)
+        self.assertEqual(holdout_zone["min_radius"], 96)
+        self.assertEqual(holdout_zone.get("shrink_ms", 0), 0)
+
+        room.update_objective(4000, [])
+        self.assertEqual(holdout_zone["radius"], 96)
+        self.assertNotIn("Zone ", room.objective_hud_state(4000)["label"])
+
+    def test_holdout_zone_migrates_between_anchors_and_pauses_progress(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=12000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1,),
+                holdout_zone_radius=96,
+                holdout_zone_migrate_ms=4000,
+                holdout_zone_migration_offsets=((-5, -3), (5, 3)),
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+        anchors = holdout_zone["anchors"]
+        self.assertEqual(len(anchors), 3)
+        self.assertEqual(holdout_zone["anchor_index"], 0)
+        initial_pos = holdout_zone["pos"]
+
+        # Park the player on the initial anchor and accumulate some progress.
+        holdout_zone["occupied"] = True
+        room.update_objective(3500, [])
+        progress_before = room._holdout_progress_ms
+        self.assertGreater(progress_before, 0)
+        self.assertEqual(holdout_zone["pos"], initial_pos)
+        self.assertEqual(holdout_zone["anchor_index"], 0)
+
+        # Cross the first migration boundary: zone hops to the next anchor and
+        # forcibly clears occupancy so the player has to chase it.
+        room.update_objective(5500, [])
+        self.assertEqual(holdout_zone["anchor_index"], 1)
+        self.assertEqual(holdout_zone["pos"], anchors[1])
+        self.assertFalse(holdout_zone["occupied"])
+        self.assertEqual(holdout_zone["last_migrated_at"], 5500)
+
+        # The HUD surfaces the migration banner and the "return to circle" hint.
+        hud_label = room.objective_hud_state(5500)["label"]
+        self.assertIn("Zone moved", hud_label)
+        self.assertIn("Return to circle", hud_label)
+
+        # Driving the HoldoutZone sprite proves the rect follows the new pos so
+        # downstream overlap and minimap projections see the relocated anchor.
+        sprite = HoldoutZone(holdout_zone)
+        sprite.update(5500)
+        self.assertEqual(sprite.rect.center, anchors[1])
+
+        # While the player is outside the new circle, progress does not advance.
+        progress_at_migration = room._holdout_progress_ms
+        room.update_objective(7000, [])
+        self.assertEqual(room._holdout_progress_ms, progress_at_migration)
+
+        # The migration banner clears once the HUD-flash window elapses.
+        self.assertNotIn("Zone moved", room.objective_hud_state(8000)["label"])
+
+        # Crossing the second boundary cycles to the third anchor.
+        room.update_objective(9200, [])
+        self.assertEqual(holdout_zone["anchor_index"], 2)
+        self.assertEqual(holdout_zone["pos"], anchors[2])
+
+        # Playtest hint mentions migration when migrate_ms is configured.
+        detail = room.playtest_identifier_state(9200)["detail"]
+        self.assertIn("migrates between anchors", detail)
+
+    def test_holdout_zone_migration_disabled_when_no_offsets(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=8000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1,),
+                holdout_zone_radius=96,
+                holdout_zone_migrate_ms=2000,
+                holdout_zone_migration_offsets=(),
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+        self.assertEqual(len(holdout_zone["anchors"]), 1)
+        self.assertEqual(holdout_zone["migrate_ms"], 0)
+
+        starting_pos = holdout_zone["pos"]
+        room.update_objective(6000, [])
+        self.assertEqual(holdout_zone["pos"], starting_pos)
+        self.assertIsNone(holdout_zone["last_migrated_at"])
+        detail = room.playtest_identifier_state(6000)["detail"]
+        self.assertNotIn("migrates between anchors", detail)
+
+    def test_holdout_stabilizer_anchors_zone_and_defers_migration(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=12000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1,),
+                holdout_zone_radius=96,
+                holdout_zone_migrate_ms=4000,
+                holdout_zone_migration_offsets=((-5, -3), (5, 3)),
+                holdout_relief_count=1,
+                holdout_relief_delay_ms=1000,
+                holdout_stabilizer_migration_delay_ms=4000,
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+        stabilizer_config = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_stabilizer"
+        )
+
+        # The stabilizer config should know about both the zone and the anchor delay.
+        self.assertIs(stabilizer_config["zone_config"], holdout_zone)
+        self.assertEqual(stabilizer_config["migration_delay_ms"], 4000)
+        self.assertEqual(holdout_zone["migration_baseline_ms"], 0)
+        self.assertEqual(holdout_zone["migrations_completed"], 0)
+
+        # Playtest hint mentions the anchor side benefit while a stabilizer is unused.
+        detail = room.playtest_identifier_state(1000)["detail"]
+        self.assertIn("anchor the current circle", detail)
+
+        # Park the player on the initial anchor and use the stabilizer just before
+        # the first migration boundary would normally fire (5000 ticks).
+        holdout_zone["occupied"] = True
+        stabilizer = HoldoutStabilizer(stabilizer_config)
+        stabilizer.update(4500)
+        stabilizer.sync_player_overlap(SimpleNamespace(rect=stabilizer.rect.copy()))
+
+        self.assertTrue(stabilizer_config["used"])
+        self.assertEqual(holdout_zone["migration_baseline_ms"], 4000)
+        self.assertEqual(holdout_zone["migration_anchor_until"], 8500)
+
+        # The HUD surfaces the new "Zone anchored" banner instead of a migration banner.
+        hud_label = room.objective_hud_state(4500)["label"]
+        self.assertIn("Zone anchored", hud_label)
+        self.assertNotIn("Zone moved", hud_label)
+        # Stabilizer also delays the next reinforcement wave (existing relief behavior).
+        self.assertIn("Pressure eased", hud_label)
+
+        # Past the original migration boundary, the zone should still be at anchor 0
+        # because the baseline shift deferred the next migration by 4000 ms.
+        room.update_objective(5500, [])
+        self.assertEqual(holdout_zone["anchor_index"], 0)
+        self.assertIsNone(holdout_zone["last_migrated_at"])
+
+        # Migration should fire only once the deferred boundary is reached
+        # (started_at=1000, baseline=4000, migrate_ms=4000 -> at 9000+).
+        room.update_objective(9100, [])
+        self.assertEqual(holdout_zone["anchor_index"], 1)
+        self.assertEqual(holdout_zone["last_migrated_at"], 9100)
+
+        # And the anchor banner clears once the grace window elapses.
+        self.assertNotIn("Zone anchored", room.objective_hud_state(9000)["label"])
+
+    def test_holdout_stabilizer_skips_migration_defer_when_room_has_no_migration(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=8000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1, 2),
+                holdout_zone_radius=96,
+                holdout_relief_count=1,
+                holdout_relief_delay_ms=1000,
+                holdout_stabilizer_migration_delay_ms=4000,
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+        stabilizer_config = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_stabilizer"
+        )
+
+        # No migration anchors means the migration delay should not engage.
+        self.assertEqual(holdout_zone["migrate_ms"], 0)
+
+        holdout_zone["occupied"] = True
+        stabilizer = HoldoutStabilizer(stabilizer_config)
+        stabilizer.update(2000)
+        stabilizer.sync_player_overlap(SimpleNamespace(rect=stabilizer.rect.copy()))
+
+        self.assertTrue(stabilizer_config["used"])
+        self.assertEqual(holdout_zone["migration_baseline_ms"], 0)
+        self.assertIsNone(holdout_zone["migration_anchor_until"])
+        # Existing relief behavior is unaffected.
+        self.assertIn("Pressure eased", room.objective_hud_state(2000)["label"])
+
+    def test_minimap_objective_status_reflects_holdout_zone_state(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "survival_holdout",
+                objective_rule="holdout_timer",
+                duration=12000,
+                enemy_count_range=(1, 1),
+                scripted_wave_sizes=(1,),
+                holdout_zone_radius=96,
+                holdout_zone_min_radius=48,
+                holdout_zone_shrink_ms=8000,
+                holdout_zone_migrate_ms=4000,
+                holdout_zone_migration_offsets=((-5, -3), (5, 3)),
+                holdout_relief_count=1,
+                holdout_relief_delay_ms=1000,
+                holdout_stabilizer_migration_delay_ms=4000,
+            ),
+        )
+
+        room.on_enter(1000)
+        holdout_zone = next(
+            config for config in room.objective_entity_configs if config["kind"] == "holdout_zone"
+        )
+
+        # Fresh zone with full radius and no recent migration → no status hint.
+        self.assertIsNone(room.minimap_objective_status(1000))
+
+        # Partially shrunk zone surfaces the "shrinking" hint.
+        holdout_zone["radius"] = 80
+        self.assertEqual(room.minimap_objective_status(1500), "shrinking")
+
+        # Fully contested floor surfaces the "contested" hint.
+        holdout_zone["radius"] = holdout_zone["min_radius"]
+        self.assertEqual(room.minimap_objective_status(2000), "contested")
+
+        # An active anchor window dominates over shrink state.
+        holdout_zone["migration_anchor_until"] = 5000
+        self.assertEqual(room.minimap_objective_status(4500), "anchored")
+
+        # A very recent migration dominates over the anchor window.
+        holdout_zone["last_migrated_at"] = 4500
+        self.assertEqual(room.minimap_objective_status(4500), "migrating")
+
+        # No now_ticks → cannot evaluate transient banners; falls back to radius state.
+        holdout_zone["last_migrated_at"] = None
+        holdout_zone["migration_anchor_until"] = None
+        self.assertEqual(room.minimap_objective_status(None), "contested")
+
+    def test_minimap_objective_status_is_none_for_non_holdout_rooms(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "claim_relic",
+                objective_rule="claim_relic_before_lockdown",
+                duration=8000,
+                enemy_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        self.assertIsNone(room.minimap_objective_status(1500))
+
+    def test_minimap_objective_status_reflects_active_role_for_role_chain_rituals(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="role_chain",
+            ),
+        )
+        configs = room.objective_entity_configs
+
+        self.assertEqual(room.minimap_objective_status(0), "summon")
+        configs[0]["destroyed"] = True
+        self.assertEqual(room.minimap_objective_status(0), "pulse")
+        configs[1]["destroyed"] = True
+        self.assertEqual(room.minimap_objective_status(0), "ward")
+        configs[2]["destroyed"] = True
+        # All altars down → no active role to telegraph.
+        self.assertIsNone(room.minimap_objective_status(0))
+
+    def test_minimap_objective_status_is_none_for_non_role_chain_ritual_rooms(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                ritual_role_script=("ward", "pulse", "summon"),
+                ritual_link_mode="ward_shields_others",
+            ),
+        )
+        # Ward-shielding mode does not opt into the role telegraph (no ordered chain).
+        self.assertIsNone(room.minimap_objective_status(0))
 
     def test_terminal_reward_chest_stays_locked_until_holdout_completes(self):
         room = Room(
@@ -1727,6 +2374,214 @@ class RoomObjectiveTests(unittest.TestCase):
 
         self.assertFalse(altar_configs[1]["invulnerable"])
         self.assertFalse(altar_configs[2]["invulnerable"])
+
+    def test_ritual_role_chain_enforces_kill_order_from_role_script(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(1, 1),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="role_chain",
+            ),
+        )
+
+        altar_configs = room.objective_entity_configs
+        # Indices map 1:1 to roles for a 3-altar/3-role script.
+        self.assertEqual(altar_configs[0]["role"], "summon")
+        self.assertEqual(altar_configs[1]["role"], "pulse")
+        self.assertEqual(altar_configs[2]["role"], "ward")
+
+        # Initial state: only the first script role (summon) is vulnerable.
+        self.assertFalse(altar_configs[0]["invulnerable"])
+        self.assertTrue(altar_configs[1]["invulnerable"])
+        self.assertTrue(altar_configs[2]["invulnerable"])
+
+        # HUD and playtest hint reflect the active role.
+        hud_label = room.objective_hud_state(0)["label"]
+        self.assertIn("Break summon first", hud_label)
+        self.assertIn("Break the summon", room.playtest_identifier_state(0)["detail"])
+
+        # Down the summon altar — pulse is now the active role.
+        altar_configs[0]["destroyed"] = True
+        room.update_objective(1000, [object()])
+        self.assertFalse(altar_configs[1]["invulnerable"])
+        self.assertTrue(altar_configs[2]["invulnerable"])
+        self.assertIn("Break pulse first", room.objective_hud_state(1000)["label"])
+
+        # Down pulse — ward is now exposed and no other role shields remain.
+        altar_configs[1]["destroyed"] = True
+        room.update_objective(2000, [object()])
+        self.assertFalse(altar_configs[2]["invulnerable"])
+        # No more shielded altars → no shield suffix.
+        self.assertNotIn("shielded", room.objective_hud_state(2000)["label"])
+
+    def test_ritual_wrong_strike_spawns_reinforcements_and_flashes_hud(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(1, 1),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="role_chain",
+                ritual_wrong_strike_spawn_count=1,
+            ),
+        )
+
+        altar_configs = room.objective_entity_configs
+        # Altar at index 1 (pulse) is shielded by role_chain.
+        self.assertTrue(altar_configs[1]["invulnerable"])
+        shielded = AltarAnchor(altar_configs[1])
+        initial_enemies = len(room.enemy_configs)
+
+        # Strike a shielded altar — take_damage rejects damage but stamps the
+        # wrong-struck flag so the room can punish the player.
+        damaged = shielded.take_damage(5)
+        self.assertFalse(damaged)
+        self.assertTrue(altar_configs[1].get("wrong_struck_pending"))
+
+        update = room.update_objective(1500, [object()])
+
+        self.assertIsNotNone(update)
+        self.assertEqual(update["kind"], "spawn_enemies")
+        self.assertEqual(update["source"], "ritual_wrong_strike")
+        self.assertEqual(len(update["enemy_configs"]), 1)
+        self.assertEqual(len(room.enemy_configs), initial_enemies + 1)
+        self.assertIsNotNone(room._ritual_last_wrong_strike_at)
+        self.assertIn("Wrong target", room.objective_hud_state(1500)["label"])
+        # Flag was consumed.
+        self.assertFalse(altar_configs[1].get("wrong_struck_pending"))
+
+    def test_ritual_wrong_strike_throttled_within_cooldown(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(1, 1),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="role_chain",
+                ritual_wrong_strike_spawn_count=1,
+            ),
+        )
+
+        altar_configs = room.objective_entity_configs
+        shielded = AltarAnchor(altar_configs[1])
+        shielded.take_damage(5)
+        first = room.update_objective(1000, [object()])
+        self.assertIsNotNone(first)
+        enemies_after_first = len(room.enemy_configs)
+
+        # Second wrong strike inside the cooldown window: stamp consumed but
+        # no fresh spawn.
+        shielded.take_damage(5)
+        second = room.update_objective(1500, [object()])
+        self.assertIsNone(second)
+        self.assertEqual(len(room.enemy_configs), enemies_after_first)
+
+    def test_ritual_wrong_strike_does_not_fire_on_legitimate_kill(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(1, 1),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="role_chain",
+                ritual_wrong_strike_spawn_count=1,
+            ),
+        )
+
+        altar_configs = room.objective_entity_configs
+        # Index 0 (summon) is the active role and is vulnerable.
+        self.assertFalse(altar_configs[0]["invulnerable"])
+        active = AltarAnchor(altar_configs[0])
+        initial_enemies = len(room.enemy_configs)
+        active.take_damage(5)
+
+        self.assertFalse(altar_configs[0].get("wrong_struck_pending", False))
+        update = room.update_objective(1000, [object()])
+        # update may be None or a ritual_reaction update, but never a wrong-strike spawn.
+        if update is not None:
+            self.assertNotEqual(update.get("source"), "ritual_wrong_strike")
+        self.assertIsNone(room._ritual_last_wrong_strike_at)
+        # No wrong-strike enemy spawned.
+        self.assertEqual(len(room.enemy_configs), initial_enemies)
+
+    def test_ritual_role_glyph_color_is_bright_for_active_role_and_dim_for_shielded(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(1, 1),
+                objective_entity_count=3,
+                ritual_role_script=("summon", "pulse", "ward"),
+                ritual_link_mode="role_chain",
+            ),
+        )
+
+        configs = room.objective_entity_configs
+        from objective_entities import _ALTAR_ROLE_COLORS
+
+        summon_bright, _ = _ALTAR_ROLE_COLORS["summon"]
+        pulse_bright, pulse_dim = _ALTAR_ROLE_COLORS["pulse"]
+        ward_bright, ward_dim = _ALTAR_ROLE_COLORS["ward"]
+
+        # Initial state: only the summon role is vulnerable; pulse + ward dim.
+        summon = AltarAnchor(configs[0])
+        pulse = AltarAnchor(configs[1])
+        ward = AltarAnchor(configs[2])
+        self.assertEqual(summon.role_glyph_color(), summon_bright)
+        self.assertEqual(pulse.role_glyph_color(), pulse_dim)
+        self.assertEqual(ward.role_glyph_color(), ward_dim)
+
+        # After the summon altar falls, pulse becomes bright while ward stays dim.
+        configs[0]["destroyed"] = True
+        room.update_objective(1000, [object()])
+        self.assertEqual(pulse.role_glyph_color(), pulse_bright)
+        self.assertEqual(ward.role_glyph_color(), ward_dim)
+
+    def test_ritual_role_glyph_color_returns_none_when_role_missing(self):
+        config = {
+            "kind": "altar",
+            "pos": (160, 120),
+            "max_hp": 30,
+            "current_hp": 30,
+            "variant_id": "spore_totem",
+        }
+        altar = AltarAnchor(config)
+        self.assertIsNone(altar.role_glyph_color())
+
+    def test_ritual_role_glyph_renders_above_altar_when_role_present(self):
+        config = {
+            "kind": "altar",
+            "pos": (160, 120),
+            "max_hp": 30,
+            "current_hp": 30,
+            "variant_id": "spore_totem",
+            "role": "summon",
+        }
+        altar = AltarAnchor(config)
+        surface = pygame.Surface((320, 240))
+        altar.draw_overlay(surface)
+        # Sample a pixel just above the altar where the glyph triangle sits.
+        cx, _ = altar.rect.center
+        sample_y = altar.rect.top - 9
+        pixel = surface.get_at((cx, sample_y))[:3]
+        # The glyph is bright orange-red for "summon"; the surface starts black.
+        self.assertNotEqual(pixel, (0, 0, 0))
 
     def test_ritual_pulse_window_variant_only_takes_damage_during_active_pulse(self):
         room = Room(

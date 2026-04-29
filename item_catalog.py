@@ -291,6 +291,61 @@ ITEM_DATABASE["axe_plus"].update({
     "upgrade_tier": 1,
 })
 
+# Biome-themed challenge-route rewards. Awarded as guaranteed bonus loot when
+# the player commits to a trap-gauntlet challenge route. They are loot-only
+# (no shop purchase) and never appear in the standard random chest table — the
+# only way to earn one is to commit to a challenge route in the matching biome.
+ITEM_DATABASE.update({
+    "stat_shard": {
+        "name": "Boulder Stat Shard",
+        "description": "Mud-cavern challenge trophy: store for a future stat boost.",
+        "cost": 0,
+        "icon_color": (200, 140, 70),
+        "max_owned": 5,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "chest_drop_weight": 0,
+        "category": "biome_reward",
+    },
+    "tempo_rune": {
+        "name": "Frost Tempo Rune",
+        "description": "Frozen-depths challenge trophy: charges a future tempo rune slot.",
+        "cost": 0,
+        "icon_color": (160, 210, 255),
+        "max_owned": 5,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "chest_drop_weight": 0,
+        "category": "biome_reward",
+    },
+    "mobility_charge": {
+        "name": "Tide Mobility Charge",
+        "description": "Sunken-ruins challenge trophy: stores a burst-dash charge for later use.",
+        "cost": 0,
+        "icon_color": (90, 230, 200),
+        "max_owned": 5,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "chest_drop_weight": 0,
+        "category": "biome_reward",
+    },
+    "prismatic_keystone": {
+        "name": "Prismatic Keystone",
+        "description": "Crafted at the shop from one trophy of each biome. Long-arc collectible.",
+        "cost": 0,
+        "icon_color": (235, 200, 255),
+        "max_owned": 3,
+        "can_purchase": False,
+        "can_loot": False,
+        "drop_weight": 0,
+        "chest_drop_weight": 0,
+        "category": "biome_reward",
+    },
+})
+
 for item_data in ITEM_DATABASE.values():
     item_data.setdefault("equipment_slots", [])
     item_data.setdefault("storage_bucket", "inventory")

@@ -31,6 +31,7 @@ class HUD:
         # World-anchored overlays first so HUD chrome stays on top.
         self._draw_entity_health_bars(surface, view.entity_health_bars)
         self._draw_damage_numbers(surface, view.damage_numbers)
+        self._draw_biome_reward_flashes(surface, view.biome_reward_flashes)
         self._draw_health_bar(surface, view)
         self._draw_armor_bar(surface, view)
         self._draw_weapon(surface, view)
@@ -50,6 +51,7 @@ class HUD:
         self._draw_rune_meters(surface, view.rune_meters)
         self._draw_dodge_indicator(surface, view.dodge)
         self._draw_ability_indicator(surface, view.ability)
+        self._draw_keystone_bonus_banner(surface, view.keystone_bonus_banner)
 
     # ── world-space health bars ─────────────────────────
     def _draw_entity_health_bars(self, surface, bar_views):
@@ -91,6 +93,45 @@ class HUD:
                 surface.blit(outline, (ox + dx, oy + dy))
             fill = font.render(text, True, COLOR_WHITE)
             surface.blit(fill, (ox, oy))
+
+    # ── biome reward spend flashes ──────────────────────
+    def _draw_biome_reward_flashes(self, surface, flash_views):
+        if not flash_views:
+            return
+        from damage_feedback import (
+            BIOME_REWARD_FLASH_COLORS,
+            BIOME_REWARD_FLASH_MAX_RADIUS,
+        )
+        for flash in flash_views:
+            color = BIOME_REWARD_FLASH_COLORS.get(flash.kind)
+            if color is None:
+                continue
+            cx, cy = flash.world_pos
+            radius = max(2, int(BIOME_REWARD_FLASH_MAX_RADIUS * flash.age_fraction))
+            # Ring thickness shrinks as the flash expands so it fades visually.
+            thickness = max(1, int(4 * (1.0 - flash.age_fraction)))
+            pygame.draw.circle(surface, color, (cx, cy), radius, thickness)
+
+    # ── keystone starting-coin bonus banner ─────────────
+    def _draw_keystone_bonus_banner(self, surface, banner):
+        if banner is None:
+            return
+        # Large fading text near top-center; alpha and slight rise tied to age.
+        font = pygame.font.SysFont("consolas", 28, bold=True)
+        alpha = max(0, int(255 * (1.0 - banner.age_fraction)))
+        rise = int(20 * banner.age_fraction)
+        # Pre-render outline + fill, then apply alpha to a composited surface.
+        text = banner.text
+        outline = font.render(text, True, COLOR_BLACK)
+        fill = font.render(text, True, COLOR_COIN)
+        ow, oh = fill.get_size()
+        composite = pygame.Surface((ow + 2, oh + 2), pygame.SRCALPHA)
+        for dx, dy in ((0, 0), (2, 0), (0, 2), (2, 2)):
+            composite.blit(outline, (dx, dy))
+        composite.blit(fill, (1, 1))
+        composite.set_alpha(alpha)
+        rect = composite.get_rect(center=(SCREEN_WIDTH // 2, 56 - rise))
+        surface.blit(composite, rect)
 
     # ── health bar ──────────────────────────────────────
     def _draw_health_bar(self, surface, view):
@@ -157,7 +198,14 @@ class HUD:
             color = self._minimap_room_color(room.kind)
             pygame.draw.rect(surface, color, (px, py, cell - 1, cell - 1))
             self._draw_minimap_wall_indicators(surface, room, px, py, cell)
-            self._draw_minimap_objective_marker(surface, room.objective_marker, px, py, cell)
+            self._draw_minimap_objective_marker(
+                surface,
+                room.objective_marker,
+                px,
+                py,
+                cell,
+                getattr(room, "objective_status", None),
+            )
 
     @staticmethod
     def _minimap_room_color(kind):
@@ -207,7 +255,7 @@ class HUD:
         return COLOR_DOOR_NONE
 
     @staticmethod
-    def _draw_minimap_objective_marker(surface, marker, px, py, cell):
+    def _draw_minimap_objective_marker(surface, marker, px, py, cell, status=None):
         if marker is None:
             return
 
@@ -226,8 +274,36 @@ class HUD:
             color = COLOR_PORTAL
 
         center = (px + (cell - 1) // 2, py + (cell - 1) // 2)
+        # Status ring (drawn behind the dot so the dot still reads at a glance).
+        if status is not None:
+            ring_color = HUD._minimap_status_ring_color(kind, status)
+            if ring_color is not None:
+                pygame.draw.circle(surface, ring_color, center, 3, 1)
         pygame.draw.circle(surface, COLOR_BLACK, center, 2)
         pygame.draw.circle(surface, color, center, 1)
+
+    @staticmethod
+    def _minimap_status_ring_color(kind, status):
+        # Holdout polish: shrink/migration/anchor each get a distinct halo.
+        if kind == "holdout":
+            if status == "migrating":
+                return (255, 240, 200)
+            if status == "anchored":
+                return (180, 220, 255)
+            if status == "contested":
+                return (255, 110, 90)
+            if status == "shrinking":
+                return (245, 170, 90)
+        # Ritual role_chain telegraph: mirror the in-world role glyph color
+        # onto the minimap marker so kill order reads at a glance.
+        if kind == "altar":
+            if status == "summon":
+                return (255, 130, 110)
+            if status == "pulse":
+                return (255, 220, 110)
+            if status == "ward":
+                return (140, 200, 255)
+        return None
 
     # ── consumable quick-bar ────────────────────────────
     def _draw_quick_bar(self, surface, quick_bar_view):
@@ -257,6 +333,20 @@ class HUD:
         comp_label = f"[7] Compass x{quick_bar_view.compass_uses}"
         txt = self._small_font.render(comp_label, True, COLOR_COMPASS)
         surface.blit(txt, (x + 470, y))
+
+        # Biome challenge-route trophies (8/9/0). Colors mirror the item icons
+        # in item_catalog.py so the badges read as the same trophy.
+        shard_label = f"[8] Shard x{quick_bar_view.stat_shard_count}"
+        txt = self._small_font.render(shard_label, True, (200, 140, 70))
+        surface.blit(txt, (x + 600, y))
+
+        rune_label = f"[9] Rune x{quick_bar_view.tempo_rune_count}"
+        txt = self._small_font.render(rune_label, True, (160, 210, 255))
+        surface.blit(txt, (x + 720, y))
+
+        charge_label = f"[0] Dash x{quick_bar_view.mobility_charge_count}"
+        txt = self._small_font.render(charge_label, True, (90, 230, 200))
+        surface.blit(txt, (x + 830, y))
 
     # ── active effect timers ────────────────────────────
     def _draw_active_effects(self, surface, view):

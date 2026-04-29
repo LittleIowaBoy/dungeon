@@ -24,6 +24,9 @@ class _PlayerStub:
                 "health_potion_small": 2,
                 "speed_boost": 1,
                 "attack_boost": 3,
+                "stat_shard": 2,
+                "tempo_rune": 1,
+                "mobility_charge": 4,
             }
         )
         self.compass_uses = 2
@@ -53,7 +56,7 @@ class HUDViewProjectionTests(unittest.TestCase):
                     "detail": "Solve: Stay inside the holdout circle until the timer ends.",
                 },
             ),
-            minimap_snapshot=lambda: {
+            minimap_snapshot=lambda now_ticks=None: {
                 "radius": 3,
                 "rooms": [
                     {
@@ -94,6 +97,9 @@ class HUDViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.quick_bar.speed_boost_count, 1)
         self.assertEqual(view.quick_bar.attack_boost_count, 3)
         self.assertEqual(view.quick_bar.compass_uses, 2)
+        self.assertEqual(view.quick_bar.stat_shard_count, 2)
+        self.assertEqual(view.quick_bar.tempo_rune_count, 1)
+        self.assertEqual(view.quick_bar.mobility_charge_count, 4)
         self.assertEqual(view.minimap.radius, 3)
         self.assertEqual(view.minimap.rooms[0].kind, "current")
         self.assertEqual(view.minimap.rooms[0].objective_marker, ("relic", "Cache"))
@@ -135,7 +141,7 @@ class HUDViewProjectionTests(unittest.TestCase):
                 playtest_identifier_state=lambda _t: {"visible": False, "title": "", "detail": ""},
                 timed_extraction_bonus_state=lambda: {"available": True, "amount": 14},
             ),
-            minimap_snapshot=lambda: {"radius": 1, "rooms": []},
+            minimap_snapshot=lambda now_ticks=None: {"radius": 1, "rooms": []},
         )
 
         view = build_hud_view(player, dungeon, now_ticks=0)
@@ -154,7 +160,7 @@ class HUDViewProjectionTests(unittest.TestCase):
                 },
                 playtest_identifier_state=lambda _t: {"visible": False, "title": "", "detail": ""},
             ),
-            minimap_snapshot=lambda: {"radius": 1, "rooms": []},
+            minimap_snapshot=lambda now_ticks=None: {"radius": 1, "rooms": []},
         )
 
         view = build_hud_view(player, dungeon, now_ticks=0)
@@ -171,7 +177,7 @@ class RuneMetersHUDViewTests(unittest.TestCase):
                     "visible": False, "title": "", "detail": ""
                 },
             ),
-            minimap_snapshot=lambda: {"radius": 1, "rooms": []},
+            minimap_snapshot=lambda now_ticks=None: {"radius": 1, "rooms": []},
         )
 
     def test_no_runes_equipped_hides_all_meters(self):

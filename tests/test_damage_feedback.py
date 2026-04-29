@@ -132,5 +132,98 @@ class HealthBarProjectionTests(unittest.TestCase):
         self.assertEqual(bars, ())
 
 
+class BiomeRewardFlashTrackerTests(unittest.TestCase):
+    def setUp(self):
+        damage_feedback.reset_all()
+
+    def test_report_queues_flash_anchored_to_entity_rect_center(self):
+        ent = _entity(center=(120, 80))
+        damage_feedback.report_biome_reward_flash(ent, "stat_shard", now_ticks=1000)
+        flashes = damage_feedback.build_biome_reward_flash_views(now_ticks=1000)
+        self.assertEqual(len(flashes), 1)
+        kind, world_pos, age = flashes[0]
+        self.assertEqual(kind, "stat_shard")
+        self.assertEqual(world_pos, (120, 80))
+        self.assertAlmostEqual(age, 0.0)
+
+    def test_unknown_kind_is_dropped(self):
+        ent = _entity()
+        damage_feedback.report_biome_reward_flash(ent, "not_a_kind", now_ticks=1000)
+        self.assertEqual(damage_feedback.build_biome_reward_flash_views(now_ticks=1000), ())
+
+    def test_flash_expires_after_lifetime(self):
+        ent = _entity()
+        damage_feedback.report_biome_reward_flash(ent, "tempo_rune", now_ticks=1000)
+        expired = 1000 + damage_feedback.BIOME_REWARD_FLASH_LIFETIME_MS
+        self.assertEqual(damage_feedback.build_biome_reward_flash_views(now_ticks=expired), ())
+
+    def test_reset_clears_flashes(self):
+        ent = _entity()
+        damage_feedback.report_biome_reward_flash(ent, "mobility_charge", now_ticks=1000)
+        damage_feedback.reset_all()
+        self.assertEqual(damage_feedback.build_biome_reward_flash_views(now_ticks=1000), ())
+
+
+class KeystoneBonusBannerTrackerTests(unittest.TestCase):
+    def setUp(self):
+        damage_feedback.reset_all()
+
+    def test_report_queues_active_banner_with_text_and_zero_age(self):
+        damage_feedback.report_keystone_starting_bonus(75, now_ticks=1000)
+        view = damage_feedback.build_keystone_bonus_banner_view(now_ticks=1000)
+        self.assertIsNotNone(view)
+        text, age = view
+        self.assertEqual(text, "+75 keystone coins")
+        self.assertAlmostEqual(age, 0.0)
+
+    def test_zero_or_negative_amount_does_not_queue_banner(self):
+        damage_feedback.report_keystone_starting_bonus(0, now_ticks=1000)
+        damage_feedback.report_keystone_starting_bonus(-5, now_ticks=1000)
+        self.assertIsNone(
+            damage_feedback.build_keystone_bonus_banner_view(now_ticks=1000)
+        )
+
+    def test_banner_expires_after_lifetime(self):
+        damage_feedback.report_keystone_starting_bonus(50, now_ticks=1000)
+        expired = 1000 + damage_feedback.KEYSTONE_BONUS_BANNER_LIFETIME_MS
+        self.assertIsNone(
+            damage_feedback.build_keystone_bonus_banner_view(now_ticks=expired)
+        )
+
+    def test_re_report_replaces_active_banner(self):
+        damage_feedback.report_keystone_starting_bonus(25, now_ticks=1000)
+        damage_feedback.report_keystone_starting_bonus(50, now_ticks=1500)
+        view = damage_feedback.build_keystone_bonus_banner_view(now_ticks=1500)
+        self.assertEqual(view[0], "+50 keystone coins")
+
+    def test_reset_clears_banner(self):
+        damage_feedback.report_keystone_starting_bonus(25, now_ticks=1000)
+        damage_feedback.reset_all()
+        self.assertIsNone(
+            damage_feedback.build_keystone_bonus_banner_view(now_ticks=1000)
+        )
+
+    def test_craft_toast_formats_owned_and_next_bonus(self):
+        damage_feedback.report_keystone_craft_toast(2, 3, 75, now_ticks=1000)
+        view = damage_feedback.build_keystone_bonus_banner_view(now_ticks=1000)
+        self.assertIsNotNone(view)
+        text, _ = view
+        self.assertIn("Keystone 2/3 crafted", text)
+        self.assertIn("+75 coins", text)
+
+    def test_craft_toast_with_zero_owned_is_dropped(self):
+        damage_feedback.report_keystone_craft_toast(0, 3, 0, now_ticks=1000)
+        self.assertIsNone(
+            damage_feedback.build_keystone_bonus_banner_view(now_ticks=1000)
+        )
+
+    def test_craft_toast_replaces_starting_bonus_banner(self):
+        # Both reporters share the single-slot tracker.
+        damage_feedback.report_keystone_starting_bonus(25, now_ticks=1000)
+        damage_feedback.report_keystone_craft_toast(1, 3, 25, now_ticks=1500)
+        view = damage_feedback.build_keystone_bonus_banner_view(now_ticks=1500)
+        self.assertIn("crafted", view[0])
+
+
 if __name__ == "__main__":
     unittest.main()

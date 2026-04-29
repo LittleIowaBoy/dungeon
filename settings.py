@@ -154,6 +154,45 @@ ATTACK_BOOST_DURATION_MS = 20_000  # 20 seconds
 ATTACK_BOOST_MULTIPLIER  = 2.0    # doubles damage
 ATTACK_BOOST_MAX         = 1
 
+# Biome challenge-route reward activations (see item_catalog.py
+# `biome_reward` category; awarded by trap-gauntlet routes).
+STAT_SHARD_MAX_HP_BONUS      = 10        # permanent +max_hp per shard spent
+TEMPO_RUNE_DURATION_MS       = 30_000    # extended attack-boost window (30 s)
+MOBILITY_CHARGE_DURATION_MS  = 6_000     # short, sharper speed burst (6 s)
+
+# Shop conversion rules for surplus biome trophies. Players can spend
+# `BIOME_TROPHY_EXCHANGE_RATIO` of any one biome trophy to receive 1 of a
+# different biome trophy at the post-run shop. The ratio is intentionally
+# steep (3:1) so the conversion is a salvage outlet, not a farming loop.
+BIOME_TROPHY_IDS             = ("stat_shard", "tempo_rune", "mobility_charge")
+BIOME_TROPHY_EXCHANGE_RATIO  = 3
+# Maps a dungeon's `terrain_type` to its biome challenge-route trophy.
+# Used by UI surfaces (dungeon-select cards) to show, per biome, how many
+# trophies the player has banked toward the next prismatic-keystone craft.
+TERRAIN_TROPHY_IDS           = {
+    "mud":   "stat_shard",
+    "ice":   "tempo_rune",
+    "water": "mobility_charge",
+}
+# Biome attunement (T17): a *second* meta-progression token, distinct from
+# keystones.  Earned by completing the same biome's dungeon repeatedly
+# (every `BIOME_ATTUNEMENT_THRESHOLD` completions in a single biome grants
+# one attunement, capped at `BIOME_ATTUNEMENT_MAX_PER_BIOME`).  Each
+# attunement of a biome grants +1 of that biome's trophy at the start of
+# every run in that biome — a *biome-specialist* perk that complements
+# the universal coin bonus from keystones.
+BIOME_ATTUNEMENT_THRESHOLD       = 3
+BIOME_ATTUNEMENT_MAX_PER_BIOME   = 3
+# Rare crafted trophy: spend 1 of each biome trophy at the shop to gain 1.
+BIOME_TROPHY_KEYSTONE_ID     = "prismatic_keystone"
+# Permanent meta-progression for keystones.  Crafted keystones are stored on
+# `progress.meta_keystones`, not the per-run inventory.  Each owned keystone
+# adds the next tier's coin bonus to the start of every dungeon run.  Tiered
+# scaling makes the cap (`KEYSTONE_MAX_OWNED`) feel earned: the 3rd keystone
+# is worth 4× the 1st.  Cumulative totals: 1→25, 2→75, 3→175.
+KEYSTONE_MAX_OWNED           = 3
+KEYSTONE_TIER_COIN_BONUSES   = (25, 50, 100)
+
 # Armor
 ARMOR_HP = 50
 

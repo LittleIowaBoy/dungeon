@@ -209,6 +209,30 @@ _DEFAULT_TRAP_LANE_OFFSETS = {
 }
 
 
+def _scale_trap_damage(base_damage, controller):
+    """Scale a hazard's base damage by the controller's biome intensity.
+
+    The minimum is 1 so a very-low scale never silently disables a hazard.
+    """
+    scale = float(controller.get("intensity_scale", 1.0))
+    if scale <= 0:
+        return base_damage
+    return max(1, int(round(base_damage * scale)))
+
+
+def _scale_trap_cycle(base_ms, controller):
+    """Inverse-scale a hazard cycle/active duration by the controller's speed scale.
+
+    A speed scale > 1 makes hazards pulse faster (shorter ms); < 1 makes them
+    pulse slower (longer ms). Floors at 50ms so a very-high scale can't collapse
+    a cycle to zero.
+    """
+    scale = float(controller.get("speed_scale", 1.0))
+    if scale <= 0:
+        return base_ms
+    return max(50, int(round(base_ms / scale)))
+
+
 def _safe_spot_configs(hazard_config, lane_index):
     """Return ``trap_safe_spot`` display configs for every safe spot in a hazard config."""
     return [
@@ -226,6 +250,12 @@ _REWARD_TIER_UPGRADES = {
     "branch_bonus": "finale_bonus",
     "finale_bonus": "finale_bonus",
 }
+_TRAP_REWARD_KIND_LABELS = {
+    "chest_upgrade": "Reward upgraded",
+    "stat_shard": "Stat shard claimed",
+    "tempo_rune": "Tempo rune claimed",
+    "mobility_consumable": "Mobility charge claimed",
+}
 _TIMED_EXTRACTION_CLEAN_BONUS_COINS = {
     "standard": 10,
     "branch_bonus": 14,
@@ -234,6 +264,10 @@ _TIMED_EXTRACTION_CLEAN_BONUS_COINS = {
 _DEFAULT_HOLDOUT_RELIEF_COUNT = 1
 _DEFAULT_HOLDOUT_RELIEF_DELAY_MS = 1500
 _HOLDOUT_RELIEF_HUD_MS = 1600
+_HOLDOUT_ZONE_SHRINK_HUD_THRESHOLD = 0.99
+_HOLDOUT_ZONE_MIGRATION_HUD_MS = 1500
+_RITUAL_WRONG_STRIKE_HUD_MS = 1500
+_RITUAL_WRONG_STRIKE_COOLDOWN_MS = 1500
 _DEFAULT_PUZZLE_REINFORCEMENT_COUNT = 1
 _PUZZLE_PENALTY_HUD_MS = 1600
 _PUZZLE_PENALTY_FLASH_MS = 700
@@ -313,6 +347,7 @@ class Room:
         self._heartstone_spawn_pending = False
         self._heartstone_delivered = False
         self._ritual_reaction_ids = set()
+        self._ritual_last_wrong_strike_at = None
         self.objective_entity_configs = []
         self._chest_reward_tier = room_plan.reward_tier if room_plan is not None else "standard"
 
@@ -716,6 +751,7 @@ class Room:
                 return {
                     "kind": "upgrade_reward_chest",
                     "reward_tier": self._chest_reward_tier,
+                    "reward_kind": controller.get("reward_kind", "chest_upgrade"),
                 }
             return None
 
@@ -742,6 +778,8 @@ class Room:
                 if holdout_zone.get("occupied"):
                     self._holdout_progress_ms += delta_ms
                 elapsed_ms = self._holdout_progress_ms
+                self._apply_holdout_zone_shrink(holdout_zone, now_ticks)
+                self._apply_holdout_zone_migration(holdout_zone, now_ticks)
             else:
                 elapsed_ms = now_ticks - self.objective_started_at
 
@@ -942,6 +980,7 @@ class Room:
             # ward immediately drops shielding on remaining altars even if no
             # new ritual reaction triggers this tick.
             self._refresh_ritual_links()
+            wrong_strike_update = self._consume_ritual_wrong_strikes(now_ticks)
             remaining_altars = self.remaining_objective_entities()
             if remaining_altars == 0:
                 self.objective_status = "completed"
@@ -955,6 +994,8 @@ class Room:
                 self._set_portal_active(False)
                 if ritual_update is not None:
                     return ritual_update
+                if wrong_strike_update is not None:
+                    return wrong_strike_update
             return None
 
         if rule == "loot_then_timer":
@@ -1099,6 +1140,47 @@ class Room:
             return ("escort", label)
         return ("exit", label)
 
+    def minimap_objective_status(self, now_ticks=None):
+        """Optional state hint that polishes the minimap marker.
+
+        Holdout rooms emit shrink/migration/anchor states. Ritual `role_chain`
+        rooms emit the currently-active (vulnerable) role so the minimap can
+        mirror the in-world role glyph color. Everything else returns None
+        so the marker renders exactly as before.
+        """
+        if self.room_plan is None:
+            return None
+        if (
+            self.room_plan.objective_rule == "destroy_altars"
+            and (self.room_plan.ritual_link_mode or "") == "role_chain"
+            and self.objective_status != "completed"
+        ):
+            return self._ritual_role_chain_active_role()
+        if self.room_plan.objective_rule != "holdout_timer":
+            return None
+        zone = self._holdout_zone_config()
+        if zone is None:
+            return None
+        if now_ticks is not None:
+            last_migrated_at = zone.get("last_migrated_at")
+            if (
+                last_migrated_at is not None
+                and now_ticks - last_migrated_at <= _HOLDOUT_ZONE_MIGRATION_HUD_MS
+            ):
+                return "migrating"
+            anchor_until = zone.get("migration_anchor_until")
+            if anchor_until is not None and now_ticks <= anchor_until:
+                return "anchored"
+        initial_radius = int(zone.get("initial_radius") or zone.get("radius", 0))
+        min_radius = int(zone.get("min_radius", initial_radius))
+        if int(zone.get("shrink_ms") or 0) > 0 and initial_radius > min_radius:
+            current = int(zone.get("radius", initial_radius))
+            if current <= min_radius:
+                return "contested"
+            if current < initial_radius:
+                return "shrinking"
+        return None
+
     def objective_hud_state(self, now_ticks):
         if self.room_plan is None:
             return {"visible": False, "label": ""}
@@ -1126,10 +1208,26 @@ class Room:
             zone_suffix = ""
             if zone is not None and not zone.get("occupied"):
                 zone_suffix = " | Return to circle"
+            shrink_suffix = ""
+            zone_progress = self._holdout_zone_shrink_progress()
+            if zone_progress is not None and zone_progress < _HOLDOUT_ZONE_SHRINK_HUD_THRESHOLD:
+                shrink_suffix = f" | Zone {int(round(zone_progress * 100))}%"
+            migration_suffix = ""
+            if zone is not None:
+                last_migrated_at = zone.get("last_migrated_at")
+                if (
+                    last_migrated_at is not None
+                    and now_ticks - last_migrated_at <= _HOLDOUT_ZONE_MIGRATION_HUD_MS
+                ):
+                    migration_suffix = " | Zone moved"
+                else:
+                    anchor_until = zone.get("migration_anchor_until")
+                    if anchor_until is not None and now_ticks <= anchor_until:
+                        migration_suffix = " | Zone anchored"
             relief_suffix = self._holdout_relief_hud_suffix(now_ticks)
             return {
                 "visible": True,
-                "label": f"Objective: Hold out {remaining_ms / 1000:.1f}s{wave_suffix}{zone_suffix}{relief_suffix}",
+                "label": f"Objective: Hold out {remaining_ms / 1000:.1f}s{wave_suffix}{zone_suffix}{shrink_suffix}{migration_suffix}{relief_suffix}",
             }
 
         if rule == "charge_plates" and self.is_exit and self.objective_status != "completed":
@@ -1264,10 +1362,21 @@ class Room:
                 summon_suffix = f" | {summon_count} summoner{suffix}"
             shield_suffix = ""
             if shielded_count:
-                shield_suffix = f" | Break wards {shielded_count} shielded"
+                if (self.room_plan.ritual_link_mode or "") == "role_chain":
+                    active_role = self._ritual_role_chain_active_role()
+                    if active_role:
+                        shield_suffix = f" | Break {active_role} first {shielded_count} shielded"
+                    else:
+                        shield_suffix = f" | {shielded_count} shielded"
+                else:
+                    shield_suffix = f" | Break wards {shielded_count} shielded"
+            wrong_strike_suffix = ""
+            last_wrong = self._ritual_last_wrong_strike_at
+            if last_wrong is not None and now_ticks - last_wrong <= _RITUAL_WRONG_STRIKE_HUD_MS:
+                wrong_strike_suffix = " | Wrong target"
             return {
                 "visible": True,
-                "label": f"Objective: Destroy {self.remaining_objective_entities()} {label}{pulse_suffix}{window_suffix}{summon_suffix}{shield_suffix}",
+                "label": f"Objective: Destroy {self.remaining_objective_entities()} {label}{pulse_suffix}{window_suffix}{summon_suffix}{shield_suffix}{wrong_strike_suffix}",
             }
 
         if rule == "loot_then_timer" and self.is_exit:
@@ -1315,9 +1424,20 @@ class Room:
         rule = self.room_plan.objective_rule
         if rule == "holdout_timer":
             if self._holdout_zone_config() is not None:
+                shrink_suffix = ""
+                zone = self._holdout_zone_config()
+                if self._holdout_zone_shrink_progress() is not None or int(zone.get("shrink_ms") or 0) > 0:
+                    shrink_suffix = " The circle shrinks to contested ground over time."
+                migration_suffix = ""
+                if int(zone.get("migrate_ms") or 0) > 0 and len(zone.get("anchors") or ()) > 1:
+                    migration_suffix = " It also migrates between anchors, forcing you to break camp."
+                relief_suffix = ""
                 if self._unused_holdout_relief_configs():
-                    return "Solve: Stay inside the holdout circle until the timer ends. Optional stabilizers delay reinforcement waves."
-                return "Solve: Stay inside the holdout circle until the timer ends."
+                    if migration_suffix and self._stabilizer_anchors_zone():
+                        relief_suffix = " Optional stabilizers delay reinforcement waves and anchor the current circle."
+                    else:
+                        relief_suffix = " Optional stabilizers delay reinforcement waves."
+                return f"Solve: Stay inside the holdout circle until the timer ends.{shrink_suffix}{migration_suffix}{relief_suffix}"
             return "Solve: Survive until the holdout timer ends."
 
         if rule == "charge_plates":
@@ -1390,6 +1510,10 @@ class Room:
                 if not config["destroyed"] and config.get("invulnerable")
             )
             if shielded_count:
+                if (self.room_plan.ritual_link_mode or "") == "role_chain":
+                    active_role = self._ritual_role_chain_active_role()
+                    if active_role:
+                        return f"Solve: Break the {active_role} {label} first; the rest stay shielded until that role is gone."
                 return f"Solve: Break the ward altar first, then destroy the remaining {label}."
             if self._ritual_uses_pulse_damage_windows():
                 return f"Solve: Strike the ritual {label} only while their pulse windows are active."
@@ -1744,6 +1868,60 @@ class Room:
                 return config
         return None
 
+    def _apply_holdout_zone_shrink(self, holdout_zone, now_ticks):
+        shrink_ms = int(holdout_zone.get("shrink_ms") or 0)
+        if shrink_ms <= 0:
+            return
+        initial_radius = int(holdout_zone.get("initial_radius") or holdout_zone.get("radius", 0))
+        min_radius = int(holdout_zone.get("min_radius", initial_radius))
+        if initial_radius <= min_radius:
+            return
+        started_at = self.objective_started_at
+        if started_at is None:
+            return
+        elapsed = max(0, now_ticks - started_at)
+        progress = min(1.0, elapsed / shrink_ms)
+        new_radius = int(round(initial_radius - (initial_radius - min_radius) * progress))
+        if new_radius != holdout_zone.get("radius"):
+            holdout_zone["radius"] = new_radius
+
+    def _apply_holdout_zone_migration(self, holdout_zone, now_ticks):
+        migrate_ms = int(holdout_zone.get("migrate_ms") or 0)
+        if migrate_ms <= 0:
+            return
+        anchors = holdout_zone.get("anchors") or ()
+        if len(anchors) <= 1:
+            return
+        started_at = self.objective_started_at
+        if started_at is None:
+            return
+        baseline_ms = int(holdout_zone.get("migration_baseline_ms", 0))
+        elapsed = max(0, now_ticks - started_at - baseline_ms)
+        expected_migrations = elapsed // migrate_ms
+        completed = int(holdout_zone.get("migrations_completed", 0))
+        if expected_migrations <= completed:
+            return
+        holdout_zone["migrations_completed"] = int(expected_migrations)
+        holdout_zone["anchor_index"] = int(expected_migrations % len(anchors))
+        holdout_zone["pos"] = anchors[holdout_zone["anchor_index"]]
+        holdout_zone["last_migrated_at"] = now_ticks
+        # The player almost certainly is no longer inside the new circle; let the
+        # next overlap sync flip occupancy so the timer pauses appropriately.
+        holdout_zone["occupied"] = False
+
+    def _holdout_zone_shrink_progress(self):
+        zone = self._holdout_zone_config()
+        if zone is None:
+            return None
+        initial_radius = int(zone.get("initial_radius") or zone.get("radius", 0))
+        min_radius = int(zone.get("min_radius", initial_radius))
+        if initial_radius <= 0 or initial_radius <= min_radius:
+            return None
+        if int(zone.get("shrink_ms") or 0) <= 0:
+            return None
+        current = int(zone.get("radius", initial_radius))
+        return max(0.0, min(1.0, current / initial_radius))
+
     def _holdout_controller(self):
         for config in self.objective_entity_configs:
             if config.get("kind") in {"holdout_zone", "holdout_stabilizer"}:
@@ -1758,6 +1936,13 @@ class Room:
             for config in self.objective_entity_configs
             if config.get("kind") == "holdout_stabilizer" and not config.get("used")
         ]
+
+    def _stabilizer_anchors_zone(self):
+        return any(
+            int(config.get("migration_delay_ms") or 0) > 0
+            for config in self.objective_entity_configs
+            if config.get("kind") == "holdout_stabilizer" and not config.get("used")
+        )
 
     def _holdout_target_configs(self):
         holdout_zone = self._holdout_zone_config()
@@ -1802,6 +1987,12 @@ class Room:
     def chest_reward_tier(self):
         return self._chest_reward_tier
 
+    def chest_reward_kind(self):
+        controller = self._trap_controller()
+        if controller is not None and controller.get("challenge_reward_applied"):
+            return controller.get("reward_kind", "chest_upgrade")
+        return "chest_upgrade"
+
     def _trap_challenge_route_selected(self):
         controller = self._trap_controller()
         return bool(controller and controller.get("challenge_route_selected"))
@@ -1813,7 +2004,11 @@ class Room:
         if self.chest_looted:
             return "Route secured"
         if controller.get("challenge_reward_applied"):
-            return "Reward upgraded"
+            label = _TRAP_REWARD_KIND_LABELS.get(
+                controller.get("reward_kind", "chest_upgrade"),
+                "Reward upgraded",
+            )
+            return label
         return f"Bonus route {controller.get('challenge_lane_label', 'armed')}"
 
     def _puzzle_controller(self):
@@ -2429,6 +2624,9 @@ class Room:
         lane_labels = self._trap_lane_labels(orientation, lane_count)
         switch_bank = self._trap_switch_bank(orientation)
         challenge_lane = lane_count - 1
+        intensity_scale = max(0.0, float(self.room_plan.trap_intensity_scale or 1.0))
+        speed_scale = max(0.0, float(self.room_plan.trap_speed_scale or 1.0))
+        reward_kind = str(self.room_plan.trap_challenge_reward_kind or "chest_upgrade")
         controller = {
             "safe_lane": 0 if lane_count == 2 else lane_count // 2,
             "lane_labels": lane_labels,
@@ -2440,6 +2638,9 @@ class Room:
             "challenge_lane_label": lane_labels[challenge_lane],
             "challenge_route_selected": False,
             "challenge_reward_applied": False,
+            "intensity_scale": intensity_scale,
+            "speed_scale": speed_scale,
+            "reward_kind": reward_kind,
         }
         configs = []
         for index, offset in enumerate(lane_offsets):
@@ -2637,9 +2838,9 @@ class Room:
             "travel_min": travel_min,
             "travel_max": travel_max,
             "direction": 1 if lane_index % 2 == 0 else -1,
-            "speed": 1.5,
-            "challenge_speed": 0.9,
-            "damage": 8,
+            "speed": 1.5 * float(controller.get("speed_scale", 1.0) or 1.0),
+            "challenge_speed": 0.9 * float(controller.get("speed_scale", 1.0) or 1.0),
+            "damage": _scale_trap_damage(8, controller),
             "damage_cooldown_ms": 350,
             "damage_cooldown_until": 0,
             "lane_thickness": lane_thickness,
@@ -2661,8 +2862,8 @@ class Room:
             emitter_pos = (center, emitter_row * TILE_SIZE + TILE_SIZE // 2)
 
         lane_thickness = 3 * TILE_SIZE
-        cycle_ms = 2800
-        active_ms = 1800
+        cycle_ms = _scale_trap_cycle(2800, controller)
+        active_ms = _scale_trap_cycle(1800, controller)
         safe_spots = _compute_timed_safe_spots(
             orientation, travel_min, travel_max, center, lane_thickness,
             cycle_ms, active_ms,
@@ -2678,10 +2879,10 @@ class Room:
             "travel_max": travel_max,
             "cycle_ms": cycle_ms,
             "active_ms": active_ms,
-            "challenge_cycle_ms": 2200,
-            "challenge_active_ms": 1700,
+            "challenge_cycle_ms": _scale_trap_cycle(2200, controller),
+            "challenge_active_ms": _scale_trap_cycle(1700, controller),
             "phase_offset_ms": lane_index * 200,
-            "damage": 7,
+            "damage": _scale_trap_damage(7, controller),
             "damage_cooldown_ms": 280,
             "damage_cooldown_until": 0,
             "lane_thickness": lane_thickness,
@@ -2722,8 +2923,8 @@ class Room:
             for phase_index, col in enumerate((ROOM_COLS // 2 - 3, ROOM_COLS // 2 + 3)):
                 center_x = col * TILE_SIZE + TILE_SIZE // 2
                 lane_thickness = 3 * TILE_SIZE
-                cycle_ms = 2400
-                active_ms = 1300
+                cycle_ms = _scale_trap_cycle(2400, controller)
+                active_ms = _scale_trap_cycle(1300, controller)
                 zone_w = lane_thickness
                 configs.append(
                     {
@@ -2734,10 +2935,10 @@ class Room:
                         "zone_rect": (center_x - zone_w // 2, lane_center - lane_thickness // 2, zone_w, lane_thickness),
                         "cycle_ms": cycle_ms,
                         "active_ms": active_ms,
-                        "challenge_cycle_ms": 1800,
-                        "challenge_active_ms": 1200,
+                        "challenge_cycle_ms": _scale_trap_cycle(1800, controller),
+                        "challenge_active_ms": _scale_trap_cycle(1200, controller),
                         "phase_offset_ms": phase_index * 350 + lane_index * 175,
-                        "damage": 9,
+                        "damage": _scale_trap_damage(9, controller),
                         "damage_cooldown_ms": 350,
                         "damage_cooldown_until": 0,
                         "safe_spots": [],
@@ -2750,8 +2951,8 @@ class Room:
             for phase_index, row in enumerate((ROOM_ROWS // 2 - 2, ROOM_ROWS // 2 + 2)):
                 center_y = row * TILE_SIZE + TILE_SIZE // 2
                 lane_thickness = 3 * TILE_SIZE
-                cycle_ms = 2400
-                active_ms = 1300
+                cycle_ms = _scale_trap_cycle(2400, controller)
+                active_ms = _scale_trap_cycle(1300, controller)
                 zone_h = lane_thickness
                 configs.append(
                     {
@@ -2762,10 +2963,10 @@ class Room:
                         "zone_rect": (lane_center - lane_thickness // 2, center_y - zone_h // 2, lane_thickness, zone_h),
                         "cycle_ms": cycle_ms,
                         "active_ms": active_ms,
-                        "challenge_cycle_ms": 1800,
-                        "challenge_active_ms": 1200,
+                        "challenge_cycle_ms": _scale_trap_cycle(1800, controller),
+                        "challenge_active_ms": _scale_trap_cycle(1200, controller),
                         "phase_offset_ms": phase_index * 350 + lane_index * 175,
-                        "damage": 9,
+                        "damage": _scale_trap_damage(9, controller),
                         "damage_cooldown_ms": 350,
                         "damage_cooldown_until": 0,
                         "safe_spots": [],
@@ -3187,16 +3388,46 @@ class Room:
             "last_relief_label": "",
             "relief_flash_ms": 900,
         }
-        configs = [
-            {
-                "kind": "holdout_zone",
-                "label": self.room_plan.objective_label or "Holdout",
-                "pos": self._portal_center_pixel(),
-                "radius": self.room_plan.holdout_zone_radius,
-                "occupied": False,
-                "controller": controller,
-            }
-        ]
+        initial_radius = max(0, int(self.room_plan.holdout_zone_radius or 0))
+        shrink_ms = max(0, int(self.room_plan.holdout_zone_shrink_ms or 0))
+        if shrink_ms > 0:
+            min_radius = max(
+                0,
+                min(initial_radius, int(self.room_plan.holdout_zone_min_radius or 0)),
+            )
+        else:
+            min_radius = initial_radius
+        portal_center = self._portal_center_pixel()
+        migrate_ms = max(0, int(self.room_plan.holdout_zone_migrate_ms or 0))
+        migration_offsets = tuple(self.room_plan.holdout_zone_migration_offsets or ())
+        anchors = (portal_center, *(self._offset_to_pixel(offset) for offset in migration_offsets))
+        if len(anchors) <= 1:
+            migrate_ms = 0
+        stabilizer_migration_delay_ms = max(
+            0,
+            int(self.room_plan.holdout_stabilizer_migration_delay_ms or 0),
+        )
+        if migrate_ms <= 0:
+            stabilizer_migration_delay_ms = 0
+        holdout_zone = {
+            "kind": "holdout_zone",
+            "label": self.room_plan.objective_label or "Holdout",
+            "pos": portal_center,
+            "radius": initial_radius,
+            "initial_radius": initial_radius,
+            "min_radius": min_radius,
+            "shrink_ms": shrink_ms,
+            "anchors": anchors,
+            "anchor_index": 0,
+            "migrate_ms": migrate_ms,
+            "migration_baseline_ms": 0,
+            "migrations_completed": 0,
+            "migration_anchor_until": None,
+            "last_migrated_at": None,
+            "occupied": False,
+            "controller": controller,
+        }
+        configs = [holdout_zone]
         relief_positions = self._objective_positions(
             (),
             _DEFAULT_HOLDOUT_RELIEF_OFFSETS,
@@ -3213,6 +3444,8 @@ class Room:
                         250,
                         int(self.room_plan.holdout_relief_delay_ms or _DEFAULT_HOLDOUT_RELIEF_DELAY_MS),
                     ),
+                    "migration_delay_ms": stabilizer_migration_delay_ms,
+                    "zone_config": holdout_zone,
                     "used": False,
                     "controller": controller,
                 }
@@ -3260,6 +3493,38 @@ class Room:
             config["pulse_radius"] += 8
             config["pulse_damage"] += 1
 
+    def _consume_ritual_wrong_strikes(self, now_ticks):
+        """Drain `wrong_struck_pending` flags on altar configs; throttle the
+        teach-cue and optionally spawn punitive reinforcements.
+        """
+        pending = False
+        for config in self.objective_entity_configs:
+            if config.get("kind") != "altar":
+                continue
+            if config.pop("wrong_struck_pending", False):
+                pending = True
+        if not pending:
+            return None
+        last_at = self._ritual_last_wrong_strike_at
+        if last_at is not None and now_ticks - last_at < _RITUAL_WRONG_STRIKE_COOLDOWN_MS:
+            return None
+        self._ritual_last_wrong_strike_at = now_ticks
+        spawn_count = max(
+            0,
+            int((self.room_plan.ritual_wrong_strike_spawn_count if self.room_plan else 0) or 0),
+        )
+        if spawn_count <= 0:
+            return None
+        enemy_configs = self._gen_enemy_configs_for_range((spawn_count, spawn_count))
+        if not enemy_configs:
+            return None
+        self.enemy_configs.extend(enemy_configs)
+        return {
+            "kind": "spawn_enemies",
+            "source": "ritual_wrong_strike",
+            "enemy_configs": enemy_configs,
+        }
+
     def _refresh_ritual_links(self):
         link_mode = self.room_plan.ritual_link_mode if self.room_plan else ""
         live_wards = any(
@@ -3268,13 +3533,46 @@ class Room:
             and config.get("role") == "ward"
             for config in self.objective_entity_configs
         )
+        chain_active_role = self._ritual_role_chain_active_role() if link_mode == "role_chain" else None
         for config in self.objective_entity_configs:
             if config.get("kind") != "altar" or config.get("destroyed"):
                 continue
             if link_mode == "ward_shields_others" and live_wards and config.get("role") != "ward":
                 config["invulnerable"] = True
+            elif link_mode == "role_chain" and chain_active_role is not None and config.get("role") != chain_active_role:
+                config["invulnerable"] = True
             else:
                 config["invulnerable"] = False
+
+    def _ritual_role_chain_priority(self):
+        """Unique-role kill order derived from `ritual_role_script`.
+
+        Roles must be cleared in script order: the first unique role in the
+        script must be wiped before the next becomes vulnerable, and so on.
+        """
+        if self.room_plan is None:
+            return ()
+        priority = []
+        seen = set()
+        for role in self.room_plan.ritual_role_script or ():
+            if role and role not in seen:
+                seen.add(role)
+                priority.append(role)
+        return tuple(priority)
+
+    def _ritual_role_chain_active_role(self):
+        priority = self._ritual_role_chain_priority()
+        if not priority:
+            return None
+        live_roles = {
+            config.get("role")
+            for config in self.objective_entity_configs
+            if config.get("kind") == "altar" and not config.get("destroyed")
+        }
+        for role in priority:
+            if role in live_roles:
+                return role
+        return None
 
     def _ritual_uses_pulse_damage_windows(self):
         return bool(

@@ -28,6 +28,7 @@ class MinimapRoomHUDView:
     kind: str
     objective_marker: tuple[str, str] | None
     door_kinds: dict[str, str]
+    objective_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,9 @@ class QuickBarHUDView:
     speed_boost_count: int
     attack_boost_count: int
     compass_uses: int
+    stat_shard_count: int = 0
+    tempo_rune_count: int = 0
+    mobility_charge_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,19 @@ class DamageNumberHUDView:
 
 
 @dataclass(frozen=True)
+class BiomeRewardFlashHUDView:
+    kind: str  # "stat_shard" | "tempo_rune" | "mobility_charge"
+    world_pos: tuple[int, int]
+    age_fraction: float
+
+
+@dataclass(frozen=True)
+class KeystoneBonusBannerHUDView:
+    text: str
+    age_fraction: float
+
+
+@dataclass(frozen=True)
 class OverlayHUDView:
     title: str
     title_color: tuple[int, int, int]
@@ -159,6 +176,8 @@ class HUDView:
     ability: AbilityHUDView
     entity_health_bars: tuple[EntityHealthBarHUDView, ...]
     damage_numbers: tuple[DamageNumberHUDView, ...]
+    biome_reward_flashes: tuple[BiomeRewardFlashHUDView, ...]
+    keystone_bonus_banner: KeystoneBonusBannerHUDView | None = None
 
 
 def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
@@ -181,6 +200,19 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         DamageNumberHUDView(text=text, world_pos=tuple(world_pos), age_fraction=age)
         for text, world_pos, age in damage_feedback.build_damage_number_views(now_ticks)
     )
+    biome_reward_flashes = tuple(
+        BiomeRewardFlashHUDView(kind=kind, world_pos=tuple(world_pos), age_fraction=age)
+        for kind, world_pos, age in damage_feedback.build_biome_reward_flash_views(now_ticks)
+    )
+    banner_data = damage_feedback.build_keystone_bonus_banner_view(now_ticks)
+    keystone_bonus_banner = (
+        KeystoneBonusBannerHUDView(
+            text=banner_data[0],
+            age_fraction=banner_data[1],
+        )
+        if banner_data is not None
+        else None
+    )
 
     return HUDView(
         current_hp=player.current_hp,
@@ -188,7 +220,7 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         armor_hp=player.armor_hp,
         coins=player.coins,
         weapons=_build_weapon_views(player),
-        minimap=_build_minimap_view(dungeon),
+        minimap=_build_minimap_view(dungeon, now_ticks),
         quick_bar=_build_quick_bar_view(player),
         active_effects=_build_active_effects(player, now_ticks),
         compass=_build_compass_view(player, now_ticks),
@@ -204,6 +236,8 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         ability=_build_ability_view(player, now_ticks),
         entity_health_bars=entity_health_bars,
         damage_numbers=damage_numbers,
+        biome_reward_flashes=biome_reward_flashes,
+        keystone_bonus_banner=keystone_bonus_banner,
     )
 
 
@@ -244,14 +278,15 @@ def _build_weapon_views(player):
     return tuple(views)
 
 
-def _build_minimap_view(dungeon):
-    snapshot = dungeon.minimap_snapshot()
+def _build_minimap_view(dungeon, now_ticks=None):
+    snapshot = dungeon.minimap_snapshot(now_ticks)
     rooms = tuple(
         MinimapRoomHUDView(
             position=room["pos"],
             kind=room["kind"],
             objective_marker=room.get("objective_marker"),
             door_kinds=dict(room["door_kinds"]),
+            objective_status=room.get("objective_status"),
         )
         for room in snapshot["rooms"]
     )
@@ -268,6 +303,9 @@ def _build_quick_bar_view(player):
         speed_boost_count=inventory.get("speed_boost", 0),
         attack_boost_count=inventory.get("attack_boost", 0),
         compass_uses=player.compass_uses,
+        stat_shard_count=inventory.get("stat_shard", 0),
+        tempo_rune_count=inventory.get("tempo_rune", 0),
+        mobility_charge_count=inventory.get("mobility_charge", 0),
     )
 
 

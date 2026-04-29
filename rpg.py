@@ -34,6 +34,7 @@ from menu import (
     DungeonSelectScreen,
     CharacterCustomizeScreen,
     ShopScreen,
+    RecordsScreen,
     PauseScreen,
     LevelCompleteScreen,
     RuneAltarPickScreen,
@@ -46,6 +47,7 @@ from menu_view import (
     build_dungeon_select_view,
     build_level_complete_screen_view,
     build_pause_screen_view,
+    build_records_view,
     build_room_test_select_view,
     build_rune_altar_pick_view,
     build_shop_view,
@@ -65,6 +67,34 @@ import stat_runes
 import status_effects
 import time_rules
 import terrain_effects
+from settings import BIOME_TROPHY_IDS, BIOME_TROPHY_KEYSTONE_ID
+
+
+# Display labels for biome trophies on the level-complete summary.
+_BIOME_TROPHY_DISPLAY = {
+    "stat_shard": "Boulder Stat Shards",
+    "tempo_rune": "Storm Tempo Runes",
+    "mobility_charge": "Tide Mobility Charges",
+    BIOME_TROPHY_KEYSTONE_ID: "Prismatic Keystones",
+}
+
+
+def _build_trophy_tally_lines(progress):
+    """Return tuple of "Label: count" strings for biome trophies in inventory."""
+    inventory = getattr(progress, "inventory", None)
+    if inventory is None:
+        return ()
+    lines = []
+    for trophy_id in BIOME_TROPHY_IDS:
+        count = inventory.get(trophy_id, 0)
+        if count > 0:
+            lines.append(f"{_BIOME_TROPHY_DISPLAY[trophy_id]}: {count}")
+    keystone_count = getattr(progress, "meta_keystones", 0)
+    if keystone_count > 0:
+        lines.append(
+            f"{_BIOME_TROPHY_DISPLAY[BIOME_TROPHY_KEYSTONE_ID]}: {keystone_count}"
+        )
+    return tuple(lines)
 
 
 class Game:
@@ -92,7 +122,7 @@ class Game:
         self._room_test_spawn_direction = "left"
 
         # menu screens
-        self._main_menu = MainMenuScreen()
+        self._main_menu = MainMenuScreen(self.progress)
         self._room_test_select = RoomTestSelectScreen(load_room_test_entries())
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
@@ -128,6 +158,11 @@ class Game:
 
         difficulty = self.progress.difficulty_preference
         damage_feedback.reset_all()
+        # Surface the keystone starting-coin bonus (T11) as a brief HUD banner
+        # immediately after the reset so the new run's feedback channel is clean.
+        bonus = self.progress.keystone_starting_coin_bonus()
+        if bonus:
+            damage_feedback.report_keystone_starting_bonus(bonus)
         self.dungeon = Dungeon(dungeon_config=config, difficulty=difficulty)
 
         start_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
@@ -276,8 +311,10 @@ class Game:
                 chest.restore_for_reclaim()
         elif update_result.get("kind") == "upgrade_reward_chest":
             reward_tier = update_result.get("reward_tier", "standard")
+            reward_kind = update_result.get("reward_kind", "chest_upgrade")
             for chest in self.dungeon.chest_group:
                 chest.set_reward_tier(reward_tier)
+                chest.set_reward_kind(reward_kind)
         elif update_result.get("kind") == "spawn_reward_chest":
             x, y = update_result.get("position", (None, None))
             if x is not None and y is not None and not self.dungeon.chest_group:
@@ -287,6 +324,7 @@ class Game:
                         y,
                         looted=False,
                         reward_tier=update_result.get("reward_tier", "standard"),
+                        reward_kind=update_result.get("reward_kind", "chest_upgrade"),
                     )
                 )
         elif update_result.get("kind") == "despawn_escort":
@@ -374,6 +412,8 @@ class Game:
                 self._handle_character(events)
             elif self.state == GameState.SHOP:
                 self._handle_shop(events)
+            elif self.state == GameState.RECORDS:
+                self._handle_records(events)
             elif self.state == GameState.PLAYING:
                 self._handle_playing(events)
                 self._update_playing()
@@ -431,6 +471,11 @@ class Game:
         result = self._character_screen.handle_events(events)
         if result is not None:
             save_progress(self.progress)
+            self.state = result
+
+    def _handle_records(self, events):
+        result = self._records_screen.handle_events(events)
+        if result is not None:
             self.state = result
 
     def _handle_shop(self, events):
@@ -494,6 +539,12 @@ class Game:
                 self.player.use_attack_boost()
             elif event.key == pygame.K_7:
                 self.player.use_compass(self.dungeon)
+            elif event.key == pygame.K_8:
+                self.player.use_stat_shard()
+            elif event.key == pygame.K_9:
+                self.player.use_tempo_rune()
+            elif event.key == pygame.K_0:
+                self.player.use_mobility_charge()
 
             elif event.key == pygame.K_F3:
                 self._toggle_room_identifier()
@@ -860,6 +911,7 @@ class Game:
                 detail_lines = ("Overtime escape: clean extraction bonus lost",)
 
         self.progress.complete_dungeon_from_runtime(self._current_dungeon_id, self.player)
+        detail_lines = detail_lines + _build_trophy_tally_lines(self.progress)
         self._level_complete = LevelCompleteScreen(
             config["name"],
             detail_lines=detail_lines,
@@ -1008,6 +1060,11 @@ class Game:
 
         elif self.state == GameState.SHOP:
             self._shop_screen.draw(self.screen, build_shop_view(self._shop_screen))
+
+        elif self.state == GameState.RECORDS:
+            self._records_screen.draw(
+                self.screen, build_records_view(self._records_screen)
+            )
 
         elif self.state in (GameState.PLAYING, GameState.PAUSED,
                             GameState.PAUSE_ALL_ITEMS, GameState.PAUSE_ALL_RUNES,

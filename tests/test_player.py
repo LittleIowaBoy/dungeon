@@ -10,6 +10,7 @@ from player import Player
 from progress import PlayerProgress
 from settings import ATTACK_BOOST_MULTIPLIER, FLASH_INTERVAL_MS, SPEED_BOOST_MULTIPLIER, WEAPON_PLUS_MULTIPLIER
 from settings import COMPASS_DISPLAY_MS
+import damage_feedback
 
 
 class PlayerLoadoutTests(unittest.TestCase):
@@ -65,6 +66,77 @@ class PlayerLoadoutTests(unittest.TestCase):
         self.assertEqual(player.attack_boost_until, 22000)
         self.assertNotIn("speed_boost", progress.inventory)
         self.assertNotIn("attack_boost", progress.inventory)
+
+    def test_use_stat_shard_grants_permanent_max_hp_bump(self):
+        from settings import STAT_SHARD_MAX_HP_BONUS
+
+        progress = PlayerProgress()
+        progress.inventory["stat_shard"] = 2
+        player = Player(32, 32)
+        player.reset_for_dungeon(progress)
+        starting_max = player.max_hp
+        player.current_hp = starting_max - 5
+        damage_feedback.reset_all()
+
+        with patch("pygame.time.get_ticks", return_value=5000):
+            self.assertTrue(player.use_stat_shard())
+            self.assertEqual(player.max_hp, starting_max + STAT_SHARD_MAX_HP_BONUS)
+            # current_hp is bumped by the same amount, capped at the new max.
+            self.assertEqual(
+                player.current_hp,
+                min(starting_max - 5 + STAT_SHARD_MAX_HP_BONUS, player.max_hp),
+            )
+            self.assertEqual(progress.inventory["stat_shard"], 1)
+
+            # Spending the second shard stacks the bonus.
+            self.assertTrue(player.use_stat_shard())
+            self.assertEqual(player.max_hp, starting_max + 2 * STAT_SHARD_MAX_HP_BONUS)
+            self.assertNotIn("stat_shard", progress.inventory)
+
+            # No shards left → activation no-ops.
+            self.assertFalse(player.use_stat_shard())
+
+        # Each successful spend queued a flash anchored at the player.
+        flashes = damage_feedback.build_biome_reward_flash_views(now_ticks=5000)
+        self.assertEqual([kind for kind, _pos, _age in flashes], ["stat_shard", "stat_shard"])
+
+    def test_use_tempo_rune_extends_attack_boost_window(self):
+        from settings import TEMPO_RUNE_DURATION_MS
+
+        progress = PlayerProgress()
+        progress.inventory["tempo_rune"] = 1
+        player = Player(32, 32)
+        player.reset_for_dungeon(progress)
+        damage_feedback.reset_all()
+
+        with patch("pygame.time.get_ticks", return_value=5000):
+            self.assertTrue(player.use_tempo_rune())
+
+        self.assertEqual(player.attack_boost_until, 5000 + TEMPO_RUNE_DURATION_MS)
+        self.assertNotIn("tempo_rune", progress.inventory)
+        self.assertFalse(player.use_tempo_rune())
+
+        flashes = damage_feedback.build_biome_reward_flash_views(now_ticks=5000)
+        self.assertEqual([kind for kind, _pos, _age in flashes], ["tempo_rune"])
+
+    def test_use_mobility_charge_triggers_short_speed_burst(self):
+        from settings import MOBILITY_CHARGE_DURATION_MS
+
+        progress = PlayerProgress()
+        progress.inventory["mobility_charge"] = 1
+        player = Player(32, 32)
+        player.reset_for_dungeon(progress)
+        damage_feedback.reset_all()
+
+        with patch("pygame.time.get_ticks", return_value=5000):
+            self.assertTrue(player.use_mobility_charge())
+
+        self.assertEqual(player.speed_boost_until, 5000 + MOBILITY_CHARGE_DURATION_MS)
+        self.assertNotIn("mobility_charge", progress.inventory)
+        self.assertFalse(player.use_mobility_charge())
+
+        flashes = damage_feedback.build_biome_reward_flash_views(now_ticks=5000)
+        self.assertEqual([kind for kind, _pos, _age in flashes], ["mobility_charge"])
 
     def test_use_compass_delegates_to_tool_rules_and_updates_progress(self):
         progress = PlayerProgress()

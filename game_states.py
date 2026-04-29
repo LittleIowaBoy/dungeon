@@ -8,6 +8,7 @@ class GameState(Enum):
     DUNGEON_SELECT      = auto()
     CHARACTER_CUSTOMIZE = auto()
     SHOP                = auto()
+    RECORDS             = auto()
     PLAYING             = auto()
     PAUSED              = auto()
     PAUSE_ALL_ITEMS     = auto()  # test-room only: pause sub-screen for force-equip items

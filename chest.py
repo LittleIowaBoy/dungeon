@@ -16,14 +16,27 @@ _CHEST_BONUS_ITEMS_BY_TIER = {
     "finale_bonus": 2,
 }
 
+# Biome-themed challenge-route bonus loot. The bonus item id (if any) is
+# guaranteed-spawned alongside the standard rolled chest contents whenever the
+# player commits to the trap-gauntlet challenge route. Each kind maps to a
+# bespoke biome-flavored item from the catalog (see item_catalog.py
+# `biome_reward` category) so the trophy reads clearly in the inventory.
+_CHEST_BONUS_LOOT_BY_REWARD_KIND = {
+    "chest_upgrade": None,
+    "stat_shard": "stat_shard",
+    "tempo_rune": "tempo_rune",
+    "mobility_consumable": "mobility_charge",
+}
+
 
 class Chest(pygame.sprite.Sprite):
     SIZE = 24
 
-    def __init__(self, x, y, looted=False, reward_tier="standard"):
+    def __init__(self, x, y, looted=False, reward_tier="standard", reward_kind="chest_upgrade"):
         super().__init__()
         self.looted = looted
         self.reward_tier = reward_tier
+        self.reward_kind = reward_kind
         self._set_image()
         self.rect = self.image.get_rect(center=(x, y))
         # Pre-generate contents (only used if not looted)
@@ -51,6 +64,12 @@ class Chest(pygame.sprite.Sprite):
         if self.looted or reward_tier == self.reward_tier:
             return
         self.reward_tier = reward_tier
+        self.contents = self._roll_contents()
+
+    def set_reward_kind(self, reward_kind):
+        if self.looted or reward_kind == self.reward_kind:
+            return
+        self.reward_kind = reward_kind
         self.contents = self._roll_contents()
 
     # ── interaction ─────────────────────────────────────
@@ -94,4 +113,7 @@ class Chest(pygame.sprite.Sprite):
                 contents.append(("coin",))
             else:
                 contents.append(("loot", entry[1]))
+        bonus_loot_id = _CHEST_BONUS_LOOT_BY_REWARD_KIND.get(self.reward_kind)
+        if bonus_loot_id:
+            contents.append(("loot", bonus_loot_id))
         return contents

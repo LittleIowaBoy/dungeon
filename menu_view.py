@@ -4,6 +4,14 @@ from dataclasses import dataclass
 
 from dungeon_config import DUNGEONS
 from rune_catalog import RUNE_DATABASE, RUNE_SLOT_CAPACITY
+from settings import (
+    BIOME_ATTUNEMENT_MAX_PER_BIOME,
+    BIOME_TROPHY_IDS,
+    BIOME_TROPHY_EXCHANGE_RATIO,
+    BIOME_TROPHY_KEYSTONE_ID,
+    KEYSTONE_MAX_OWNED,
+    TERRAIN_TROPHY_IDS,
+)
 
 
 @dataclass(frozen=True)
@@ -11,6 +19,7 @@ class MainMenuView:
     title: str
     options: tuple[str, ...]
     selected_index: int
+    keystone_status_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -19,6 +28,8 @@ class DungeonCardView:
     terrain_type: str
     status_text: str
     terrain_label: str
+    trophy_label: str = ""
+    attunement_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -28,6 +39,7 @@ class DungeonSelectView:
     selected_index: int
     difficulty_label: str
     back_label: str
+    keystone_status_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,6 +108,8 @@ class ShopView:
     show_more_above: bool
     show_more_below: bool
     footer_hint: str
+    trophy_summary_text: str = ""
+    trophy_exchange_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -107,6 +121,28 @@ class PauseScreenView:
 
 
 @dataclass(frozen=True)
+class RecordsBiomeRowView:
+    """One per-biome row on the Records screen."""
+    dungeon_name: str
+    terrain_label: str
+    completion_label: str       # "Completions: 5" (lifetime, monotonic)
+    attunement_label: str       # "Attunements: 2 / 3"  or "Attunements: 3 / 3 (max)"
+    next_attunement_label: str  # "Next attunement: 2 / 3"  or ""
+    trophy_label: str           # "Stat Shards: 4"
+    starting_grant_label: str   # "Run-start trophies: +2" or ""
+
+
+@dataclass(frozen=True)
+class RecordsView:
+    title: str
+    biome_rows: tuple[RecordsBiomeRowView, ...]
+    keystone_summary: str       # "Prismatic Keystones: 2 / 3 (+75 coins/run)" or "(none crafted)"
+    totals_summary: str         # "Lifetime completions: 12   |   Trophies in stockpile: 7"
+    back_label: str             # "Back"
+    footer_hint: str
+
+
+@dataclass(frozen=True)
 class LevelCompleteScreenView:
     dungeon_name: str
     detail_lines: tuple[str, ...]
@@ -115,15 +151,25 @@ class LevelCompleteScreenView:
 
 
 def build_main_menu_view(screen):
+    progress = getattr(screen, "progress", None)
+    keystones = getattr(progress, "meta_keystones", 0) if progress is not None else 0
+    if keystones > 0:
+        keystone_status_text = (
+            f"Prismatic Keystones: {keystones} / {KEYSTONE_MAX_OWNED}"
+        )
+    else:
+        keystone_status_text = ""
     return MainMenuView(
         title="Dungeon Crawler",
         options=tuple(screen.OPTIONS),
         selected_index=screen.selected,
+        keystone_status_text=keystone_status_text,
     )
 
 
 def build_dungeon_select_view(screen):
     from dungeon_config import DIFFICULTY_PRESETS
+    inventory = getattr(screen.progress, "inventory", {}) or {}
     cards = []
     for dungeon in DUNGEONS:
         progress = screen.progress.get_dungeon(dungeon["id"])
@@ -132,17 +178,38 @@ def build_dungeon_select_view(screen):
         else:
             status_text = "Not started"
 
+        terrain_type = dungeon["terrain_type"]
+        trophy_id = TERRAIN_TROPHY_IDS.get(terrain_type)
+        if trophy_id is not None:
+            count = inventory.get(trophy_id, 0)
+            trophy_label = f"{_TROPHY_SHORT_LABELS[trophy_id]} x{count}"
+        else:
+            trophy_label = ""
+
+        attunement_label = _build_attunement_label(screen.progress, terrain_type)
+
         cards.append(
             DungeonCardView(
                 name=dungeon["name"],
-                terrain_type=dungeon["terrain_type"],
+                terrain_type=terrain_type,
                 status_text=status_text,
-                terrain_label=f"Terrain: {dungeon['terrain_type'].capitalize()}",
+                terrain_label=f"Terrain: {terrain_type.capitalize()}",
+                trophy_label=trophy_label,
+                attunement_label=attunement_label,
             )
         )
 
     diff = screen.progress.difficulty_preference
     diff_label = screen.DIFFICULTY_LABELS.get(diff, diff.capitalize())
+
+    keystones = getattr(screen.progress, "meta_keystones", 0)
+    if keystones > 0:
+        bonus = screen.progress.keystone_starting_coin_bonus()
+        keystone_status_text = (
+            f"Prismatic Keystones: {keystones}  (+{bonus} coins each run)"
+        )
+    else:
+        keystone_status_text = ""
 
     return DungeonSelectView(
         title="Select Dungeon",
@@ -150,6 +217,7 @@ def build_dungeon_select_view(screen):
         selected_index=min(max(screen.selected, 0), len(cards)),
         difficulty_label=diff_label,
         back_label="Back",
+        keystone_status_text=keystone_status_text,
     )
 
 
@@ -269,6 +337,7 @@ def build_character_customize_view(screen):
 
 def build_shop_view(screen):
     items = screen.shop.items
+    trophy_summary, trophy_hint = _build_trophy_strings(screen.progress)
     if not items:
         return ShopView(
             title="Shop",
@@ -278,6 +347,8 @@ def build_shop_view(screen):
             show_more_above=False,
             show_more_below=False,
             footer_hint="Press ESC to return",
+            trophy_summary_text=trophy_summary,
+            trophy_exchange_hint=trophy_hint,
         )
 
     screen._ensure_selection_visible(items)
@@ -329,6 +400,186 @@ def build_shop_view(screen):
         show_more_above=start_index > 0,
         show_more_below=end_index < len(items),
         footer_hint="Press ESC to return",
+        trophy_summary_text=trophy_summary,
+        trophy_exchange_hint=trophy_hint,
+    )
+
+
+_TROPHY_SHORT_LABELS = {
+    "stat_shard": "Shard",
+    "tempo_rune": "Rune",
+    "mobility_charge": "Dash",
+    BIOME_TROPHY_KEYSTONE_ID: "Keystone",
+}
+
+
+def _build_attunement_label(progress, terrain):
+    """Format the per-card biome attunement summary, or "" when irrelevant.
+
+    Renders ``Attune N/cap`` (always shown when the biome has any
+    completions or attunements).  Below the per-biome cap we also append
+    ``(p/threshold next)`` so the player can see exactly how many more
+    completions earn the next attunement.
+    """
+    if terrain is None or terrain not in TERRAIN_TROPHY_IDS:
+        return ""
+    attunements = getattr(progress, "biome_attunements", {}) or {}
+    completions = getattr(progress, "biome_completions", {}) or {}
+    owned = attunements.get(terrain, 0)
+    completed = completions.get(terrain, 0)
+    if owned == 0 and completed == 0:
+        return ""
+    base = f"Attune {owned}/{BIOME_ATTUNEMENT_MAX_PER_BIOME}"
+    if owned >= BIOME_ATTUNEMENT_MAX_PER_BIOME:
+        return base + " (max)"
+    progress_toward, threshold = progress.biome_attunement_progress(terrain)
+    return base + f" ({progress_toward}/{threshold} next)"
+
+
+def _build_trophy_strings(progress):
+    """Return ``(summary, exchange_hint)`` strings for the shop trophy footer.
+
+    Returns ``("", "")`` when the player owns no biome trophies — there's
+    nothing to summarise or trade and the screen should stay quiet.
+    """
+    counts = {
+        trophy_id: progress.inventory.get(trophy_id, 0)
+        for trophy_id in BIOME_TROPHY_IDS
+    }
+    keystone_count = getattr(progress, "meta_keystones", 0)
+    if not any(counts.values()) and keystone_count == 0:
+        return "", ""
+    summary_parts = [
+        f"{_TROPHY_SHORT_LABELS[trophy_id]} x{counts[trophy_id]}"
+        for trophy_id in BIOME_TROPHY_IDS
+    ]
+    if keystone_count:
+        bonus = progress.keystone_starting_coin_bonus()
+        summary_parts.append(
+            f"{_TROPHY_SHORT_LABELS[BIOME_TROPHY_KEYSTONE_ID]} x{keystone_count}"
+            f" (+{bonus} run-start coins)"
+        )
+    summary = "Trophies: " + "  ".join(summary_parts)
+    has_surplus = any(count >= BIOME_TROPHY_EXCHANGE_RATIO for count in counts.values())
+    has_each_trophy = all(count >= 1 for count in counts.values())
+    at_cap = keystone_count >= KEYSTONE_MAX_OWNED
+    hint_parts = []
+    if has_surplus:
+        ratio = BIOME_TROPHY_EXCHANGE_RATIO
+        hint_parts.append(
+            f"[1/2/3] Trade {ratio} surplus → Shard / Rune / Dash"
+        )
+    if at_cap:
+        # Cap acknowledgement: there's no further keystone craft available.
+        # Replaces the [4] hint entirely so the player isn't prompted to
+        # press a key that's now a no-op.
+        hint_parts.append(
+            f"Keystones complete ({keystone_count}/{KEYSTONE_MAX_OWNED}) — meta route maxed"
+        )
+    elif has_each_trophy:
+        next_tier = progress.next_keystone_tier_bonus()
+        if next_tier > 0:
+            hint_parts.append(
+                f"[4] Craft Keystone (1 of each) — next tier +{next_tier} coins/run"
+            )
+        else:
+            hint_parts.append("[4] Craft Keystone (1 of each)")
+    hint = "   ".join(hint_parts)
+    return summary, hint
+
+
+_RECORDS_TROPHY_LONG_LABELS = {
+    "stat_shard": "Stat Shards",
+    "tempo_rune": "Tempo Runes",
+    "mobility_charge": "Mobility Charges",
+}
+
+
+def build_records_view(screen):
+    """Project a `RecordsView` summarizing all meta-progression state.
+
+    Reads from `screen.progress` and renders one row per dungeon defined
+    in `DUNGEONS`, plus a keystone summary and lifetime totals. Pure
+    projection — no pygame, no inputs, no mutation.
+    """
+    progress = screen.progress
+    inventory = getattr(progress, "inventory", {}) or {}
+    completions = getattr(progress, "biome_completions", {}) or {}
+    attunements = getattr(progress, "biome_attunements", {}) or {}
+
+    rows = []
+    for dungeon in DUNGEONS:
+        terrain = dungeon["terrain_type"]
+        trophy_id = TERRAIN_TROPHY_IDS.get(terrain)
+        completion_count = completions.get(terrain, 0)
+        attunement_count = attunements.get(terrain, 0)
+
+        if attunement_count >= BIOME_ATTUNEMENT_MAX_PER_BIOME:
+            attune_label = (
+                f"Attunements: {attunement_count} / "
+                f"{BIOME_ATTUNEMENT_MAX_PER_BIOME} (max)"
+            )
+            next_attune_label = ""
+        else:
+            attune_label = (
+                f"Attunements: {attunement_count} / "
+                f"{BIOME_ATTUNEMENT_MAX_PER_BIOME}"
+            )
+            toward, threshold = progress.biome_attunement_progress(terrain)
+            next_attune_label = f"Next attunement: {toward} / {threshold}"
+
+        if trophy_id is not None:
+            trophy_long = _RECORDS_TROPHY_LONG_LABELS.get(trophy_id, trophy_id)
+            trophy_count = inventory.get(trophy_id, 0)
+            trophy_label = f"{trophy_long}: {trophy_count}"
+        else:
+            trophy_label = ""
+
+        if attunement_count > 0 and trophy_id is not None:
+            starting_grant_label = (
+                f"Run-start trophies: +{attunement_count}"
+            )
+        else:
+            starting_grant_label = ""
+
+        rows.append(
+            RecordsBiomeRowView(
+                dungeon_name=dungeon["name"],
+                terrain_label=f"Terrain: {terrain.capitalize()}",
+                completion_label=f"Completions: {completion_count}",
+                attunement_label=attune_label,
+                next_attunement_label=next_attune_label,
+                trophy_label=trophy_label,
+                starting_grant_label=starting_grant_label,
+            )
+        )
+
+    keystone_count = getattr(progress, "meta_keystones", 0)
+    if keystone_count > 0:
+        bonus = progress.keystone_starting_coin_bonus()
+        keystone_summary = (
+            f"Prismatic Keystones: {keystone_count} / "
+            f"{KEYSTONE_MAX_OWNED} (+{bonus} coins/run)"
+        )
+    else:
+        keystone_summary = (
+            f"Prismatic Keystones: 0 / {KEYSTONE_MAX_OWNED} (none crafted)"
+        )
+
+    lifetime = sum(completions.values())
+    trophy_total = sum(inventory.get(tid, 0) for tid in TERRAIN_TROPHY_IDS.values())
+    totals_summary = (
+        f"Lifetime completions: {lifetime}   |   "
+        f"Trophies in stockpile: {trophy_total}"
+    )
+
+    return RecordsView(
+        title="Records",
+        biome_rows=tuple(rows),
+        keystone_summary=keystone_summary,
+        totals_summary=totals_summary,
+        back_label="Back",
+        footer_hint="Press ESC or Enter to return",
     )
 
 

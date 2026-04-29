@@ -235,6 +235,18 @@ class Player(pygame.sprite.Sprite):
         """Activate an attack boost. Returns True on success."""
         return consumable_rules.use_attack_boost(self, pygame.time.get_ticks())
 
+    def use_stat_shard(self):
+        """Spend a Boulder Stat Shard for a permanent +max_hp bump."""
+        return consumable_rules.use_stat_shard(self)
+
+    def use_tempo_rune(self):
+        """Spend a Frost Tempo Rune for an extended attack-boost window."""
+        return consumable_rules.use_tempo_rune(self, pygame.time.get_ticks())
+
+    def use_mobility_charge(self):
+        """Spend a Tide Mobility Charge for a short, sharp speed burst."""
+        return consumable_rules.use_mobility_charge(self, pygame.time.get_ticks())
+
     def use_compass(self, dungeon):
         """Use the compass to find the portal direction. Returns True on success."""
         return tool_rules.use_compass(self, dungeon, pygame.time.get_ticks())

@@ -83,6 +83,15 @@ class SaveSystemRoundTripTests(unittest.TestCase):
         self.assertTrue(rune_rules.has_rune(player, behavior_id))
         self.assertTrue(rune_rules.has_rune(player, identity_id))
 
+    def test_save_load_round_trip_persists_meta_keystones(self):
+        progress = PlayerProgress()
+        progress.meta_keystones = 2
+
+        save_system.save_progress(progress)
+        loaded = save_system.load_progress()
+
+        self.assertEqual(loaded.meta_keystones, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

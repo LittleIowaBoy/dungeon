@@ -381,13 +381,19 @@ class RoomSelector:
         objective_entity_count = max(0, int(template.objective_entity_count or 0))
         scripted_wave_sizes = _parse_int_script(template.scripted_wave_sizes)
         holdout_zone_radius = max(0, int(template.holdout_zone_radius or 0))
+        holdout_zone_min_radius = max(0, int(template.holdout_zone_min_radius or 0))
+        holdout_zone_shrink_ms = max(0, int(template.holdout_zone_shrink_ms or 0))
+        holdout_zone_migrate_ms = max(0, int(template.holdout_zone_migrate_ms or 0))
+        holdout_zone_migration_offsets = _parse_offset_script(template.holdout_zone_migration_offsets)
         holdout_relief_count = max(0, int(template.holdout_relief_count or 0))
         holdout_relief_delay_ms = max(0, int(template.holdout_relief_delay_ms or 0))
+        holdout_stabilizer_migration_delay_ms = max(0, int(template.holdout_stabilizer_migration_delay_ms or 0))
         ritual_role_script = _parse_text_script(template.ritual_role_script)
         ritual_reinforcement_count = max(0, int(template.ritual_reinforcement_count or 0))
         ritual_link_mode = template.ritual_link_mode or ""
         ritual_payoff_kind = template.ritual_payoff_kind or ""
         ritual_payoff_label = template.ritual_payoff_label or ""
+        ritual_wrong_strike_spawn_count = max(0, int(template.ritual_wrong_strike_spawn_count or 0))
         objective_label = template.objective_label or ""
         objective_layout_offsets = _parse_offset_script(template.objective_layout_offsets)
         objective_spawn_offset = _parse_optional_offset(template.objective_spawn_offset)
@@ -408,6 +414,9 @@ class RoomSelector:
         puzzle_camp_pulse_interval_ms = max(0, int(template.puzzle_camp_pulse_interval_ms or 0))
         puzzle_camp_pulse_grace_ms = max(0, int(template.puzzle_camp_pulse_grace_ms or 0))
         puzzle_camp_pulse_radius = max(0, int(template.puzzle_camp_pulse_radius or 0))
+        trap_intensity_scale = max(0.0, float(template.trap_intensity_scale or 1.0))
+        trap_speed_scale = max(0.0, float(template.trap_speed_scale or 1.0))
+        trap_challenge_reward_kind = str(template.trap_challenge_reward_kind or "chest_upgrade")
 
         if objective_rule == "charge_plates":
             if puzzle_reinforcement_count <= 0:
@@ -431,6 +440,18 @@ class RoomSelector:
                 scripted_wave_sizes = scripted_wave_sizes + (scripted_wave_sizes[-1] + 1,)
             if holdout_zone_radius <= 0:
                 holdout_zone_radius = 96
+            if holdout_zone_shrink_ms > 0:
+                if holdout_zone_min_radius <= 0:
+                    holdout_zone_min_radius = max(40, int(holdout_zone_radius * 0.6))
+                holdout_zone_min_radius = min(holdout_zone_min_radius, holdout_zone_radius)
+            else:
+                holdout_zone_min_radius = 0
+            if not holdout_zone_migration_offsets:
+                holdout_zone_migrate_ms = 0
+            if holdout_zone_migrate_ms <= 0:
+                holdout_stabilizer_migration_delay_ms = 0
+            elif holdout_stabilizer_migration_delay_ms <= 0:
+                holdout_stabilizer_migration_delay_ms = holdout_zone_migrate_ms
             if holdout_relief_count <= 0:
                 holdout_relief_count = 1
             if holdout_relief_delay_ms <= 0:
@@ -480,13 +501,19 @@ class RoomSelector:
             objective_entity_count=objective_entity_count,
             scripted_wave_sizes=scripted_wave_sizes,
             holdout_zone_radius=holdout_zone_radius,
+            holdout_zone_min_radius=holdout_zone_min_radius,
+            holdout_zone_shrink_ms=holdout_zone_shrink_ms,
+            holdout_zone_migrate_ms=holdout_zone_migrate_ms,
+            holdout_zone_migration_offsets=holdout_zone_migration_offsets,
             holdout_relief_count=holdout_relief_count,
             holdout_relief_delay_ms=holdout_relief_delay_ms,
+            holdout_stabilizer_migration_delay_ms=holdout_stabilizer_migration_delay_ms,
             ritual_role_script=ritual_role_script,
             ritual_reinforcement_count=ritual_reinforcement_count,
             ritual_link_mode=ritual_link_mode,
             ritual_payoff_kind=ritual_payoff_kind,
             ritual_payoff_label=ritual_payoff_label,
+            ritual_wrong_strike_spawn_count=ritual_wrong_strike_spawn_count,
             objective_label=objective_label,
             objective_layout_offsets=objective_layout_offsets,
             objective_spawn_offset=objective_spawn_offset,
@@ -507,4 +534,7 @@ class RoomSelector:
             puzzle_camp_pulse_interval_ms=puzzle_camp_pulse_interval_ms,
             puzzle_camp_pulse_grace_ms=puzzle_camp_pulse_grace_ms,
             puzzle_camp_pulse_radius=puzzle_camp_pulse_radius,
+            trap_intensity_scale=trap_intensity_scale,
+            trap_speed_scale=trap_speed_scale,
+            trap_challenge_reward_kind=trap_challenge_reward_kind,
         )

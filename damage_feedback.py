@@ -22,6 +22,18 @@ import pygame
 DAMAGE_NUMBER_LIFETIME_MS = 800
 DAMAGE_NUMBER_COALESCE_WINDOW_MS = 250
 DAMAGE_NUMBER_RISE_PIXELS = 28
+BIOME_REWARD_FLASH_LIFETIME_MS = 600
+BIOME_REWARD_FLASH_MAX_RADIUS = 48
+KEYSTONE_BONUS_BANNER_LIFETIME_MS = 2400
+
+# Biome challenge-route reward activation flashes share the icon colors used
+# by their item-catalog entries and the HUD quick-bar badges, so the spend
+# feedback reads as the same trophy at all three surfaces.
+BIOME_REWARD_FLASH_COLORS = {
+    "stat_shard": (200, 140, 70),
+    "tempo_rune": (160, 210, 255),
+    "mobility_charge": (90, 230, 200),
+}
 
 
 # ── trackers ────────────────────────────────────────────
@@ -102,6 +114,145 @@ _health_bar_tracker = HealthBarTracker()
 _damage_number_tracker = DamageNumberTracker()
 
 
+class _ActiveFlash:
+    __slots__ = ("kind", "world_pos", "spawn_ticks")
+
+    def __init__(self, kind, world_pos, spawn_ticks):
+        self.kind = kind
+        self.world_pos = world_pos
+        self.spawn_ticks = spawn_ticks
+
+
+class BiomeRewardFlashTracker:
+    """Brief expanding-ring flashes anchored to the spending entity.
+
+    Used to give the player a short visual confirmation when a biome-themed
+    challenge-route trophy (stat_shard / tempo_rune / mobility_charge) is
+    spent.  Each flash fades over ``BIOME_REWARD_FLASH_LIFETIME_MS``.
+    """
+
+    def __init__(self):
+        self._flashes = []
+
+    def report(self, kind, world_pos, now_ticks):
+        if kind not in BIOME_REWARD_FLASH_COLORS:
+            return
+        self._flashes.append(_ActiveFlash(kind, tuple(world_pos), now_ticks))
+
+    def active(self, now_ticks):
+        """Yield ``(kind, world_pos, age_fraction)`` triples for live flashes."""
+        kept = []
+        out = []
+        for flash in self._flashes:
+            age = now_ticks - flash.spawn_ticks
+            if age < 0 or age >= BIOME_REWARD_FLASH_LIFETIME_MS:
+                continue
+            kept.append(flash)
+            out.append((flash.kind, flash.world_pos, age / BIOME_REWARD_FLASH_LIFETIME_MS))
+        self._flashes = kept
+        return out
+
+    def reset(self):
+        self._flashes.clear()
+
+
+_biome_reward_flash_tracker = BiomeRewardFlashTracker()
+
+
+class KeystoneBonusBannerTracker:
+    """Single-shot HUD banner used for keystone-related notifications:
+    the per-run starting-coin bonus and the shop craft toast.  Holds at
+    most one active banner at a time — re-reporting replaces it.
+    """
+
+    def __init__(self):
+        self._spawn_ticks = None
+        self._text = ""
+
+    def report(self, text, now_ticks):
+        if not text:
+            return
+        self._text = str(text)
+        self._spawn_ticks = now_ticks
+
+    def active(self, now_ticks):
+        """Return ``(text, age_fraction)`` or ``None`` if no live banner."""
+        if self._spawn_ticks is None:
+            return None
+        age = now_ticks - self._spawn_ticks
+        if age < 0 or age >= KEYSTONE_BONUS_BANNER_LIFETIME_MS:
+            self._spawn_ticks = None
+            self._text = ""
+            return None
+        return (self._text, age / KEYSTONE_BONUS_BANNER_LIFETIME_MS)
+
+    def reset(self):
+        self._spawn_ticks = None
+        self._text = ""
+
+
+_keystone_bonus_banner_tracker = KeystoneBonusBannerTracker()
+
+
+def get_keystone_bonus_banner_tracker():
+    return _keystone_bonus_banner_tracker
+
+
+def report_keystone_starting_bonus(amount, now_ticks=None):
+    """Queue the once-per-run keystone starting-coin bonus banner."""
+    if amount <= 0:
+        return
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    _keystone_bonus_banner_tracker.report(
+        f"+{int(amount)} keystone coins", now_ticks
+    )
+
+
+def report_keystone_craft_toast(owned, max_owned, next_run_bonus, now_ticks=None):
+    """Queue the shop craft confirmation toast.
+
+    Reuses the keystone bonus banner slot — same lifetime, same render —
+    so the player gets immediate feedback after spending trophies.  The
+    `next_run_bonus` is the *new total* coin bonus the player will earn
+    on their next dungeon run (see `PlayerProgress.keystone_starting_coin_bonus`).
+    """
+    if owned <= 0:
+        return
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    text = f"Keystone {int(owned)}/{int(max_owned)} crafted!  Next run: +{int(next_run_bonus)} coins"
+    _keystone_bonus_banner_tracker.report(text, now_ticks)
+
+
+def build_keystone_bonus_banner_view(now_ticks=None):
+    """Project the active banner as ``(text, age_fraction)`` or ``None``."""
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    return _keystone_bonus_banner_tracker.active(now_ticks)
+
+
+def get_biome_reward_flash_tracker():
+    return _biome_reward_flash_tracker
+
+
+def report_biome_reward_flash(entity, kind, now_ticks=None):
+    """Queue a spend-feedback flash anchored to *entity*'s rect center."""
+    rect = getattr(entity, "rect", None)
+    if rect is None:
+        return
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    _biome_reward_flash_tracker.report(kind, rect.center, now_ticks)
+
+
+def build_biome_reward_flash_views(now_ticks=None):
+    """Project active biome-reward flashes as ``(kind, world_pos, age_fraction)``."""
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    return tuple(_biome_reward_flash_tracker.active(now_ticks))
+
+
 def get_health_bar_tracker():
     return _health_bar_tracker
 
@@ -114,6 +265,8 @@ def reset_all():
     """Clear both trackers (call when starting a new dungeon/room test)."""
     _health_bar_tracker.reset()
     _damage_number_tracker.reset()
+    _biome_reward_flash_tracker.reset()
+    _keystone_bonus_banner_tracker.reset()
 
 
 # ── public API ─────────────────────────────────────────

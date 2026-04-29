@@ -26,6 +26,14 @@ _HOLDOUT_STABILIZER_COLOR = (120, 220, 255)
 _HOLDOUT_STABILIZER_USED_COLOR = (110, 130, 160)
 _HOLDOUT_STABILIZER_BURST_COLOR = (190, 255, 255)
 _ALTAR_SHIELDED_COLOR = (120, 180, 255)
+# Role glyph colors for ritual altars. Bright = active/vulnerable role,
+# dim = shielded by another altar (e.g. role_chain or ward_shields_others).
+_ALTAR_ROLE_COLORS = {
+    "summon": ((255, 130, 110), (140, 80, 70)),
+    "pulse":  ((255, 220, 110), (150, 130, 70)),
+    "ward":   ((140, 200, 255), (80, 110, 150)),
+}
+_ALTAR_ROLE_DEFAULT_COLORS = ((230, 230, 230), (130, 130, 130))
 _ESCORT_COLOR = (245, 220, 140)
 _ESCORT_DAMAGED_COLOR = (205, 130, 120)
 _ESCORT_GOAL_COLOR = (255, 245, 170)
@@ -120,22 +128,61 @@ class AltarAnchor(pygame.sprite.Sprite):
         return True
 
     def draw_overlay(self, surface):
-        if not self.pulse_active or self._config.get("destroyed"):
+        if self._config.get("destroyed"):
             return
-        pygame.draw.circle(
-            surface,
-            self._variant["pulse_color"],
-            self.rect.center,
-            self.pulse_radius,
-            2,
+        if self.pulse_active:
+            pygame.draw.circle(
+                surface,
+                self._variant["pulse_color"],
+                self.rect.center,
+                self.pulse_radius,
+                2,
+            )
+        glyph_color = self.role_glyph_color()
+        if glyph_color is not None:
+            self._draw_role_glyph(surface, glyph_color)
+
+    def role_glyph_color(self):
+        """Return the role-glyph color for this altar, or ``None`` when the
+        altar has no ``role`` (e.g. ritual rooms with no role script).
+
+        Bright color when the altar is currently strikable (vulnerable);
+        dim color when shielded by ``invulnerable`` or a closed pulse window.
+        """
+        role = self._config.get("role")
+        if not role:
+            return None
+        bright, dim = _ALTAR_ROLE_COLORS.get(role, _ALTAR_ROLE_DEFAULT_COLORS)
+        if self._config.get("invulnerable"):
+            return dim
+        if self._config.get("window_gated") and not self._config.get(
+            "window_vulnerable", self.pulse_active
+        ):
+            return dim
+        return bright
+
+    def _draw_role_glyph(self, surface, color):
+        """Render a small downward-pointing triangle above the altar."""
+        cx, cy = self.rect.center
+        top_y = self.rect.top - 6
+        glyph_w = 8
+        glyph_h = 6
+        points = (
+            (cx - glyph_w, top_y - glyph_h),
+            (cx + glyph_w, top_y - glyph_h),
+            (cx, top_y),
         )
+        pygame.draw.polygon(surface, color, points)
+        pygame.draw.polygon(surface, (20, 20, 24), points, 1)
 
     def take_damage(self, amount):
         if self._config.get("destroyed"):
             return False
         if self._config.get("invulnerable"):
+            self._config["wrong_struck_pending"] = True
             return False
         if self._config.get("window_gated") and not self._config.get("window_vulnerable", self.pulse_active):
+            self._config["wrong_struck_pending"] = True
             return False
 
         previous_hp = self.current_hp
@@ -691,9 +738,21 @@ class HoldoutZone(pygame.sprite.Sprite):
     def update(self, now_ticks):
         del now_ticks
         self.image = self._build_image()
-        self.rect = self.image.get_rect(center=self.rect.center)
+        config_pos = self._config.get("pos")
+        center = (
+            (int(config_pos[0]), int(config_pos[1]))
+            if config_pos is not None
+            else self.rect.center
+        )
+        self.rect = self.image.get_rect(center=center)
 
     def sync_player_overlap(self, player):
+        config_pos = self._config.get("pos")
+        if config_pos is not None and (
+            self.rect.centerx != int(config_pos[0])
+            or self.rect.centery != int(config_pos[1])
+        ):
+            self.rect = self.image.get_rect(center=(int(config_pos[0]), int(config_pos[1])))
         dx = player.rect.centerx - self.rect.centerx
         dy = player.rect.centery - self.rect.centery
         radius = self._config.get("radius", 96)
@@ -748,6 +807,16 @@ class HoldoutStabilizer(pygame.sprite.Sprite):
         controller["wave_delay_ms"] = controller.get("wave_delay_ms", 0) + self._config.get("relief_delay_ms", 0)
         controller["last_relief_at"] = controller.get("now_ticks")
         controller["last_relief_label"] = self._config.get("label", "Stabilizer")
+
+        zone_config = self._config.get("zone_config")
+        migration_delay_ms = int(self._config.get("migration_delay_ms", 0) or 0)
+        if zone_config is not None and migration_delay_ms > 0 and int(zone_config.get("migrate_ms") or 0) > 0:
+            now_ticks = controller.get("now_ticks") or 0
+            zone_config["migration_baseline_ms"] = (
+                int(zone_config.get("migration_baseline_ms", 0)) + migration_delay_ms
+            )
+            zone_config["migration_anchor_until"] = int(now_ticks) + migration_delay_ms
+
         self._config["used"] = True
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=self.rect.center)

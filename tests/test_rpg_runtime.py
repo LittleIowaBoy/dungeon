@@ -14,6 +14,7 @@ class _DummyChest:
     def __init__(self):
         self.looted = False
         self.reward_tiers = []
+        self.reward_kinds = []
         self.restore_calls = 0
 
     def mark_looted(self):
@@ -26,6 +27,9 @@ class _DummyChest:
     def set_reward_tier(self, reward_tier):
         self.reward_tiers.append(reward_tier)
 
+    def set_reward_kind(self, reward_kind):
+        self.reward_kinds.append(reward_kind)
+
 
 class _DummyEnemy:
     def __init__(self, x, y):
@@ -33,10 +37,11 @@ class _DummyEnemy:
 
 
 class _SpawnedChest:
-    def __init__(self, x, y, looted=False, reward_tier="standard"):
+    def __init__(self, x, y, looted=False, reward_tier="standard", reward_kind="chest_upgrade"):
         self.pos = (x, y)
         self.looted = looted
         self.reward_tier = reward_tier
+        self.reward_kind = reward_kind
 
 
 class GameRuntimeTests(unittest.TestCase):
@@ -81,7 +86,7 @@ class GameRuntimeTests(unittest.TestCase):
         rpg.Game._apply_room_objective_update(game, {"kind": "forfeit_chest"})
         rpg.Game._apply_room_objective_update(
             game,
-            {"kind": "upgrade_reward_chest", "reward_tier": "finale_bonus"},
+            {"kind": "upgrade_reward_chest", "reward_tier": "finale_bonus", "reward_kind": "chest_upgrade"},
         )
 
         self.assertTrue(chest_a.looted)
@@ -322,3 +327,32 @@ class GameRuntimeTests(unittest.TestCase):
 
         self.assertEqual(spawn_x, expected_x)
         self.assertEqual(spawn_y, expected_y)
+
+
+class TrophyTallyHelperTests(unittest.TestCase):
+    def test_returns_empty_when_progress_has_no_trophies(self):
+        progress = SimpleNamespace(inventory={})
+        self.assertEqual(rpg._build_trophy_tally_lines(progress), ())
+
+    def test_returns_empty_when_progress_has_no_inventory_attr(self):
+        # Existing test mocks pass a SimpleNamespace without `inventory`.
+        self.assertEqual(rpg._build_trophy_tally_lines(SimpleNamespace()), ())
+
+    def test_lists_only_nonzero_trophies_in_canonical_order(self):
+        progress = SimpleNamespace(
+            inventory={
+                "tempo_rune": 2,
+                "stat_shard": 0,
+                "mobility_charge": 1,
+                "health_potion_small": 5,  # ignored — not a trophy
+            },
+            meta_keystones=3,
+        )
+        self.assertEqual(
+            rpg._build_trophy_tally_lines(progress),
+            (
+                "Storm Tempo Runes: 2",
+                "Tide Mobility Charges: 1",
+                "Prismatic Keystones: 3",
+            ),
+        )

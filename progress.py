@@ -5,7 +5,7 @@ It is loaded from / saved to the SQLite database via save_system.
 """
 import copy
 
-from dungeon_config import DUNGEONS
+from dungeon_config import DUNGEONS, get_dungeon
 import loadout_rules
 import rune_rules
 from item_catalog import (
@@ -15,6 +15,14 @@ from item_catalog import (
     STARTER_WEAPON_IDS,
     UPGRADEABLE_WEAPON_IDS,
     WEAPON_EQUIPMENT_SLOTS,
+)
+from settings import (
+    BIOME_ATTUNEMENT_MAX_PER_BIOME,
+    BIOME_ATTUNEMENT_THRESHOLD,
+    BIOME_TROPHY_KEYSTONE_ID,
+    KEYSTONE_MAX_OWNED,
+    KEYSTONE_TIER_COIN_BONUSES,
+    TERRAIN_TROPHY_IDS,
 )
 
 
@@ -72,6 +80,23 @@ class PlayerProgress:
         # Persisted across sessions.  Drives grid size during dungeon generation.
         self.difficulty_preference: str = "default"
 
+        # Permanent meta-progression: prismatic keystones earned by crafting
+        # at the shop.  Never wiped on death, abandon, or completion.  Each
+        # keystone grants +KEYSTONE_STARTING_COIN_BONUS coins at the start
+        # of every dungeon run.  Capped at KEYSTONE_MAX_OWNED.
+        self.meta_keystones: int = 0
+
+        # T17 meta-progression: biome attunements.  Per-biome completion
+        # counters (`biome_completions[terrain] -> int`) tick monotonically
+        # on every dungeon completion (never reset on death/abandon).  Every
+        # `BIOME_ATTUNEMENT_THRESHOLD` completions in a single biome grants
+        # one attunement (`biome_attunements[terrain] -> int`), capped at
+        # `BIOME_ATTUNEMENT_MAX_PER_BIOME`.  Each attunement grants +1 of
+        # that biome's trophy at the start of every run in that biome —
+        # parallel to the keystone coin bonus pattern.
+        self.biome_completions: dict[str, int] = {}
+        self.biome_attunements: dict[str, int] = {}
+
         # create an entry for every defined dungeon
         for d in DUNGEONS:
             self.dungeons[d["id"]] = DungeonProgress(d["id"])
@@ -125,7 +150,91 @@ class PlayerProgress:
         """
         self.equipped_runes = rune_rules.empty_loadout()
         self.start_dungeon(dungeon_id)
-        return self.snapshot_run_state()
+        snapshot = self.snapshot_run_state()
+        # Apply the meta-keystone starting-coin bonus AFTER snapshotting so
+        # the snapshot reflects the pre-bonus baseline.  Abandoning therefore
+        # reverts the bonus too, and re-entering grants it again — keystones
+        # apply once per `begin_dungeon_run`, never compounding.
+        bonus = self.keystone_starting_coin_bonus()
+        if bonus:
+            self.coins += bonus
+        # T17: biome attunements grant +1 of the matching biome's trophy at
+        # run start, per attunement of that biome.  Same post-snapshot
+        # pattern as the keystone bonus — abandoning reverts the grant.
+        terrain = self._terrain_for_dungeon(dungeon_id)
+        attunements = self.biome_attunements.get(terrain, 0)
+        if terrain is not None and attunements > 0:
+            trophy_id = TERRAIN_TROPHY_IDS.get(terrain)
+            if trophy_id is not None:
+                self.inventory[trophy_id] = (
+                    self.inventory.get(trophy_id, 0) + attunements
+                )
+        return snapshot
+
+    @staticmethod
+    def _terrain_for_dungeon(dungeon_id):
+        cfg = get_dungeon(dungeon_id)
+        if cfg is None:
+            return None
+        return cfg.get("terrain_type")
+
+    def biome_attunement_starting_trophies(self, dungeon_id) -> int:
+        """Number of bonus trophies the next run in *dungeon_id* will grant."""
+        terrain = self._terrain_for_dungeon(dungeon_id)
+        if terrain is None:
+            return 0
+        return self.biome_attunements.get(terrain, 0)
+
+    def biome_attunement_progress(self, terrain) -> tuple[int, int]:
+        """Return ``(completions_toward_next, threshold)`` for a biome.
+
+        ``completions_toward_next`` ranges from 0 to ``threshold - 1`` and
+        represents how many additional completions in that biome are needed
+        before the next attunement is granted.  Returns ``(0, threshold)``
+        when the biome is at the per-biome attunement cap (no more
+        attunements will ever be earned for that biome).
+        """
+        attunements = self.biome_attunements.get(terrain, 0)
+        if attunements >= BIOME_ATTUNEMENT_MAX_PER_BIOME:
+            return (0, BIOME_ATTUNEMENT_THRESHOLD)
+        completions = self.biome_completions.get(terrain, 0)
+        return (completions % BIOME_ATTUNEMENT_THRESHOLD, BIOME_ATTUNEMENT_THRESHOLD)
+
+    def record_biome_completion(self, terrain) -> int:
+        """Increment the completion counter for *terrain* and award an
+        attunement when the threshold is hit.  Returns the number of
+        attunements granted by this call (0 or 1).
+        """
+        if terrain is None or terrain not in TERRAIN_TROPHY_IDS:
+            return 0
+        self.biome_completions[terrain] = (
+            self.biome_completions.get(terrain, 0) + 1
+        )
+        # Award one attunement when the running count crosses a threshold
+        # multiple AND the biome is below the per-biome cap.
+        if self.biome_completions[terrain] % BIOME_ATTUNEMENT_THRESHOLD != 0:
+            return 0
+        current = self.biome_attunements.get(terrain, 0)
+        if current >= BIOME_ATTUNEMENT_MAX_PER_BIOME:
+            return 0
+        self.biome_attunements[terrain] = current + 1
+        return 1
+
+    def keystone_starting_coin_bonus(self) -> int:
+        """Per-run starting-coin bonus granted by owned keystones.
+
+        Tiered: each owned keystone adds the next entry from
+        `KEYSTONE_TIER_COIN_BONUSES`.  The Nth keystone (1-indexed) is worth
+        the Nth tier value, never more than `KEYSTONE_MAX_OWNED` entries.
+        """
+        owned = min(self.meta_keystones, len(KEYSTONE_TIER_COIN_BONUSES))
+        return sum(KEYSTONE_TIER_COIN_BONUSES[:owned])
+
+    def next_keystone_tier_bonus(self) -> int:
+        """Coin bonus the *next* crafted keystone would add (0 if at cap)."""
+        if self.meta_keystones >= len(KEYSTONE_TIER_COIN_BONUSES):
+            return 0
+        return KEYSTONE_TIER_COIN_BONUSES[self.meta_keystones]
 
     def sync_dungeon_run(self, player):
         """Persist the current dungeon-run resources from the live player."""
@@ -137,6 +246,9 @@ class PlayerProgress:
         self.get_dungeon(dungeon_id).complete()
         # Runes are per-dungeon and wipe on completion.
         self.equipped_runes = rune_rules.empty_loadout()
+        # T17: tick the per-biome completion counter so attunements can
+        # accrue across repeated runs in the same biome.
+        self.record_biome_completion(self._terrain_for_dungeon(dungeon_id))
         return True, None
 
     def abandon_dungeon_run(self, snapshot):
@@ -157,6 +269,15 @@ class PlayerProgress:
                 self.equipped_slots["chest"] = "armor"
             else:
                 self.add_to_equipment_storage("armor")
+
+        # T11 migration: T10 stored crafted keystones in `inventory` (per-run,
+        # wiped on death/abandon).  Move any leaked keystones into the
+        # permanent `meta_keystones` counter, capped at KEYSTONE_MAX_OWNED.
+        legacy_keystones = self.inventory.pop(BIOME_TROPHY_KEYSTONE_ID, 0)
+        if legacy_keystones:
+            self.meta_keystones = min(
+                KEYSTONE_MAX_OWNED, self.meta_keystones + legacy_keystones
+            )
 
         self.ensure_loadout_state()
 

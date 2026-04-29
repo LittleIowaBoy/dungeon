@@ -5,7 +5,14 @@ Purchase limits are enforced via max_owned per item.
 """
 from dataclasses import dataclass
 from item_catalog import ITEM_DATABASE
-from settings import ARMOR_HP, COMPASS_USES
+from settings import (
+    ARMOR_HP,
+    COMPASS_USES,
+    BIOME_TROPHY_IDS,
+    BIOME_TROPHY_EXCHANGE_RATIO,
+    BIOME_TROPHY_KEYSTONE_ID,
+    KEYSTONE_MAX_OWNED,
+)
 
 
 @dataclass
@@ -145,3 +152,83 @@ class Shop:
             if item.id == item_id:
                 return item
         return None
+
+    # ── biome trophy exchange ───────────────────────────
+    # Biome challenge-route trophies (`stat_shard`, `tempo_rune`,
+    # `mobility_charge`) cannot be purchased like regular shop items
+    # (`can_purchase=False` in `item_catalog.py`).  The post-run shop instead
+    # offers a one-way exchange: spend `BIOME_TROPHY_EXCHANGE_RATIO` of any
+    # surplus trophy to receive 1 of a different biome trophy.
+    def can_exchange_trophy(self, from_id, to_id, player_progress) -> bool:
+        if from_id == to_id:
+            return False
+        if from_id not in BIOME_TROPHY_IDS or to_id not in BIOME_TROPHY_IDS:
+            return False
+        owned_from = player_progress.inventory.get(from_id, 0)
+        if owned_from < BIOME_TROPHY_EXCHANGE_RATIO:
+            return False
+        max_owned_to = ITEM_DATABASE[to_id].get("max_owned", 0)
+        if max_owned_to and player_progress.inventory.get(to_id, 0) >= max_owned_to:
+            return False
+        return True
+
+    def exchange_trophy(self, from_id, to_id, player_progress) -> bool:
+        """Spend `BIOME_TROPHY_EXCHANGE_RATIO` of `from_id` for 1 of `to_id`.
+
+        Returns True on success.  Both ids must be biome trophies and must
+        differ.  The destination trophy's `max_owned` cap is respected.
+        """
+        if not self.can_exchange_trophy(from_id, to_id, player_progress):
+            return False
+        inventory = player_progress.inventory
+        inventory[from_id] -= BIOME_TROPHY_EXCHANGE_RATIO
+        if inventory[from_id] <= 0:
+            del inventory[from_id]
+        inventory[to_id] = inventory.get(to_id, 0) + 1
+        return True
+
+    def best_trophy_source_for(self, to_id, player_progress) -> str | None:
+        """Pick the biome trophy with the largest exchangeable surplus.
+
+        Returns the id of a biome trophy other than `to_id` that the player
+        owns at least `BIOME_TROPHY_EXCHANGE_RATIO` of, preferring the one
+        with the largest count (ties broken by the order in
+        `BIOME_TROPHY_IDS`).  Returns ``None`` if no source is exchangeable.
+        """
+        best_id = None
+        best_count = 0
+        for trophy_id in BIOME_TROPHY_IDS:
+            if trophy_id == to_id:
+                continue
+            count = player_progress.inventory.get(trophy_id, 0)
+            if count >= BIOME_TROPHY_EXCHANGE_RATIO and count > best_count:
+                best_id = trophy_id
+                best_count = count
+        return best_id
+
+    # ── prismatic keystone craft ────────────────────────
+    # Long-arc collectible: requires 1 of each biome trophy to craft a single
+    # `prismatic_keystone`.  Crafted keystones are stored on the persistent
+    # `progress.meta_keystones` counter (NOT the per-run inventory) so they
+    # survive death/abandon and grant a starting-coin bonus on every run.
+    # Capped at `KEYSTONE_MAX_OWNED`.  Pure rules — UI in
+    # `menu.py:ShopScreen` triggers via K_4.
+    def can_craft_keystone(self, player_progress) -> bool:
+        for trophy_id in BIOME_TROPHY_IDS:
+            if player_progress.inventory.get(trophy_id, 0) < 1:
+                return False
+        if player_progress.meta_keystones >= KEYSTONE_MAX_OWNED:
+            return False
+        return True
+
+    def craft_keystone(self, player_progress) -> bool:
+        """Spend 1 of each biome trophy for 1 permanent meta-keystone."""
+        if not self.can_craft_keystone(player_progress):
+            return False
+        inventory = player_progress.inventory
+        for trophy_id in BIOME_TROPHY_IDS:
+            inventory[trophy_id] -= 1
+            if inventory[trophy_id] <= 0:
+                del inventory[trophy_id]
+        player_progress.meta_keystones += 1
+        return True

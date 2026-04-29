@@ -4,12 +4,14 @@ from settings import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     COLOR_WHITE, COLOR_BLACK, COLOR_GRAY, COLOR_DARK_GRAY, COLOR_COIN,
     COLOR_PORTAL, COLOR_HEALTH_BAR, COLOR_MUD, COLOR_ICE, COLOR_WATER,
+    KEYSTONE_MAX_OWNED,
 )
 from game_states import GameState
 from dungeon_config import DUNGEONS
 from item_catalog import ITEM_DATABASE
 from rune_catalog import RUNE_DATABASE, RUNE_SLOT_CAPACITY
 from shop import Shop
+import damage_feedback
 
 
 # ── Terrain-to-colour mapping for dungeon cards ────────
@@ -34,17 +36,20 @@ def _draw_options(surface, font, options, selected, x, y, spacing=40):
 #  Main Menu
 # ═════════════════════════════════════════════════════════
 class MainMenuScreen:
-    OPTIONS = ["Play", "Room Tests", "Character", "Shop", "Quit"]
+    OPTIONS = ["Play", "Room Tests", "Character", "Shop", "Records", "Quit"]
 
-    def __init__(self):
+    def __init__(self, progress=None):
         self.selected = 0
+        self.progress = progress
         self._title_font = None
         self._font = None
+        self._small_font = None
 
     def _ensure_fonts(self):
         if self._font is None:
             self._title_font = pygame.font.SysFont("consolas", 52)
             self._font = pygame.font.SysFont("consolas", 24)
+            self._small_font = pygame.font.SysFont("consolas", 18)
 
     def handle_events(self, events):
         """Returns the GameState to transition to, or None to stay."""
@@ -65,6 +70,8 @@ class MainMenuScreen:
                     return GameState.CHARACTER_CUSTOMIZE
                 elif choice == "Shop":
                     return GameState.SHOP
+                elif choice == "Records":
+                    return GameState.RECORDS
                 elif choice == "Quit":
                     return "QUIT"
         return None
@@ -78,6 +85,14 @@ class MainMenuScreen:
             surface, self._font, view.options, view.selected_index,
             SCREEN_WIDTH // 2 - 80, 240,
         )
+        if view.keystone_status_text:
+            footer = self._small_font.render(
+                view.keystone_status_text, True, COLOR_COIN
+            )
+            surface.blit(
+                footer,
+                footer.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 28)),
+            )
 
 
 # ═════════════════════════════════════════════════════════
@@ -284,6 +299,16 @@ class DungeonSelectScreen:
         )
         surface.blit(diff_txt, diff_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y)))
 
+        # T12: keystone meta-progression status (only when player owns 1+).
+        if view.keystone_status_text:
+            keystone_txt = self._small_font.render(
+                view.keystone_status_text, True, (220, 180, 255)
+            )
+            surface.blit(
+                keystone_txt,
+                keystone_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y + 18)),
+            )
+
         card_w, card_h = 220, 120
         start_x = (SCREEN_WIDTH - len(view.cards) * (card_w + 20) + 20) // 2
         y = 110
@@ -305,6 +330,22 @@ class DungeonSelectScreen:
             terrain = self._small_font.render(card.terrain_label, True, COLOR_WHITE)
             surface.blit(terrain, terrain.get_rect(center=(x + card_w // 2, y + 88)))
 
+            if card.trophy_label:
+                trophy = self._small_font.render(
+                    card.trophy_label, True, COLOR_COIN
+                )
+                surface.blit(
+                    trophy, trophy.get_rect(center=(x + card_w // 2, y + 112))
+                )
+
+            if card.attunement_label:
+                attune = self._small_font.render(
+                    card.attunement_label, True, (220, 180, 255)
+                )
+                surface.blit(
+                    attune, attune.get_rect(center=(x + card_w // 2, y + 134))
+                )
+
         # "Back" option
         back_y = y + card_h + 40
         back_selected = view.selected_index == len(view.cards)
@@ -318,6 +359,114 @@ class DungeonSelectScreen:
             True, COLOR_GRAY,
         )
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
+
+
+# ═════════════════════════════════════════════════════════
+#  Records (T18) — read-only meta-progression dossier
+# ═════════════════════════════════════════════════════════
+class RecordsScreen:
+    """Read-only main-menu screen summarising all meta-progression state.
+
+    Reads from `progress` only; no inputs other than ESC/Enter to return.
+    Layout: title row + per-biome card rows + keystone summary + totals.
+    """
+
+    def __init__(self, progress):
+        self.progress = progress
+        self._title_font = None
+        self._row_title_font = None
+        self._font = None
+        self._small_font = None
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 40)
+            self._row_title_font = pygame.font.SysFont("consolas", 22, bold=True)
+            self._font = pygame.font.SysFont("consolas", 18)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def handle_events(self, events):
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_SPACE):
+                return GameState.MAIN_MENU
+        return None
+
+    def draw(self, surface, view):
+        self._ensure_fonts()
+        surface.fill(COLOR_BLACK)
+
+        title = self._title_font.render(view.title, True, COLOR_PORTAL)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 50)))
+
+        # Per-biome rows: stacked vertically, each ~90px tall.
+        y = 110
+        row_height = 92
+        margin_x = 80
+        for row in view.biome_rows:
+            # Row title (dungeon name) and terrain label.
+            name = self._row_title_font.render(
+                row.dungeon_name, True, COLOR_WHITE
+            )
+            surface.blit(name, (margin_x, y))
+            terrain = self._small_font.render(
+                row.terrain_label, True, COLOR_GRAY
+            )
+            surface.blit(
+                terrain, (margin_x + name.get_width() + 16, y + 4)
+            )
+
+            line_y = y + 28
+            comp = self._font.render(row.completion_label, True, COLOR_WHITE)
+            surface.blit(comp, (margin_x, line_y))
+            attune = self._font.render(
+                row.attunement_label, True, (220, 180, 255)
+            )
+            surface.blit(
+                attune, (margin_x + 280, line_y)
+            )
+
+            line_y2 = line_y + 22
+            trophy = self._font.render(row.trophy_label, True, COLOR_COIN)
+            surface.blit(trophy, (margin_x, line_y2))
+            if row.next_attunement_label:
+                nxt = self._font.render(
+                    row.next_attunement_label, True, (180, 150, 220)
+                )
+                surface.blit(nxt, (margin_x + 280, line_y2))
+
+            if row.starting_grant_label:
+                grant = self._small_font.render(
+                    row.starting_grant_label, True, COLOR_COIN
+                )
+                surface.blit(grant, (margin_x + 560, line_y))
+
+            y += row_height
+
+        # Keystone summary (centered, near the bottom).
+        keystone = self._font.render(
+            view.keystone_summary, True, COLOR_COIN
+        )
+        surface.blit(
+            keystone, keystone.get_rect(center=(SCREEN_WIDTH // 2, y + 10))
+        )
+
+        # Totals line.
+        totals = self._small_font.render(
+            view.totals_summary, True, COLOR_GRAY
+        )
+        surface.blit(
+            totals, totals.get_rect(center=(SCREEN_WIDTH // 2, y + 40))
+        )
+
+        # Footer hint.
+        hint = self._small_font.render(
+            view.footer_hint, True, COLOR_GRAY
+        )
+        surface.blit(
+            hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24))
+        )
 
 
 # ═════════════════════════════════════════════════════════
@@ -495,6 +644,16 @@ class CharacterCustomizeScreen:
 # ═════════════════════════════════════════════════════════
 #  Shop Screen
 # ═════════════════════════════════════════════════════════
+# Biome-trophy exchange key map: pressing one of these keys in the shop
+# spends `BIOME_TROPHY_EXCHANGE_RATIO` of the player's largest surplus
+# trophy and grants 1 of the keyed target trophy.
+_TROPHY_EXCHANGE_KEYS = {
+    pygame.K_1: "stat_shard",
+    pygame.K_2: "tempo_rune",
+    pygame.K_3: "mobility_charge",
+}
+
+
 class ShopScreen:
     def __init__(self, player_progress, shop=None):
         self.progress = player_progress
@@ -548,6 +707,30 @@ class ShopScreen:
                 continue
             if event.key == pygame.K_ESCAPE:
                 return GameState.MAIN_MENU
+            # Biome trophy exchange (1/2/3 → stat_shard / tempo_rune /
+            # mobility_charge respectively).  Auto-picks the surplus trophy
+            # with the largest exchangeable stack as the source.
+            if event.key in _TROPHY_EXCHANGE_KEYS:
+                target_id = _TROPHY_EXCHANGE_KEYS[event.key]
+                source_id = self.shop.best_trophy_source_for(target_id, self.progress)
+                if source_id is not None:
+                    self.shop.exchange_trophy(source_id, target_id, self.progress)
+                continue
+            # Prismatic keystone craft (K_4): consumes 1 of each biome trophy.
+            if event.key == pygame.K_4:
+                if self.shop.can_craft_keystone(self.progress):
+                    if self.shop.craft_keystone(self.progress):
+                        # Toast surfaces on the in-dungeon HUD next run, but
+                        # also queue it now so a player who immediately leaves
+                        # the shop sees the confirmation if anything renders
+                        # the keystone banner.  The next run-start banner
+                        # will replace it via the shared single-slot tracker.
+                        damage_feedback.report_keystone_craft_toast(
+                            self.progress.meta_keystones,
+                            KEYSTONE_MAX_OWNED,
+                            self.progress.keystone_starting_coin_bonus(),
+                        )
+                continue
             if not items:
                 continue
             if event.key in (pygame.K_UP, pygame.K_w):
@@ -598,6 +781,16 @@ class ShopScreen:
         hint = self._font.render(view.footer_hint, True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2,
                                                   SCREEN_HEIGHT - 40)))
+
+        # Biome trophy summary + exchange hint (only shown when the player
+        # actually owns trophies; build_shop_view returns empty strings
+        # otherwise so this stays quiet for new runs).
+        if view.trophy_summary_text:
+            summary = self._small_font.render(view.trophy_summary_text, True, COLOR_WHITE)
+            surface.blit(summary, summary.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 86)))
+        if view.trophy_exchange_hint:
+            ex_hint = self._small_font.render(view.trophy_exchange_hint, True, COLOR_GRAY)
+            surface.blit(ex_hint, ex_hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 64)))
 
 
 # ═════════════════════════════════════════════════════════

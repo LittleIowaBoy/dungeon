@@ -36,13 +36,19 @@ class RoomTemplate:
     objective_entity_count: int = 0
     scripted_wave_sizes: str = ""
     holdout_zone_radius: int = 0
+    holdout_zone_min_radius: int = 0
+    holdout_zone_shrink_ms: int = 0
+    holdout_zone_migrate_ms: int = 0
+    holdout_zone_migration_offsets: str = ""
     holdout_relief_count: int = 0
     holdout_relief_delay_ms: int = 0
+    holdout_stabilizer_migration_delay_ms: int = 0
     ritual_role_script: str = ""
     ritual_reinforcement_count: int = 0
     ritual_link_mode: str = ""
     ritual_payoff_kind: str = ""
     ritual_payoff_label: str = ""
+    ritual_wrong_strike_spawn_count: int = 0
     objective_label: str = ""
     objective_layout_offsets: str = ""
     objective_spawn_offset: str = ""
@@ -63,6 +69,9 @@ class RoomTemplate:
     puzzle_camp_pulse_interval_ms: int = 0
     puzzle_camp_pulse_grace_ms: int = 0
     puzzle_camp_pulse_radius: int = 0
+    trap_intensity_scale: float = 1.0
+    trap_speed_scale: float = 1.0
+    trap_challenge_reward_kind: str = "chest_upgrade"
     notes: str = ""
 
     @classmethod
@@ -99,13 +108,19 @@ class RoomTemplate:
             objective_entity_count=row.get("objective_entity_count", 0),
             scripted_wave_sizes=row.get("scripted_wave_sizes", ""),
             holdout_zone_radius=row.get("holdout_zone_radius", 0),
+            holdout_zone_min_radius=row.get("holdout_zone_min_radius", 0),
+            holdout_zone_shrink_ms=row.get("holdout_zone_shrink_ms", 0),
+            holdout_zone_migrate_ms=row.get("holdout_zone_migrate_ms", 0),
+            holdout_zone_migration_offsets=row.get("holdout_zone_migration_offsets", ""),
             holdout_relief_count=row.get("holdout_relief_count", 0),
             holdout_relief_delay_ms=row.get("holdout_relief_delay_ms", 0),
+            holdout_stabilizer_migration_delay_ms=row.get("holdout_stabilizer_migration_delay_ms", 0),
             ritual_role_script=row.get("ritual_role_script", ""),
             ritual_reinforcement_count=row.get("ritual_reinforcement_count", 0),
             ritual_link_mode=row.get("ritual_link_mode", ""),
             ritual_payoff_kind=row.get("ritual_payoff_kind", ""),
             ritual_payoff_label=row.get("ritual_payoff_label", ""),
+            ritual_wrong_strike_spawn_count=row.get("ritual_wrong_strike_spawn_count", 0),
             objective_label=row.get("objective_label", ""),
             objective_layout_offsets=row.get("objective_layout_offsets", ""),
             objective_spawn_offset=row.get("objective_spawn_offset", ""),
@@ -126,6 +141,9 @@ class RoomTemplate:
             puzzle_camp_pulse_interval_ms=row.get("puzzle_camp_pulse_interval_ms", 0),
             puzzle_camp_pulse_grace_ms=row.get("puzzle_camp_pulse_grace_ms", 0),
             puzzle_camp_pulse_radius=row.get("puzzle_camp_pulse_radius", 0),
+            trap_intensity_scale=row.get("trap_intensity_scale", 1.0),
+            trap_speed_scale=row.get("trap_speed_scale", 1.0),
+            trap_challenge_reward_kind=row.get("trap_challenge_reward_kind", "chest_upgrade"),
             notes=row["notes"],
         )
 
@@ -158,13 +176,19 @@ class RoomPlan:
     objective_entity_count: int = 0
     scripted_wave_sizes: tuple[int, ...] = ()
     holdout_zone_radius: int = 0
+    holdout_zone_min_radius: int = 0
+    holdout_zone_shrink_ms: int = 0
+    holdout_zone_migrate_ms: int = 0
+    holdout_zone_migration_offsets: tuple[tuple[int, int], ...] = ()
     holdout_relief_count: int = 0
     holdout_relief_delay_ms: int = 0
+    holdout_stabilizer_migration_delay_ms: int = 0
     ritual_role_script: tuple[str, ...] = ()
     ritual_reinforcement_count: int = 0
     ritual_link_mode: str = ""
     ritual_payoff_kind: str = ""
     ritual_payoff_label: str = ""
+    ritual_wrong_strike_spawn_count: int = 0
     objective_label: str = ""
     objective_layout_offsets: tuple[tuple[int, int], ...] = ()
     objective_spawn_offset: tuple[int, int] | None = None
@@ -185,6 +209,9 @@ class RoomPlan:
     puzzle_camp_pulse_interval_ms: int = 0
     puzzle_camp_pulse_grace_ms: int = 0
     puzzle_camp_pulse_radius: int = 0
+    trap_intensity_scale: float = 1.0
+    trap_speed_scale: float = 1.0
+    trap_challenge_reward_kind: str = "chest_upgrade"
 
     @property
     def room_id(self):

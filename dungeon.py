@@ -208,7 +208,7 @@ class Dungeon:
     def exit_pos(self):
         return self._exit_pos
 
-    def minimap_snapshot(self):
+    def minimap_snapshot(self, now_ticks=None):
         """Return minimap-ready room state for HUD projection."""
         rooms = []
         for pos in sorted(self.visited):
@@ -223,14 +223,18 @@ class Dungeon:
                 kind = "visited"
 
             objective_marker = None
+            objective_status = None
             if pos == self.current_pos and hasattr(room, "minimap_objective_marker"):
                 objective_marker = room.minimap_objective_marker()
+                if objective_marker is not None and hasattr(room, "minimap_objective_status"):
+                    objective_status = room.minimap_objective_status(now_ticks)
             rooms.append(
                 {
                     "pos": pos,
                     "kind": kind,
                     "path_kind": self._topology_plan.rooms[pos].path_kind,
                     "objective_marker": objective_marker,
+                    "objective_status": objective_status,
                     "door_kinds": {
                         direction: self.door_kind(pos, direction)
                         for direction in _ALL_DIRS
@@ -429,7 +433,8 @@ class Dungeon:
         if room.chest_pos:
             chest = Chest(room.chest_pos[0], room.chest_pos[1],
                           looted=room.chest_looted,
-                          reward_tier=room.chest_reward_tier() if hasattr(room, "chest_reward_tier") else (room.room_plan.reward_tier if room.room_plan else "standard"))
+                          reward_tier=room.chest_reward_tier() if hasattr(room, "chest_reward_tier") else (room.room_plan.reward_tier if room.room_plan else "standard"),
+                          reward_kind=room.chest_reward_kind() if hasattr(room, "chest_reward_kind") else "chest_upgrade")
             self.chest_group.add(chest)
 
         for config in room.objective_entity_configs:

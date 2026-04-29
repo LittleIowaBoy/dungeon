@@ -72,6 +72,17 @@ class ItemCatalogSplitTests(unittest.TestCase):
         self.assertEqual(drop.max_owned, ITEM_DATABASE["health_potion_small"]["max_owned"])
         self.assertEqual(drop.color, ITEM_DATABASE["health_potion_small"]["icon_color"])
 
+    def test_biome_reward_items_are_loot_only_and_excluded_from_random_chest_table(self):
+        for item_id in ("stat_shard", "tempo_rune", "mobility_charge"):
+            data = ITEM_DATABASE[item_id]
+            self.assertEqual(data["category"], "biome_reward")
+            self.assertFalse(data["can_purchase"], f"{item_id} should not be purchasable")
+            self.assertFalse(data["can_loot"], f"{item_id} should not drop from enemies")
+            self.assertEqual(data["chest_drop_weight"], 0, f"{item_id} should not appear in random chest rolls")
+            self.assertEqual(data["drop_weight"], 0)
+            self.assertNotIn(item_id, CHEST_LOOT_IDS)
+            self.assertGreaterEqual(data["max_owned"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

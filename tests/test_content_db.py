@@ -47,7 +47,7 @@ class RoomContentBootstrapTests(unittest.TestCase):
                 f"SELECT room_id, enabled, implementation_status, objective_variant, "
                 f"path_stage_min, path_stage_max, terminal_preference, repeat_cooldown, reward_affinity, "
                 f"objective_rule, scripted_wave_sizes, holdout_zone_radius, objective_entity_count, "
-                f"holdout_relief_count, holdout_relief_delay_ms, ritual_role_script, ritual_reinforcement_count, ritual_link_mode, ritual_payoff_kind, ritual_payoff_label, objective_label, objective_layout_offsets, "
+                f"holdout_relief_count, holdout_relief_delay_ms, ritual_role_script, ritual_reinforcement_count, ritual_link_mode, ritual_payoff_kind, ritual_payoff_label, ritual_wrong_strike_spawn_count, objective_label, objective_layout_offsets, "
                 f"objective_spawn_offset, objective_patrol_offset, objective_radius, objective_trigger_padding, objective_max_hp, "
                 f"objective_move_speed, objective_guide_radius, objective_exit_radius, objective_damage_cooldown_ms, "
                 f"puzzle_reinforcement_count, puzzle_stall_duration_ms "
@@ -77,6 +77,7 @@ class RoomContentBootstrapTests(unittest.TestCase):
                 ritual_link_mode,
                 ritual_payoff_kind,
                 ritual_payoff_label,
+                ritual_wrong_strike_spawn_count,
                 objective_label,
                 objective_layout_offsets,
                 objective_spawn_offset,
@@ -112,6 +113,7 @@ class RoomContentBootstrapTests(unittest.TestCase):
                 ritual_link_mode,
                 ritual_payoff_kind,
                 ritual_payoff_label,
+                ritual_wrong_strike_spawn_count,
                 objective_label,
                 objective_layout_offsets,
                 objective_spawn_offset,
@@ -151,16 +153,16 @@ class RoomContentBootstrapTests(unittest.TestCase):
             "earth_boulder_run",
             "earth_shrine_circle",
         })
-        self.assertEqual(seeded_templates["standard_combat"], (1, "implemented", "", 0, 1, "avoid", 0, "any", "immediate", "", 0, 0, 0, 0, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
-        self.assertEqual(seeded_templates["survival_holdout"], (1, "prototype", "", 4, 4, "prefer", 2, "finale", "holdout_timer", "1,2,3", 96, 0, 1, 1500, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
-        self.assertEqual(seeded_templates["ritual_disruption"], (1, "prototype", "altar_anchor", 2, 4, "any", 1, "any", "destroy_altars", "", 0, 3, 0, 0, "summon,pulse,ward", 2, "ward_shields_others", "reveal_reliquary", "Reliquary", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
-        self.assertEqual(seeded_templates["trap_gauntlet"], (1, "prototype", "crusher_corridors", 0, 4, "any", 1, "branch", "immediate", "", 0, 3, 0, 0, "", 0, "", "", "", "Lane Switch", "", "", "", 0, 18, 0, 0.0, 0, 0, 0, 0, 0))
-        self.assertEqual(seeded_templates["timed_extraction"], (1, "prototype", "relic_cache", 2, 4, "any", 1, "any", "loot_then_timer", "1,2", 0, 0, 0, 0, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
-        self.assertEqual(seeded_templates["escort_protection"], (1, "prototype", "", 2, 4, "any", 1, "finale", "escort_to_exit", "", 0, 0, 0, 0, "", 0, "", "", "", "Escort", "", "-6,0", "", 0, 0, 26, 1.2, 92, 24, 500, 0, 0))
-        self.assertEqual(seeded_templates["escort_bomb_carrier"], (1, "prototype", "", 3, 4, "any", 1, "finale", "escort_bomb_to_exit", "", 0, 0, 0, 0, "", 0, "", "", "", "Carrier", "", "-6,0", "", 0, 0, 30, 1.0, 92, 24, 500, 0, 0))
-        self.assertEqual(seeded_templates["puzzle_gated_doors"], (1, "prototype", "ordered_plates", 1, 3, "avoid", 1, "any", "charge_plates", "", 0, 3, 0, 0, "", 0, "", "", "", "Seal", "-5,-3;5,-3;0,4", "", "", 0, 10, 0, 0.0, 0, 0, 0, 1, 2500))
-        self.assertEqual(seeded_templates["resource_race"], (1, "prototype", "relic_cache", 2, 4, "any", 1, "any", "claim_relic_before_lockdown", "1,2", 0, 0, 0, 0, "", 0, "", "", "", "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
-        self.assertEqual(seeded_templates["stealth_passage"], (1, "prototype", "", 0, 2, "avoid", 1, "branch", "avoid_alarm_zones", "", 0, 3, 0, 0, "", 0, "", "", "", "Alarm", "-4,-2;4,-2;0,4", "", "0,2", 34, 0, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["standard_combat"], (1, "implemented", "", 0, 1, "avoid", 0, "any", "immediate", "", 0, 0, 0, 0, "", 0, "", "", "", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["survival_holdout"], (1, "prototype", "", 4, 4, "prefer", 2, "finale", "holdout_timer", "1,2,3", 96, 0, 1, 1500, "", 0, "", "", "", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["ritual_disruption"], (1, "prototype", "altar_anchor", 2, 4, "any", 1, "any", "destroy_altars", "", 0, 3, 0, 0, "summon,pulse,ward", 2, "ward_shields_others", "reveal_reliquary", "Reliquary", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["trap_gauntlet"], (1, "prototype", "crusher_corridors", 0, 4, "any", 1, "branch", "immediate", "", 0, 3, 0, 0, "", 0, "", "", "", 0, "Lane Switch", "", "", "", 0, 18, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["timed_extraction"], (1, "prototype", "relic_cache", 2, 4, "any", 1, "any", "loot_then_timer", "1,2", 0, 0, 0, 0, "", 0, "", "", "", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["escort_protection"], (1, "prototype", "", 2, 4, "any", 1, "finale", "escort_to_exit", "", 0, 0, 0, 0, "", 0, "", "", "", 0, "Escort", "", "-6,0", "", 0, 0, 26, 1.2, 92, 24, 500, 0, 0))
+        self.assertEqual(seeded_templates["escort_bomb_carrier"], (1, "prototype", "", 3, 4, "any", 1, "finale", "escort_bomb_to_exit", "", 0, 0, 0, 0, "", 0, "", "", "", 0, "Carrier", "", "-6,0", "", 0, 0, 30, 1.0, 92, 24, 500, 0, 0))
+        self.assertEqual(seeded_templates["puzzle_gated_doors"], (1, "prototype", "ordered_plates", 1, 3, "avoid", 1, "any", "charge_plates", "", 0, 3, 0, 0, "", 0, "", "", "", 0, "Seal", "-5,-3;5,-3;0,4", "", "", 0, 10, 0, 0.0, 0, 0, 0, 1, 2500))
+        self.assertEqual(seeded_templates["resource_race"], (1, "prototype", "relic_cache", 2, 4, "any", 1, "any", "claim_relic_before_lockdown", "1,2", 0, 0, 0, 0, "", 0, "", "", "", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
+        self.assertEqual(seeded_templates["stealth_passage"], (1, "prototype", "", 0, 2, "avoid", 1, "branch", "avoid_alarm_zones", "", 0, 3, 0, 0, "", 0, "", "", "", 0, "Alarm", "-4,-2;4,-2;0,4", "", "0,2", 34, 0, 0, 0.0, 0, 0, 0, 0, 0))
 
     def test_bootstrap_is_idempotent_and_load_room_catalog_merges_base_with_placeholder(self):
         content_db.ensure_room_content_db()
@@ -192,6 +194,8 @@ class RoomContentBootstrapTests(unittest.TestCase):
         puzzle = next(template for template in catalog if template["room_id"] == "puzzle_gated_doors")
         holdout = next(template for template in catalog if template["room_id"] == "survival_holdout")
         self.assertEqual(ritual["objective_variant"], "spore_totem")
+        self.assertEqual(ritual["ritual_link_mode"], "role_chain")
+        self.assertIn("script order", ritual["notes"])
         self.assertEqual(relic["objective_variant"], "mire_cache")
         self.assertEqual(relic["scripted_wave_sizes"], "1,2,2")
         self.assertEqual(race["display_name"], "Heartstone Claim")
@@ -208,6 +212,10 @@ class RoomContentBootstrapTests(unittest.TestCase):
         self.assertEqual(holdout["objective_label"], "Shrine")
         self.assertEqual(trap["display_name"], "Boulder Sweep Run")
         self.assertEqual(trap["objective_variant"], "sweeper_lanes")
+        self.assertEqual(trap["trap_intensity_scale"], 1.4)
+        self.assertEqual(trap["trap_speed_scale"], 0.85)
+        self.assertEqual(trap["trap_challenge_reward_kind"], "stat_shard")
+        self.assertEqual(trap["trap_intensity_scale"], 1.4)
         self.assertEqual(puzzle["display_name"], "Rune Lock Gallery")
         self.assertEqual(puzzle["objective_variant"], "ordered_plates")
         self.assertEqual(puzzle["puzzle_reinforcement_count"], 1)
@@ -229,6 +237,10 @@ class RoomContentBootstrapTests(unittest.TestCase):
         frozen_relic = next(template for template in frozen_catalog if template["room_id"] == "timed_extraction")
         self.assertEqual(frozen_trap["display_name"], "Frost Vent Gauntlet")
         self.assertEqual(frozen_trap["objective_variant"], "vent_lanes")
+        self.assertEqual(frozen_trap["trap_intensity_scale"], 0.8)
+        self.assertEqual(frozen_trap["trap_speed_scale"], 1.25)
+        self.assertEqual(frozen_trap["trap_challenge_reward_kind"], "tempo_rune")
+        self.assertEqual(frozen_trap["trap_intensity_scale"], 0.8)
         self.assertEqual(frozen_puzzle["display_name"], "Mirror Rune Gallery")
         self.assertEqual(frozen_puzzle["objective_variant"], "paired_runes")
         self.assertEqual(frozen_puzzle["puzzle_reinforcement_count"], 2)
@@ -267,6 +279,8 @@ class RoomContentBootstrapTests(unittest.TestCase):
         self.assertEqual(sunken_holdout["objective_label"], "Beacon")
         self.assertEqual(sunken_trap["display_name"], "Floodgate Hazard Run")
         self.assertEqual(sunken_trap["objective_variant"], "mixed_lanes")
+        self.assertEqual(sunken_trap["trap_intensity_scale"], 1.15)
+        self.assertEqual(sunken_trap["trap_challenge_reward_kind"], "mobility_consumable")
         self.assertIn("checkpoint switches", sunken_trap["notes"])
         self.assertEqual(sunken_puzzle["display_name"], "Tidal Counter-Seals")
         self.assertEqual(sunken_puzzle["objective_variant"], "staggered_plates")

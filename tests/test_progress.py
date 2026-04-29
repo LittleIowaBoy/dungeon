@@ -166,5 +166,83 @@ class PlayerProgressRuneTests(unittest.TestCase):
         self.assertFalse(rune_rules.has_rune(progress, stat_id))
 
 
+class MetaKeystoneStartingBonusTests(unittest.TestCase):
+    def test_default_progress_has_zero_keystones_and_no_bonus(self):
+        progress = PlayerProgress()
+        self.assertEqual(progress.meta_keystones, 0)
+        self.assertEqual(progress.keystone_starting_coin_bonus(), 0)
+
+    def test_starting_bonus_scales_linearly_with_keystone_count(self):
+        from settings import KEYSTONE_TIER_COIN_BONUSES
+        progress = PlayerProgress()
+        progress.meta_keystones = 2
+        # Tiered: cumulative sum of the first N tier values.
+        self.assertEqual(
+            progress.keystone_starting_coin_bonus(),
+            sum(KEYSTONE_TIER_COIN_BONUSES[:2]),
+        )
+
+    def test_starting_bonus_caps_at_max_owned_tiers(self):
+        from settings import KEYSTONE_TIER_COIN_BONUSES
+        progress = PlayerProgress()
+        # Even if the counter somehow exceeds the tier table, only the
+        # defined tiers contribute — no overflow.
+        progress.meta_keystones = len(KEYSTONE_TIER_COIN_BONUSES) + 5
+        self.assertEqual(
+            progress.keystone_starting_coin_bonus(),
+            sum(KEYSTONE_TIER_COIN_BONUSES),
+        )
+
+    def test_next_keystone_tier_bonus_returns_next_entry_or_zero_at_cap(self):
+        from settings import KEYSTONE_TIER_COIN_BONUSES
+        progress = PlayerProgress()
+        self.assertEqual(
+            progress.next_keystone_tier_bonus(), KEYSTONE_TIER_COIN_BONUSES[0]
+        )
+        progress.meta_keystones = 1
+        self.assertEqual(
+            progress.next_keystone_tier_bonus(), KEYSTONE_TIER_COIN_BONUSES[1]
+        )
+        progress.meta_keystones = len(KEYSTONE_TIER_COIN_BONUSES)
+        self.assertEqual(progress.next_keystone_tier_bonus(), 0)
+
+    def test_begin_dungeon_run_grants_starting_bonus_after_snapshot(self):
+        from settings import KEYSTONE_TIER_COIN_BONUSES
+        progress = PlayerProgress()
+        progress.meta_keystones = 2
+        progress.coins = 5
+
+        snapshot = progress.begin_dungeon_run("mud_caves")
+
+        # Snapshot captures the pre-bonus baseline (so abandon reverts the bonus).
+        self.assertEqual(snapshot["coins"], 5)
+        # Live coins reflect the tiered bonus.
+        self.assertEqual(
+            progress.coins, 5 + sum(KEYSTONE_TIER_COIN_BONUSES[:2])
+        )
+
+    def test_begin_dungeon_run_with_zero_keystones_is_neutral(self):
+        progress = PlayerProgress()
+        progress.coins = 5
+        progress.begin_dungeon_run("mud_caves")
+        self.assertEqual(progress.coins, 5)
+
+    def test_legacy_inventory_keystones_migrate_to_meta_counter(self):
+        from settings import BIOME_TROPHY_KEYSTONE_ID, KEYSTONE_MAX_OWNED
+        progress = PlayerProgress()
+        progress.inventory[BIOME_TROPHY_KEYSTONE_ID] = 2
+        progress.meta_keystones = 0
+
+        progress.migrate_legacy_state()
+
+        self.assertNotIn(BIOME_TROPHY_KEYSTONE_ID, progress.inventory)
+        self.assertEqual(progress.meta_keystones, 2)
+
+        # Migration is idempotent and respects the cap.
+        progress.inventory[BIOME_TROPHY_KEYSTONE_ID] = 5
+        progress.migrate_legacy_state()
+        self.assertEqual(progress.meta_keystones, KEYSTONE_MAX_OWNED)
+
+
 if __name__ == "__main__":
     unittest.main()
