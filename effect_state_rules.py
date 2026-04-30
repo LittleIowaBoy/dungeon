@@ -1,5 +1,6 @@
 """Timer-based effect-state queries for Player runtime state."""
 
+import armor_rules
 import stat_runes
 from settings import SPEED_BOOST_MULTIPLIER
 
@@ -17,4 +18,5 @@ def effective_speed_multiplier(player, now_ticks):
         base = SPEED_BOOST_MULTIPLIER
     else:
         base = player.speed_multiplier
-    return stat_runes.modify_speed_multiplier(player, base)
+    rune_scaled = stat_runes.modify_speed_multiplier(player, base)
+    return armor_rules.apply_speed_multiplier(player, rune_scaled)

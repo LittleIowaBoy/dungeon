@@ -42,6 +42,20 @@ from settings import (
     COLOR_SENTRY, SENTRY_HP, SENTRY_PATROL_SPEED, SENTRY_CHASE_SPEED,
     SENTRY_SIGHT_RADIUS, SENTRY_DETONATE_RADIUS, SENTRY_EXPLOSION_RADIUS,
     SENTRY_EXPLOSION_DAMAGE, SENTRY_ALERT_FLASH_MS, SENTRY_ARM_MS,
+    GOLEM_HP, GOLEM_SPEED, GOLEM_COLOR, GOLEM_SIZE,
+    GOLEM_MELEE_TRIGGER, GOLEM_THROW_RANGE, GOLEM_SLAM_RADIUS,
+    GOLEM_SLAM_DAMAGE, GOLEM_SLAM_WINDUP_MS, GOLEM_SLAM_STRIKE_MS,
+    GOLEM_SLAM_COOLDOWN_MS, GOLEM_THROW_WINDUP_MS, GOLEM_THROW_STRIKE_MS,
+    GOLEM_THROW_COOLDOWN_MS, GOLEM_BOULDER_SPEED, GOLEM_BOULDER_RANGE,
+    GOLEM_BOULDER_DAMAGE, GOLEM_BOULDER_SIZE,
+    GOLEM_ENRAGE_TRIGGER_MIN, GOLEM_ENRAGE_TRIGGER_MAX, GOLEM_ENRAGE_DAMAGE,
+    GOLEM_ENRAGE_WINDUP_MS, GOLEM_ENRAGE_STRIKE_MS, GOLEM_ENRAGE_COOLDOWN_MS,
+    GOLEM_ENRAGE_DASH_SPEED,
+    GOLEM_SHARD_HP, GOLEM_SHARD_SPEED, GOLEM_SHARD_COLOR, GOLEM_SHARD_SIZE,
+    GOLEM_SHARD_ATTACK_TRIGGER, GOLEM_SHARD_ATTACK_SIZE,
+    GOLEM_SHARD_ATTACK_OFFSET, GOLEM_SHARD_ATTACK_DAMAGE,
+    GOLEM_SHARD_ATTACK_WINDUP_MS, GOLEM_SHARD_ATTACK_STRIKE_MS,
+    GOLEM_SHARD_ATTACK_COOLDOWN_MS,
     DROP_CHANCE,
 )
 from item_catalog import ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS
@@ -767,6 +781,290 @@ class SentryEnemy(Enemy):
         return (rect,)
 
 
+# ── Golem mini-boss + GolemShard minion (Earth biome finale) ─
+
+# Golem attack identifiers — selected per-attack in :meth:`Golem._can_begin_attack`
+# based on player distance + phase, then committed in
+# :meth:`_on_telegraph_start` so the strike geometry matches the picked move.
+_GOLEM_ATTACK_NONE   = ""
+_GOLEM_ATTACK_SLAM   = "slam"
+_GOLEM_ATTACK_THROW  = "throw"
+_GOLEM_ATTACK_ENRAGE = "enrage"
+
+
+class GolemBoulderProjectile(pygame.sprite.Sprite):
+    """Heavy boulder hurled by :class:`Golem`'s ``throw`` attack.
+
+    Mirrors :class:`LauncherProjectile`: linear motion, despawns on wall
+    contact or after travelling :data:`GOLEM_BOULDER_RANGE` pixels.
+    Damage is delivered by :func:`enemy_attack_rules.apply_launcher_projectiles`.
+    """
+
+    SIZE = GOLEM_BOULDER_SIZE
+    damage = GOLEM_BOULDER_DAMAGE
+
+    def __init__(self, x, y, vx, vy):
+        super().__init__()
+        self.image = make_rect_surface(self.SIZE, self.SIZE, GOLEM_COLOR)
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._vx = float(vx)
+        self._vy = float(vy)
+        self._distance_traveled = 0.0
+
+    def update(self, *_args, **_kwargs):
+        self.rect.x += self._vx
+        self.rect.y += self._vy
+        self._distance_traveled += math.hypot(self._vx, self._vy)
+        if self._distance_traveled >= GOLEM_BOULDER_RANGE:
+            self.kill()
+
+    def collide_walls(self, wall_rects):
+        for wall in wall_rects:
+            if self.rect.colliderect(wall):
+                self.kill()
+                return True
+        return False
+
+
+class Golem(Enemy):
+    """High-HP Earth-biome mini-boss with three telegraphed attacks.
+
+    Attack selection is distance-gated:
+
+    * Player within :data:`GOLEM_MELEE_TRIGGER` → ``slam`` (AOE circle).
+    * Player within :data:`GOLEM_THROW_RANGE`  → ``throw`` (boulder
+      projectile aimed at the player's position at telegraph start).
+    * Player in mid-range AND ``phase_2`` is True → ``enrage`` charge
+      (brief dash with a swept hitbox).
+
+    Phase 2 is set externally by :class:`BossController` when the
+    Golem's HP crosses 50%.  The Golem itself never reads HP — it only
+    consults the flag, keeping the controller fully in charge of when
+    the new move unlocks.
+    """
+
+    hp = GOLEM_HP
+    speed = GOLEM_SPEED
+    damage = 0
+    color = GOLEM_COLOR
+
+    # Per-attack timing varies; the values here are placeholders and get
+    # overwritten in ``_on_telegraph_start`` before the state machine
+    # reads them.  Keeping defaults non-zero ensures the base class never
+    # divides by zero or skips a transition if telegraph_start fails.
+    attack_damage     = 0
+    attack_windup_ms  = GOLEM_SLAM_WINDUP_MS
+    attack_strike_ms  = GOLEM_SLAM_STRIKE_MS
+    attack_cooldown_ms = GOLEM_SLAM_COOLDOWN_MS
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        # Override the base rect/image with the larger boss sprite.
+        self.image = make_rect_surface(GOLEM_SIZE, GOLEM_SIZE, self.color)
+        self._base_image = self.image
+        self.rect = self.image.get_rect(center=(x, y))
+        self.phase_2 = False
+        self._pending_attack = _GOLEM_ATTACK_NONE
+        self._committed_attack = _GOLEM_ATTACK_NONE
+        self._throw_dir = (1.0, 0.0)
+        self._enrage_dir = (1.0, 0.0)
+        self._enrage_dash_until = 0
+        self.emitted_projectiles: list[GolemBoulderProjectile] = []
+
+    # ── movement ────────────────────────────────────────
+    def update_movement(self, player_rect, wall_rects):
+        # During an enrage strike, charge in the locked direction.
+        now = pygame.time.get_ticks()
+        if self._committed_attack == _GOLEM_ATTACK_ENRAGE and now < self._enrage_dash_until:
+            ex, ey = self._enrage_dir
+            speed = GOLEM_ENRAGE_DASH_SPEED
+            self._move_axis(ex * speed, 0, wall_rects)
+            self._move_axis(0, ey * speed, wall_rects)
+            return
+        if self.is_attacking_blocking_movement():
+            return
+        if player_rect is None:
+            return
+        # Slow trudge toward the player.
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+        nx, ny = dx / dist, dy / dist
+        self._move_axis(nx * self.speed, 0, wall_rects)
+        self._move_axis(0, ny * self.speed, wall_rects)
+
+    # ── attack selection ────────────────────────────────
+    def _player_distance(self, player_rect):
+        if player_rect is None:
+            return float("inf")
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        return math.hypot(dx, dy)
+
+    def _can_begin_attack(self, player_rect):
+        dist = self._player_distance(player_rect)
+        if dist == float("inf"):
+            return False
+        if dist <= GOLEM_MELEE_TRIGGER:
+            self._pending_attack = _GOLEM_ATTACK_SLAM
+            return True
+        if (
+            self.phase_2
+            and GOLEM_ENRAGE_TRIGGER_MIN <= dist <= GOLEM_ENRAGE_TRIGGER_MAX
+        ):
+            self._pending_attack = _GOLEM_ATTACK_ENRAGE
+            return True
+        if dist <= GOLEM_THROW_RANGE:
+            self._pending_attack = _GOLEM_ATTACK_THROW
+            return True
+        return False
+
+    def _on_telegraph_start(self, player_rect, _now_ticks):
+        kind = self._pending_attack
+        self._committed_attack = kind
+        if kind == _GOLEM_ATTACK_SLAM:
+            self.attack_windup_ms   = GOLEM_SLAM_WINDUP_MS
+            self.attack_strike_ms   = GOLEM_SLAM_STRIKE_MS
+            self.attack_cooldown_ms = GOLEM_SLAM_COOLDOWN_MS
+        elif kind == _GOLEM_ATTACK_THROW:
+            self.attack_windup_ms   = GOLEM_THROW_WINDUP_MS
+            self.attack_strike_ms   = GOLEM_THROW_STRIKE_MS
+            self.attack_cooldown_ms = GOLEM_THROW_COOLDOWN_MS
+            if player_rect is not None:
+                dx = player_rect.centerx - self.rect.centerx
+                dy = player_rect.centery - self.rect.centery
+                d = math.hypot(dx, dy) or 1.0
+                self._throw_dir = (dx / d, dy / d)
+        elif kind == _GOLEM_ATTACK_ENRAGE:
+            self.attack_windup_ms   = GOLEM_ENRAGE_WINDUP_MS
+            self.attack_strike_ms   = GOLEM_ENRAGE_STRIKE_MS
+            self.attack_cooldown_ms = GOLEM_ENRAGE_COOLDOWN_MS
+            if player_rect is not None:
+                dx = player_rect.centerx - self.rect.centerx
+                dy = player_rect.centery - self.rect.centery
+                d = math.hypot(dx, dy) or 1.0
+                self._enrage_dir = (dx / d, dy / d)
+        # The base state machine snapshots the new attack_state_until
+        # value after this hook returns by reading attack_windup_ms; but
+        # by the time we land here the timer has already been computed
+        # using the previous values.  Patch it for the freshly-picked
+        # attack so the picked windup actually applies.
+        self._attack_state_until = _now_ticks + max(1, self.attack_windup_ms)
+
+    def _on_strike_start(self, player_rect, now_ticks):
+        # Re-snap the strike duration to the picked move.
+        self._attack_state_until = now_ticks + max(1, self.attack_strike_ms)
+        if self._committed_attack == _GOLEM_ATTACK_THROW:
+            fx, fy = self._throw_dir
+            speed = GOLEM_BOULDER_SPEED
+            proj = GolemBoulderProjectile(
+                self.rect.centerx, self.rect.centery,
+                fx * speed, fy * speed,
+            )
+            self.emitted_projectiles.append(proj)
+        elif self._committed_attack == _GOLEM_ATTACK_ENRAGE:
+            self._enrage_dash_until = now_ticks + max(1, self.attack_strike_ms)
+
+    def _on_strike_end(self, _now_ticks):
+        # Re-snap the cooldown for the committed move.
+        self._attack_state_until = _now_ticks + max(0, self.attack_cooldown_ms)
+        self._committed_attack = _GOLEM_ATTACK_NONE
+        self._pending_attack = _GOLEM_ATTACK_NONE
+
+    def _hitbox_geometry(self):
+        # Slam is the only attack that delivers damage via the standard
+        # active_hitboxes path; throw uses a projectile (handled by the
+        # launcher-projectile pipeline) and enrage delivers damage via a
+        # dash-swept body collider tracked separately on strike.
+        if self._committed_attack == _GOLEM_ATTACK_SLAM:
+            self.attack_damage = GOLEM_SLAM_DAMAGE
+            size = GOLEM_SLAM_RADIUS * 2
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = self.rect.center
+            return (rect,)
+        if self._committed_attack == _GOLEM_ATTACK_ENRAGE:
+            self.attack_damage = GOLEM_ENRAGE_DAMAGE
+            # The enrage hitbox is the Golem's body itself — a moving
+            # collider during the dash.  Returning the body rect lets
+            # the standard apply_enemy_attacks pipeline handle damage.
+            return (self.rect.copy(),)
+        return ()
+
+    def consume_emitted_projectiles(self):
+        out = self.emitted_projectiles
+        self.emitted_projectiles = []
+        return out
+
+
+class GolemShard(Enemy):
+    """Small fast melee minion summoned in waves by the Golem encounter.
+
+    Functionally a stripped-down :class:`ChaserEnemy`: always chases the
+    nearest target (no chase-state gating), strikes a small forward
+    rect, low HP/damage so 4-6 simultaneous shards stay readable.
+    """
+
+    hp = GOLEM_SHARD_HP
+    speed = GOLEM_SHARD_SPEED
+    damage = GOLEM_SHARD_ATTACK_DAMAGE
+    color = GOLEM_SHARD_COLOR
+
+    attack_damage = GOLEM_SHARD_ATTACK_DAMAGE
+    attack_windup_ms = GOLEM_SHARD_ATTACK_WINDUP_MS
+    attack_strike_ms = GOLEM_SHARD_ATTACK_STRIKE_MS
+    attack_cooldown_ms = GOLEM_SHARD_ATTACK_COOLDOWN_MS
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self.image = make_rect_surface(GOLEM_SHARD_SIZE, GOLEM_SHARD_SIZE, self.color)
+        self._base_image = self.image
+        self.rect = self.image.get_rect(center=(x, y))
+        self._facing = (1, 0)
+        self._strike_facing = (1, 0)
+
+    def update_movement(self, player_rect, wall_rects):
+        if self.is_attacking_blocking_movement():
+            return
+        if player_rect is None:
+            return
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+        nx, ny = dx / dist, dy / dist
+        if abs(nx) >= abs(ny):
+            self._facing = (1 if nx >= 0 else -1, 0)
+        else:
+            self._facing = (0, 1 if ny >= 0 else -1)
+        self._move_axis(nx * self.speed, 0, wall_rects)
+        self._move_axis(0, ny * self.speed, wall_rects)
+
+    def _can_begin_attack(self, player_rect):
+        if player_rect is None:
+            return False
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        return (dx * dx + dy * dy) <= (
+            GOLEM_SHARD_ATTACK_TRIGGER * GOLEM_SHARD_ATTACK_TRIGGER
+        )
+
+    def _on_telegraph_start(self, _player_rect, _now_ticks):
+        self._strike_facing = self._facing
+
+    def _hitbox_geometry(self):
+        fx, fy = self._strike_facing
+        size = GOLEM_SHARD_ATTACK_SIZE
+        offset = GOLEM_SHARD_ATTACK_OFFSET + size // 2
+        cx = self.rect.centerx + fx * offset
+        cy = self.rect.centery + fy * offset
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (cx, cy)
+        return (rect,)
+
+
 ENEMY_CLASSES = [
     PatrolEnemy,
     RandomEnemy,
@@ -776,3 +1074,5 @@ ENEMY_CLASSES = [
 ]
 # SentryEnemy is intentionally excluded — it is spawned only by stealth-room
 # objective configs, not by the random-palette pool.
+# Golem and GolemShard are likewise excluded; they are spawned exclusively
+# by the earth_golem_arena boss room and its scripted wave triggers.

@@ -6,6 +6,7 @@ The tests below assert template registration, terrain placement, and the
 end-to-end damage/drown behaviour.
 """
 import os
+import random
 import unittest
 
 import pygame
@@ -31,7 +32,8 @@ from room import (
 )
 from room_plan import RoomPlan, RoomTemplate
 from settings import (
-    TILE_SIZE, HAZARD_TICK_MS, HAZARD_TICK_DAMAGE, QUICKSAND_DROWN_MS,
+    TILE_SIZE, HAZARD_TICK_MS, HAZARD_TICK_DAMAGE,
+    STALAGMITE_STEP_DAMAGE, QUICKSAND_PULL_SPEED,
 )
 
 
@@ -119,7 +121,15 @@ class HazardTerrainPlacementTests(unittest.TestCase):
 
 
 class HazardEffectIntegrationTests(unittest.TestCase):
-    def test_player_on_spike_patch_takes_tick_damage(self):
+    def test_player_on_spike_patch_takes_step_entry_damage(self):
+        """Stepping onto a spike tile deals one fixed STALAGMITE_STEP_DAMAGE hit.
+
+        Standing motionless and stepping off do not deal damage; that
+        full per-tile-entry contract is exercised in
+        ``test_biome_room_phase1.test_spike_patch_damages_only_on_tile_entry``.
+        Here we just confirm the field room actually wires through the
+        new mechanic.
+        """
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
             is_exit=False,
@@ -128,12 +138,36 @@ class HazardEffectIntegrationTests(unittest.TestCase):
         cell = _find_tile(room, SPIKE_PATCH)
         self.assertIsNotNone(cell)
         col, row = cell
-        player = _make_player(col, row)
+        # Place player on an adjacent FLOOR tile so the first frame
+        # initialises the previous-tile pointer without damage.
+        adj = None
+        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ac, ar = col + dc, row + dr
+            if 0 <= ac < ROOM_COLS and 0 <= ar < ROOM_ROWS:
+                if room.grid[ar][ac] == FLOOR:
+                    adj = (ac, ar)
+                    break
+        self.assertIsNotNone(adj, "need a floor tile adjacent to a spike for the test")
+        player = _make_player(*adj)
         hp_before = player.current_hp
-        terrain_effects.apply_terrain_effects(player, room, HAZARD_TICK_MS, 16)
-        self.assertEqual(player.current_hp, hp_before - HAZARD_TICK_DAMAGE)
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        self.assertEqual(player.current_hp, hp_before)
+        # Step onto the spike tile.
+        player.rect.center = (
+            col * TILE_SIZE + TILE_SIZE // 2,
+            row * TILE_SIZE + TILE_SIZE // 2,
+        )
+        terrain_effects.apply_terrain_effects(player, room, 16, 16)
+        self.assertEqual(player.current_hp, hp_before - STALAGMITE_STEP_DAMAGE)
 
-    def test_player_in_quicksand_drowns_after_threshold(self):
+    def test_player_in_quicksand_is_pulled_toward_tile_centre(self):
+        """Quicksand tiles in a real Earth room pull the player to centre.
+
+        Replaces the legacy drowning-timer assertion: the new model is
+        non-lethal terrain combined with a dodge-mash escape loop (the
+        full pull / suppression contract is exercised in
+        ``test_biome_room_phase1`` against the stub room).
+        """
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
             is_exit=False,
@@ -143,17 +177,19 @@ class HazardEffectIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(cell)
         col, row = cell
         player = _make_player(col, row)
-
-        # Tick repeatedly until drowning meter exceeds threshold.
-        elapsed = 0
-        dt = 100
-        ticks = 0
-        while elapsed <= QUICKSAND_DROWN_MS and player.current_hp > 0:
-            ticks += dt
-            elapsed += dt
-            player._invincible_until = 0  # bypass i-frames between ticks
-            terrain_effects.apply_terrain_effects(player, room, ticks, dt)
-        self.assertEqual(player.current_hp, 0)
+        tile_centre_x = col * TILE_SIZE + TILE_SIZE // 2
+        player.rect.centerx = tile_centre_x + 6
+        player._invincible_until = 0  # clear spawn i-frames
+        hp_before = player.current_hp
+        diag = terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        self.assertTrue(diag["quicksand_pull"])
+        self.assertLess(
+            abs(player.rect.centerx - tile_centre_x),
+            6,
+            "player should drift toward the tile centre",
+        )
+        # Tile itself is not lethal under the new model.
+        self.assertEqual(player.current_hp, hp_before)
 
 
 class CrystalVeinTests(unittest.TestCase):
@@ -589,78 +625,106 @@ class BoulderRunTests(unittest.TestCase):
             room_plan=_plan("earth_boulder_run", objective_rule="clear_enemies"),
         )
 
-    def test_room_spawns_two_to_three_boulder_configs_with_lanes(self):
+    def test_room_spawns_single_boulder_run_spawner(self):
         room = self._build_room()
-        boulders = [
+        spawners = [
             cfg for cfg in room.objective_entity_configs
-            if cfg["kind"] == "boulder"
+            if cfg["kind"] == "boulder_run_spawner"
         ]
-        self.assertGreaterEqual(len(boulders), 2)
-        self.assertLessEqual(len(boulders), 3)
-        # Each lane has a unique row and direction alternates.
-        lane_ys = [cfg["lane_y"] for cfg in boulders]
-        self.assertEqual(len(set(lane_ys)), len(boulders))
-        directions = [cfg["direction"] for cfg in boulders]
-        self.assertIn(1, directions)
+        # Exactly one spawner per room; it owns the chosen source wall
+        # and the door-column exclusion set used to keep traversal lanes
+        # clear.
+        self.assertEqual(len(spawners), 1)
+        cfg = spawners[0]
+        self.assertIn(cfg["source_wall"], ("top", "bottom"))
+        # Door columns = the 3-tile-wide opening centred on mid_col.
+        from settings import DOOR_WIDTH
+        mid_col = ROOM_COLS // 2
+        half = DOOR_WIDTH // 2
+        expected = set(range(mid_col - half, mid_col + half + 1))
+        self.assertEqual(set(cfg["door_columns"]), expected)
 
-    def test_boulder_telegraph_then_strike_phases(self):
+    def test_boulder_rolls_in_chosen_direction_and_despawns_offscreen(self):
         cfg = {
-            "kind": "boulder",
-            "lane_y": 6 * TILE_SIZE + TILE_SIZE // 2,
-            "pos": (-1000, 6 * TILE_SIZE + TILE_SIZE // 2),
-            "direction": 1,
-            "cycle_ms": 3600,
-            "telegraph_ms": 900,
-            "speed": 6,
-            "damage": 10,
-            "knockback_px": 32,
-            "damage_cooldown_ms": 700,
-            "offset_ms": 0,
-        }
-        boulder = Boulder(cfg)
-        # Telegraph window: parked offscreen, telegraphing flag on.
-        boulder.update(100)
-        self.assertTrue(boulder.telegraphing)
-        self.assertFalse(boulder.rolling)
-        # Past telegraph window: enters strike phase, starts rolling.
-        boulder.update(boulder.telegraph_ms + 50)
-        self.assertFalse(boulder.telegraphing)
-        self.assertTrue(boulder.rolling)
-        # Boulder advances each subsequent tick.
-        x_before = boulder.rect.centerx
-        boulder.update(boulder.telegraph_ms + 100)
-        self.assertGreater(boulder.rect.centerx, x_before)
-
-    def test_boulder_only_damages_during_strike_phase(self):
-        cfg = {
-            "kind": "boulder",
-            "lane_y": 6 * TILE_SIZE + TILE_SIZE // 2,
-            "pos": (-1000, 6 * TILE_SIZE + TILE_SIZE // 2),
-            "direction": 1,
-            "cycle_ms": 3600,
-            "telegraph_ms": 900,
-            "speed": 0,  # freeze position so collision is deterministic
+            "lane_x": 5 * TILE_SIZE + TILE_SIZE // 2,
+            "direction": 1,  # spawned at top wall, rolls down
+            "speed": 5,
             "damage": 10,
             "knockback_px": 0,
             "damage_cooldown_ms": 700,
-            "offset_ms": 0,
         }
         boulder = Boulder(cfg)
-        # Telegraph phase — parked offscreen, even an overlapping player
-        # rect should not get hit.
-        boulder.update(100)
-        player = _make_player(2, 6)
+        group = pygame.sprite.Group(boulder)
+        # Spawned just above the room ceiling.
+        self.assertLess(boulder.rect.centery, 0)
+        y_before = boulder.rect.centery
+        boulder.update(0)
+        self.assertGreater(boulder.rect.centery, y_before)
+        # Force boulder past the bottom wall — it should kill itself and
+        # leave the sprite group on the next update.
+        room_height = ROOM_ROWS * TILE_SIZE
+        boulder.rect.centery = room_height + boulder.SIZE * 2
+        boulder.update(0)
+        self.assertNotIn(boulder, group)
+
+    def test_boulder_damages_player_on_collision_with_cooldown(self):
+        cfg = {
+            "lane_x": 5 * TILE_SIZE + TILE_SIZE // 2,
+            "direction": 1,
+            "speed": 0,  # freeze in place for deterministic collision
+            "damage": 10,
+            "knockback_px": 0,
+            "damage_cooldown_ms": 700,
+        }
+        boulder = Boulder(cfg)
+        player = _make_player(5, 5)
         player._invincible_until = 0
-        # Force-overlap by parking player at boulder position.
-        player.rect.center = boulder.rect.center
-        hp_before = player.current_hp
-        boulder.apply_player_pressure(player)
-        self.assertEqual(player.current_hp, hp_before)
-        # Strike phase: position the boulder onto the player.
-        boulder.update(boulder.telegraph_ms + 50)
+        # Park the boulder onto the player.
         boulder.rect.center = player.rect.center
-        boulder.apply_player_pressure(player)
+        hp_before = player.current_hp
+        self.assertTrue(boulder.apply_player_pressure(player))
         self.assertLess(player.current_hp, hp_before)
+        # Immediate re-hit is suppressed by the per-boulder cooldown.
+        hp_after_first = player.current_hp
+        self.assertFalse(boulder.apply_player_pressure(player))
+        self.assertEqual(player.current_hp, hp_after_first)
+
+    def test_spawner_emits_boulders_at_random_columns_excluding_doors(self):
+        from objective_entities import BoulderRunSpawner
+        from settings import DOOR_WIDTH
+        mid_col = ROOM_COLS // 2
+        half = DOOR_WIDTH // 2
+        door_cols = set(range(mid_col - half, mid_col + half + 1))
+        rng = random.Random(0)
+        cfg = {
+            "kind": "boulder_run_spawner",
+            "source_wall": "top",
+            "door_columns": door_cols,
+            # Tight interval so several spawns fire in the test window.
+            "interval_range": (1, 1),
+            "speed_range": (5.0, 5.0),
+            "rng": rng,
+        }
+        spawner = BoulderRunSpawner(cfg)
+        group = pygame.sprite.Group(spawner)
+        spawner.objective_group = group
+        # First update schedules the first spawn — no boulder yet.
+        spawner.update(0)
+        self.assertEqual(spawner.spawned, 0)
+        # Subsequent ticks fire boulders.  Run enough to cover most cols.
+        for tick in range(1, 200):
+            spawner.update(tick)
+        self.assertGreater(spawner.spawned, 0)
+        boulders = [s for s in group if isinstance(s, Boulder)]
+        self.assertEqual(len(boulders), spawner.spawned)
+        # No boulder should ever spawn on a door column.
+        for boulder in boulders:
+            col = boulder.lane_x // TILE_SIZE
+            self.assertNotIn(col, door_cols)
+        # All boulders rolling DOWN (direction=+1) since source_wall=top.
+        for boulder in boulders:
+            self.assertEqual(boulder.direction, 1)
+
 
 
 class ShrineCircleTests(unittest.TestCase):
@@ -731,6 +795,56 @@ class ShrineCircleTests(unittest.TestCase):
         self.assertTrue(shrine.active)
         now = pygame.time.get_ticks()
         self.assertTrue(status_effects.has_status(enemy, status_effects.SLOWED, now))
+
+
+class GolemArenaTemplateTests(unittest.TestCase):
+    """Phase 4: Golem mini-boss arena is fully wired and enabled."""
+
+    def test_template_registered_with_min_depth_two_and_finale_role(self):
+        ids = {t["room_id"] for t in content_db.BASE_ROOM_TEMPLATES}
+        self.assertIn("earth_golem_arena", ids)
+        tmpl = next(
+            t for t in content_db.BASE_ROOM_TEMPLATES
+            if t["room_id"] == "earth_golem_arena"
+        )
+        self.assertEqual(tmpl["min_depth"], 2)
+        self.assertEqual(tmpl["topology_role"], "finale")
+        self.assertEqual(tmpl["terminal_preference"], "prefer")
+        # Base template defaults stay disabled; the mud_caverns override
+        # flips it on (verified separately via DUNGEON_ROOM_TEMPLATE_OVERRIDES).
+        self.assertEqual(tmpl["enabled"], 0)
+        self.assertEqual(tmpl["generation_weight"], 0)
+        overrides = {
+            t["room_id"]: t
+            for t in content_db.DUNGEON_ROOM_TEMPLATE_OVERRIDES["mud_caverns"]
+        }
+        self.assertEqual(overrides["earth_golem_arena"]["enabled"], 1)
+
+    def test_room_builder_emits_golem_arena_controller_config(self):
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("earth_golem_arena", objective_rule="clear_enemies"),
+        )
+        controllers = [
+            cfg for cfg in room.objective_entity_configs
+            if cfg["kind"] == "golem_arena_controller"
+        ]
+        self.assertEqual(len(controllers), 1)
+        cfg = controllers[0]
+        self.assertEqual(set(cfg["wave_specs"].keys()), {0.75, 0.5, 0.25})
+        self.assertFalse(cfg["loot_granted"])
+
+    def test_golem_arena_seeds_only_the_golem_in_enemy_configs(self):
+        from enemies import Golem
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("earth_golem_arena", objective_rule="clear_enemies"),
+        )
+        self.assertEqual(len(room.enemy_configs), 1)
+        cls, _pos = room.enemy_configs[0]
+        self.assertIs(cls, Golem)
 
 
 if __name__ == "__main__":

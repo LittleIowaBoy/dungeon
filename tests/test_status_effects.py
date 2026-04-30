@@ -148,7 +148,11 @@ class IntegrationTests(unittest.TestCase):
             facing_dx=1.0, facing_dy=0.0,
         )
         se.reset_statuses(player)
-        se.apply_status(player, se.STUNNED, 0)
+        # Apply STUNNED at the *current* tick so its expires_at lands in
+        # the future relative to the get_ticks() call inside attack().
+        # (Applying at now_ticks=0 made the status appear stale once the
+        # rest of the suite had been running for >1.5s.)
+        se.apply_status(player, se.STUNNED, pygame.time.get_ticks())
         self.assertIsNone(attack_rules.attack(player))
 
 

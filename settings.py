@@ -331,6 +331,68 @@ SENTRY_EXPLOSION_DAMAGE = 45
 SENTRY_ALERT_FLASH_MS   = 200
 SENTRY_ARM_MS           = 600
 
+# ── Golem mini-boss (Earth biome finale) ───────────────
+# Golem is a slow, high-HP melee/ranged hybrid. At range it telegraphs
+# and hurls a heavy boulder; in melee it telegraphs a circular ground
+# slam.  When ``phase_2`` is set externally (by the BossController on
+# 50% HP), the Golem unlocks ``ENRAGE`` charges — a brief, faster dash
+# attack that fires only when the player is at mid range (between melee
+# and throw range).
+GOLEM_HP                       = 800
+GOLEM_SPEED                    = 0.6
+GOLEM_COLOR                    = (140, 110, 80)
+GOLEM_SIZE                     = 56
+GOLEM_MELEE_TRIGGER            = int(2.2 * TILE_SIZE)
+GOLEM_THROW_RANGE              = int(8.0 * TILE_SIZE)
+GOLEM_SLAM_RADIUS              = int(2.6 * TILE_SIZE)
+GOLEM_SLAM_DAMAGE              = 28
+GOLEM_SLAM_WINDUP_MS           = 900
+GOLEM_SLAM_STRIKE_MS           = 140
+GOLEM_SLAM_COOLDOWN_MS         = 1300
+GOLEM_THROW_WINDUP_MS          = 1100
+GOLEM_THROW_STRIKE_MS          = 80
+GOLEM_THROW_COOLDOWN_MS        = 1500
+GOLEM_BOULDER_SPEED            = 3.5
+GOLEM_BOULDER_RANGE            = int(10.0 * TILE_SIZE)
+GOLEM_BOULDER_DAMAGE           = 22
+GOLEM_BOULDER_SIZE             = 22
+GOLEM_ENRAGE_TRIGGER_MIN       = int(2.5 * TILE_SIZE)
+GOLEM_ENRAGE_TRIGGER_MAX       = int(6.0 * TILE_SIZE)
+GOLEM_ENRAGE_DAMAGE            = 24
+GOLEM_ENRAGE_WINDUP_MS         = 700
+GOLEM_ENRAGE_STRIKE_MS         = 220
+GOLEM_ENRAGE_COOLDOWN_MS       = 1700
+GOLEM_ENRAGE_DASH_SPEED        = 5.5
+
+# Golem shards — fast melee minions summoned at 75% / 50% / 25% HP.
+GOLEM_SHARD_HP                 = 30
+GOLEM_SHARD_SPEED              = 1.9
+GOLEM_SHARD_COLOR              = (180, 150, 110)
+GOLEM_SHARD_SIZE               = 18
+GOLEM_SHARD_ATTACK_TRIGGER     = int(0.9 * TILE_SIZE)
+GOLEM_SHARD_ATTACK_SIZE        = int(0.7 * TILE_SIZE)
+GOLEM_SHARD_ATTACK_OFFSET      = 4
+GOLEM_SHARD_ATTACK_DAMAGE      = 8
+GOLEM_SHARD_ATTACK_WINDUP_MS   = 250
+GOLEM_SHARD_ATTACK_STRIKE_MS   = 80
+GOLEM_SHARD_ATTACK_COOLDOWN_MS = 500
+
+# ── Golem armor set (Earth biome boss loot) ────────────
+# Defensive set with one offensive perk per limb.  Each piece grants a
+# small +max_hp bump plus a slot-themed multiplier; full set ≈ +30 HP,
+# +5% crit, +10% damage reduction, +5% movement, +5% outgoing damage.
+GOLEM_SET_HP_PER_PIECE         = 5
+GOLEM_HUSK_HP_BONUS            = 15           # chest piece is the bulk of the HP
+GOLEM_CROWN_CRIT_CHANCE        = 0.05         # +5% crit chance from helmet
+GOLEM_HUSK_DR_FRACTION         = 0.10         # 10% reduction (dmg ×0.90)
+GOLEM_STRIDE_SPEED_BONUS       = 0.05         # +5% movement multiplier
+GOLEM_FISTS_DAMAGE_BONUS       = 0.05         # +5% outgoing damage
+GOLEM_CRIT_MULTIPLIER          = 2.0          # 2x damage on crit
+# Boss-loot drop probabilities applied per defeat.  Each defeat rolls
+# twice: a guaranteed-rate first piece and a slim chance for a second.
+GOLEM_LOOT_PRIMARY_CHANCE      = 0.10
+GOLEM_LOOT_SECONDARY_CHANCE    = 0.02
+
 # ── Spawn placement ─────────────────────────────────────
 ENEMY_DOOR_BUFFER_TILES = 3
 ROOM_MAX_DISTINCT_ENEMY_TYPES = 3
@@ -378,10 +440,59 @@ ICE_FRICTION = 0.92          # velocity *= friction each frame on ice
 # via the existing enemy attack-state pattern and live in their entities.
 HAZARD_TICK_MS = 500
 HAZARD_TICK_DAMAGE = 1
-# Quicksand drowning: total time to lethal once player enters the patch.
-QUICKSAND_DROWN_MS = 3000
+# Stalagmite spike tiles: damage is dealt only on the frame the player
+# moves ONTO a new spike tile (per-tile entry).  Standing motionless on a
+# spike tile and stepping off do NOT deal damage.  This is distinct from
+# the legacy ``HAZARD_TICK_*`` cadence used by passive bloom hazards.
+STALAGMITE_STEP_DAMAGE = 5
+# Stalagmite Field room polish (Phase 1).  Tunes the post-placement pass
+# that turns the random rectangle patches into a more navigable obstacle
+# field.  ``DOOR_BUFFER`` is the chebyshev radius around each door tile
+# kept clear of spikes.  ``SINGLETON_COUNT_RANGE`` lets a few isolated
+# spikes scatter across remaining floor for visual texture.  When the
+# BFS path-carve runs, each spike removed becomes the base of a 1-tile
+# corridor between an entrance and the room centre.
+STALAGMITE_FIELD_DOOR_BUFFER       = 2
+STALAGMITE_FIELD_SINGLETON_COUNT_RANGE = (3, 5)
+# Quicksand Trap polish: chebyshev radius around each open door kept
+# clear of QUICKSAND tiles so the player never spawns on top of a pull
+# zone.  A BFS connectivity pass guarantees each entrance has a fully
+# walkable (no-quicksand) path to the room centre.
+QUICKSAND_TRAP_DOOR_BUFFER         = 2
+# Quicksand pull: while a player stands on a QUICKSAND tile, the runtime
+# applies a small per-frame push toward the tile centre.  Standing still
+# drifts the player into the centre of the patch; escaping requires the
+# dodge ability (which grants i-frames + a 2.4x speed burst that lets the
+# player break free).  Pull is suppressed while the player is invincible
+# (dodge / spawn i-frames) so dodging always wins the tug-of-war.
+QUICKSAND_PULL_SPEED = 0.6
+# Boulder Run hazards: vertical boulders periodically spawn from a single
+# source wall (top OR bottom, chosen per room instance) and roll in a
+# straight line to the opposite wall.  Each boulder picks a random speed
+# from BOULDER_BASE_SPEED_RANGE; spawn cadence is a random interval
+# from BOULDER_SPAWN_INTERVAL_RANGE_MS.  Door columns are excluded so
+# spawn lanes never overlap an exit.
+BOULDER_BASE_SPEED_RANGE = (4.0, 7.0)
+BOULDER_SPAWN_INTERVAL_RANGE_MS = (700, 1500)
+BOULDER_DAMAGE = 10
 # Current tile push speed (pixels / frame, applied additively after movement).
 CURRENT_PUSH_SPEED = 1.6
+# Water River Room polish: chebyshev radius around each open door kept
+# clear of CURRENT tiles so the player never spawns directly into the
+# river's push.  A BFS connectivity pass treats CURRENT as walkable so
+# every entrance has a path to the room centre even when the river
+# bisects the room.
+WATER_RIVER_DOOR_BUFFER = 2
+# Water River band width (in tiles), inclusive range.  The river spans
+# the full room along one axis at a width chosen from this range.
+WATER_RIVER_WIDTH_RANGE = (2, 3)
+# Water Waterfall Room polish: a vertical CURRENT band hugs one of the
+# side walls (left or right) and a small WATER pool collects at its
+# base.  The cascade hides a guaranteed chest the player has to push
+# through the current to reach.
+WATER_WATERFALL_BAND_WIDTH = 3
+WATER_WATERFALL_POOL_RADIUS = 2
+WATER_WATERFALL_DOOR_BUFFER = 1
 
 # ── Terrain generation ──────────────────────────────────
 TERRAIN_PATCH_MIN = 2

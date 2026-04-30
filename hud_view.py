@@ -148,6 +148,20 @@ class KeystoneBonusBannerHUDView:
 
 
 @dataclass(frozen=True)
+class BossHealthBarHUDView:
+    name: str
+    current_hp: int
+    max_hp: int
+    phase: int
+
+
+@dataclass(frozen=True)
+class BossIntroBannerHUDView:
+    text: str
+    age_fraction: float
+
+
+@dataclass(frozen=True)
 class OverlayHUDView:
     title: str
     title_color: tuple[int, int, int]
@@ -178,6 +192,8 @@ class HUDView:
     damage_numbers: tuple[DamageNumberHUDView, ...]
     biome_reward_flashes: tuple[BiomeRewardFlashHUDView, ...]
     keystone_bonus_banner: KeystoneBonusBannerHUDView | None = None
+    boss_health_bar: BossHealthBarHUDView | None = None
+    boss_intro_banner: BossIntroBannerHUDView | None = None
 
 
 def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
@@ -214,6 +230,27 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         else None
     )
 
+    boss_controller = getattr(dungeon, "boss_controller", None)
+    boss_health_bar = None
+    if boss_controller is not None:
+        boss = getattr(boss_controller, "boss", None)
+        if boss is not None and not getattr(boss_controller, "defeated", False):
+            boss_health_bar = BossHealthBarHUDView(
+                name=getattr(boss_controller, "name", "") or "",
+                current_hp=int(getattr(boss, "current_hp", 0)),
+                max_hp=max(1, int(getattr(boss, "max_hp", 1))),
+                phase=int(getattr(boss_controller, "current_phase", 1)),
+            )
+    boss_intro_data = damage_feedback.build_boss_intro_banner_view(now_ticks)
+    boss_intro_banner = (
+        BossIntroBannerHUDView(
+            text=boss_intro_data[0],
+            age_fraction=boss_intro_data[1],
+        )
+        if boss_intro_data is not None
+        else None
+    )
+
     return HUDView(
         current_hp=player.current_hp,
         max_hp=player.max_hp,
@@ -238,6 +275,8 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         damage_numbers=damage_numbers,
         biome_reward_flashes=biome_reward_flashes,
         keystone_bonus_banner=keystone_bonus_banner,
+        boss_health_bar=boss_health_bar,
+        boss_intro_banner=boss_intro_banner,
     )
 
 

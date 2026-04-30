@@ -2019,23 +2019,21 @@ _SHRINE_AURA_COLOR = (240, 220, 140, 90)
 
 
 class Boulder(pygame.sprite.Sprite):
-    """Telegraphed lane-roller hazard.
+    """Vertical single-trip boulder hazard.
 
-    Each cycle: telegraph window (boulder hidden offscreen, lane arrow shown
-    via ``draw_overlay``), then strike phase where the boulder rolls across
-    the lane at high speed.  On contact during the strike phase the player
-    takes damage + lane-direction knockback (rate-limited).
+    A boulder spawns just outside one wall (top or bottom) at a fixed
+    column, then rolls in a straight line at a constant speed until it
+    leaves the opposite wall, at which point it removes itself from its
+    sprite group.  There is no telegraph and no recycling — boulders are
+    transient projectiles fired by :class:`BoulderRunSpawner`.
 
     Config keys:
-        lane_y:               pixel center y of the lane
-        direction:            +1 (rolls right) or -1 (rolls left)
-        cycle_ms:             full cycle length (default 3600)
-        telegraph_ms:         windup window (default 900)
-        speed:                px per frame during strike (default 6)
-        damage:               HP damage on hit (default 10)
-        knockback_px:         horizontal displacement applied on hit
-        damage_cooldown_ms:   minimum gap between successive hits
-        offset_ms:            phase offset
+        lane_x:               pixel center x of the column the boulder rolls along
+        direction:            +1 (rolls down from top wall) or -1 (rolls up from bottom)
+        speed:                px per frame travelled along the lane (>0)
+        damage:               HP damage dealt on contact
+        knockback_px:         vertical displacement applied on hit
+        damage_cooldown_ms:   minimum gap between successive hits on the same player
     """
 
     SIZE = 32
@@ -2043,62 +2041,39 @@ class Boulder(pygame.sprite.Sprite):
     def __init__(self, config):
         super().__init__()
         self._config = config
-        self.lane_y = config["lane_y"]
+        self.lane_x = config["lane_x"]
         self.direction = 1 if config.get("direction", 1) >= 0 else -1
-        self.cycle_ms = config.get("cycle_ms", 3600)
-        self.telegraph_ms = config.get("telegraph_ms", 900)
-        self.speed = config.get("speed", 6) * self.direction
+        # Speed always stored as a positive magnitude; direction lives on
+        # ``self.direction`` so movement = speed * direction.
+        self.speed = abs(config.get("speed", 5))
         self.damage = config.get("damage", 10)
         self.knockback_px = config.get("knockback_px", 32)
         self.damage_cooldown_ms = config.get("damage_cooldown_ms", 700)
-        self.offset_ms = config.get("offset_ms", 0)
-        self._last_hit_at = -10**9
-        self._strike_cycle = -1
-        self.telegraphing = False
-        self.rolling = False
+        self._last_hit_at = -10 ** 9
         self.image = self._build_image()
-        # Park well offscreen until the first strike begins.
-        self.rect = self.image.get_rect(center=(-1000, self.lane_y))
-
-    # Lane geometry helpers --------------------------------------------------
-    def _lane_start_x(self):
-        from room import ROOM_COLS, TILE_SIZE
-        room_width = ROOM_COLS * TILE_SIZE
-        # Spawn just off the entry edge so the boulder sweeps across.
-        return -self.SIZE if self.direction > 0 else room_width + self.SIZE
+        # Spawn just outside the source wall so the boulder enters the
+        # play area on its first update.
+        from room import ROOM_ROWS, TILE_SIZE
+        room_height = ROOM_ROWS * TILE_SIZE
+        if self.direction > 0:
+            spawn_y = -self.SIZE  # source = top wall
+        else:
+            spawn_y = room_height + self.SIZE  # source = bottom wall
+        self.rect = self.image.get_rect(center=(self.lane_x, spawn_y))
 
     def _is_offscreen(self):
-        from room import ROOM_COLS, TILE_SIZE
-        room_width = ROOM_COLS * TILE_SIZE
+        from room import ROOM_ROWS, TILE_SIZE
+        room_height = ROOM_ROWS * TILE_SIZE
         if self.direction > 0:
-            return self.rect.left > room_width
-        return self.rect.right < 0
+            return self.rect.top > room_height
+        return self.rect.bottom < 0
 
-    def update(self, now_ticks):
-        phase = (now_ticks + self.offset_ms) % self.cycle_ms
-        cycle_index = (now_ticks + self.offset_ms) // self.cycle_ms
-        in_telegraph = phase < self.telegraph_ms
-        if in_telegraph:
-            self.telegraphing = True
-            self.rolling = False
-            self.rect.center = (-1000, self.lane_y)
-            return
-        # Strike phase.
-        self.telegraphing = False
-        if cycle_index != self._strike_cycle:
-            self._strike_cycle = cycle_index
-            self.rolling = True
-            self.rect.centery = self.lane_y
-            self.rect.centerx = self._lane_start_x()
-        if self.rolling:
-            self.rect.x += self.speed
-            if self._is_offscreen():
-                self.rolling = False
-                self.rect.center = (-1000, self.lane_y)
+    def update(self, now_ticks):  # noqa: ARG002  — uniform sprite signature
+        self.rect.y += int(round(self.speed * self.direction))
+        if self._is_offscreen():
+            self.kill()
 
     def apply_player_pressure(self, player):
-        if not self.rolling:
-            return False
         if not self.rect.colliderect(player.rect):
             return False
         import pygame as _pg
@@ -2107,8 +2082,8 @@ class Boulder(pygame.sprite.Sprite):
             return False
         self._last_hit_at = now_ticks
         player.take_damage(self.damage)
-        kx = self.knockback_px if self.direction > 0 else -self.knockback_px
-        player.rect.x += kx
+        ky = self.knockback_px if self.direction > 0 else -self.knockback_px
+        player.rect.y += ky
         return True
 
     def _build_image(self):
@@ -2122,21 +2097,107 @@ class Boulder(pygame.sprite.Sprite):
             surface, _BOULDER_OUTLINE,
             (size // 2, size // 2), size // 2 - 1, 2,
         )
-        # A couple of rocky speckles for texture.
         pygame.draw.circle(surface, _BOULDER_OUTLINE, (size // 3, size // 3), 2)
         pygame.draw.circle(surface, _BOULDER_OUTLINE, (2 * size // 3, 2 * size // 3), 2)
         return surface
 
-    def draw_overlay(self, surface):
-        if not self.telegraphing:
+
+class BoulderRunSpawner(pygame.sprite.Sprite):
+    """Invisible per-room spawner that fires :class:`Boulder` projectiles.
+
+    Owns a single source wall (``"top"`` or ``"bottom"``) chosen at room
+    build time.  Each frame, advances an internal timer; when the next
+    spawn time is reached, instantiates a :class:`Boulder` at a random
+    valid column with a random speed and adds it to the spawner's sprite
+    group, then schedules the next spawn at a random interval.
+
+    Config keys:
+        source_wall:    "top" or "bottom"
+        door_columns:   iterable of int columns to exclude (boulders never
+                        spawn on a door tile so traversal lanes stay clear)
+        speed_range:    (min, max) px/frame for boulder speed
+        interval_range: (min_ms, max_ms) cadence between successive spawns
+
+    Attributes:
+        objective_group:  set externally (by ``dungeon.py`` after construction)
+                          to the sprite group new boulders are added to
+        spawned:          int counter of how many boulders this spawner fired
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self.source_wall = config.get("source_wall", "top")
+        self.door_columns = set(config.get("door_columns") or ())
+        from settings import (
+            BOULDER_BASE_SPEED_RANGE, BOULDER_SPAWN_INTERVAL_RANGE_MS,
+            BOULDER_DAMAGE,
+        )
+        self.speed_range = config.get("speed_range", BOULDER_BASE_SPEED_RANGE)
+        self.interval_range = config.get(
+            "interval_range", BOULDER_SPAWN_INTERVAL_RANGE_MS,
+        )
+        self.damage = config.get("damage", BOULDER_DAMAGE)
+        # Invisible spawner — give it a 1x1 transparent image so pygame
+        # group draw passes are no-ops.
+        self.image = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self.rect = self.image.get_rect(center=(-1000, -1000))
+        # Set externally by dungeon.py after construction so the spawner
+        # can directly add new boulders to the live objective group.
+        self.objective_group = None
+        self.spawned = 0
+        # Per-instance RNG so tests can seed deterministically.
+        self._rng = config.get("rng") or random
+        # First spawn fires after the first interval — gives the player a
+        # beat to enter the room before boulders start flying.
+        self._next_spawn_at_ms = None
+
+    def _valid_columns(self):
+        """Return the list of spawn columns (interior cols minus doors)."""
+        from room import ROOM_COLS
+        return [
+            c for c in range(2, ROOM_COLS - 2)
+            if c not in self.door_columns
+        ]
+
+    def _schedule_next_spawn(self, now_ticks):
+        lo, hi = self.interval_range
+        self._next_spawn_at_ms = now_ticks + self._rng.randint(int(lo), int(hi))
+
+    def update(self, now_ticks):
+        if self._next_spawn_at_ms is None:
+            self._schedule_next_spawn(now_ticks)
             return
-        from room import ROOM_COLS, TILE_SIZE
-        room_width = ROOM_COLS * TILE_SIZE
-        # Draw a translucent arrow along the lane indicating travel direction.
-        height = 18
-        arrow = pygame.Surface((room_width, height), pygame.SRCALPHA)
-        arrow.fill(_BOULDER_TELEGRAPH_COLOR)
-        surface.blit(arrow, (0, self.lane_y - height // 2))
+        if now_ticks < self._next_spawn_at_ms:
+            return
+        self._spawn_boulder(now_ticks)
+        self._schedule_next_spawn(now_ticks)
+
+    def _spawn_boulder(self, now_ticks):  # noqa: ARG002
+        from room import TILE_SIZE
+        cols = self._valid_columns()
+        if not cols:
+            return
+        col = self._rng.choice(cols)
+        lane_x = col * TILE_SIZE + TILE_SIZE // 2
+        lo, hi = self.speed_range
+        speed = self._rng.uniform(float(lo), float(hi))
+        direction = 1 if self.source_wall == "top" else -1
+        boulder = Boulder({
+            "lane_x": lane_x,
+            "direction": direction,
+            "speed": speed,
+            "damage": self.damage,
+        })
+        self.spawned += 1
+        if self.objective_group is not None:
+            self.objective_group.add(boulder)
+        # Stash the most recent boulder on the config so tests / tools can
+        # inspect spawner output without poking at the live group.
+        self._config["last_spawned"] = boulder
+
+    def draw_overlay(self, surface):  # noqa: ARG002 — invisible
+        return
 
 
 class ShrineGlyph(pygame.sprite.Sprite):
@@ -2220,4 +2281,102 @@ class ShrineGlyph(pygame.sprite.Sprite):
         surface.blit(
             aura,
             (self.rect.centerx - radius, self.rect.centery - radius),
+        )
+
+
+# ── Phase 0c: biome-agnostic boss orchestration ─────────
+
+
+class BossEvents:
+    """Per-tick event bundle returned by :meth:`BossController.update`.
+
+    Attributes:
+        new_waves:        wave thresholds (HP fractions in (0, 1)) that
+                          fired this tick. Empty tuple if none fired.
+        phase_advanced:   True the single tick the boss crosses its
+                          phase-2 HP threshold.
+        defeated:         True the single tick the boss is detected dead
+                          (HP<=0 or sprite no longer ``alive()``).
+    """
+
+    __slots__ = ("new_waves", "phase_advanced", "defeated")
+
+    def __init__(self, new_waves=(), phase_advanced=False, defeated=False):
+        self.new_waves = tuple(new_waves)
+        self.phase_advanced = bool(phase_advanced)
+        self.defeated = bool(defeated)
+
+
+class BossController:
+    """Pure orchestrator for a mini-boss encounter.
+
+    The controller tracks a boss reference (any sprite with
+    ``current_hp`` / ``max_hp`` and the standard ``alive()`` method) and
+    converts HP transitions into one-shot events:
+
+    * **wave thresholds** — list of HP fractions (descending). Each
+      threshold fires the first tick the boss's HP ratio drops to or
+      below it. Useful for spawning add waves.
+    * **phase threshold** — single HP fraction (default 0.5) that fires
+      a one-shot phase-2 transition. Use for unlocking new attacks.
+    * **defeated** — fires the single tick the boss is detected dead.
+
+    The controller is intentionally biome-agnostic: it owns NO behaviour,
+    only state. The caller (room logic) reads the returned
+    :class:`BossEvents` and decides what to do — spawn enemies, unseal
+    portals, drop loot, etc.
+    """
+
+    def __init__(
+        self,
+        boss,
+        *,
+        name="",
+        wave_thresholds=(0.75, 0.5, 0.25),
+        phase_threshold=0.5,
+    ):
+        self.boss = boss
+        self.name = str(name)
+        # Sort high→low so we always fire in damage order.
+        self.wave_thresholds = tuple(
+            sorted((float(t) for t in wave_thresholds), reverse=True)
+        )
+        self.phase_threshold = float(phase_threshold)
+        self.fired_waves: set = set()
+        self.current_phase = 1
+        self.defeated = False
+
+    @property
+    def hp_ratio(self) -> float:
+        max_hp = max(1, int(getattr(self.boss, "max_hp", 1)))
+        cur = max(0, int(getattr(self.boss, "current_hp", 0)))
+        return cur / max_hp
+
+    def update(self) -> BossEvents:
+        ratio = self.hp_ratio
+        new_waves = []
+        for thr in self.wave_thresholds:
+            if thr in self.fired_waves:
+                continue
+            if ratio <= thr:
+                self.fired_waves.add(thr)
+                new_waves.append(thr)
+
+        phase_advanced = False
+        if self.current_phase < 2 and ratio <= self.phase_threshold:
+            self.current_phase = 2
+            phase_advanced = True
+
+        defeated_now = False
+        if not self.defeated:
+            alive_fn = getattr(self.boss, "alive", None)
+            is_alive = alive_fn() if callable(alive_fn) else True
+            if ratio <= 0 or not is_alive:
+                self.defeated = True
+                defeated_now = True
+
+        return BossEvents(
+            new_waves=tuple(new_waves),
+            phase_advanced=phase_advanced,
+            defeated=defeated_now,
         )

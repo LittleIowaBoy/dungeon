@@ -61,6 +61,7 @@ import damage_feedback
 import dodge_rules
 import enemy_collision_rules
 import enemy_attack_rules
+import armor_rules
 import identity_runes
 import rune_rules
 import stat_runes
@@ -339,6 +340,59 @@ class Game:
                 if config is not None:
                     self.dungeon.objective_group.add(Heartstone(config))
 
+    def _update_boss_controller(self):
+        """Drive the active room's BossController and react to its events.
+
+        Currently the only boss is the Stone Golem (``earth_golem_arena``).
+        Wave thresholds spawn :class:`~enemies.GolemShard` reinforcements
+        around the Golem; the defeat event rolls + grants armor loot via
+        :mod:`armor_rules` exactly once.
+        """
+        controller = getattr(self.dungeon, "boss_controller", None)
+        if controller is None:
+            return
+        events = controller.update()
+        arena_cfg = getattr(controller, "arena_config", None)
+        if arena_cfg is None:
+            return
+
+        # Wave triggers — spawn GolemShard adds for each new threshold.
+        if events.new_waves:
+            from enemies import GolemShard
+            wave_specs = arena_cfg.get("wave_specs", {})
+            radius = int(arena_cfg.get("shard_spawn_radius", 0))
+            boss = controller.boss
+            cx = boss.rect.centerx if boss is not None else 0
+            cy = boss.rect.centery if boss is not None else 0
+            import math
+            import random as _random
+            for threshold in events.new_waves:
+                count = int(wave_specs.get(threshold, 0))
+                if count <= 0:
+                    continue
+                for i in range(count):
+                    # Distribute shards evenly around the Golem with a
+                    # small random jitter so successive waves don't pile
+                    # onto the same exact pixels.
+                    angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
+                    sx = int(cx + radius * math.cos(angle))
+                    sy = int(cy + radius * math.sin(angle))
+                    shard = GolemShard(sx, sy)
+                    self.dungeon.enemy_group.add(shard)
+
+        # Defeat: roll + grant loot once.
+        if events.defeated and not arena_cfg.get("loot_granted"):
+            arena_cfg["loot_granted"] = True
+            drops = armor_rules.roll_boss_loot(self.player.progress)
+            if drops:
+                armor_rules.grant_boss_loot(self.player.progress, drops)
+                # HUD banner per drop so the player sees what dropped.
+                import damage_feedback
+                from item_catalog import ITEM_DATABASE
+                for item_id in drops:
+                    name = ITEM_DATABASE.get(item_id, {}).get("name", item_id)
+                    damage_feedback.report_boss_loot(name)
+
     def _update_heartstone(self, room, hp_at_frame_start):
         """Pickup / carry-sync / damage-drop / portal-delivery for the Heartstone."""
         state = room.heartstone_state() if hasattr(room, "heartstone_state") else None
@@ -566,6 +620,13 @@ class Game:
         scaled = stat_runes.modify_outgoing_damage(
             self.player, enemy, hitbox.damage
         )
+        # Equipment-derived flat outgoing-damage bonus (e.g. Golem Fists).
+        scaled = armor_rules.apply_outgoing_damage_multiplier(self.player, scaled)
+        # Equipment-derived crit chance (e.g. Golem Crown).  Applied after
+        # all multiplicative scaling so the crit boosts the final number.
+        crit_mult = armor_rules.roll_crit_multiplier(self.player)
+        if crit_mult != 1.0:
+            scaled = max(0, int(round(scaled * crit_mult)))
         # Crystal Vein room buff: each shattered crystal grants +N% damage
         # for the rest of the room.  No-op when no buffs are registered.
         room = self.dungeon.current_room if self.dungeon is not None else None
@@ -849,6 +910,10 @@ class Game:
             now_ticks, self.dungeon.enemy_group
         )
         self._apply_room_objective_update(objective_update)
+        # Boss orchestration: drive the per-room BossController and react
+        # to the events it emits (wave triggers, defeat loot drop).  No-op
+        # when the current room has no boss.
+        self._update_boss_controller()
         # Test rooms with respawn enabled re-spawn slain configured enemies
         # after their per-room delay so designers can keep testing damage.
         if room.respawn_enemies_after_ms is not None:

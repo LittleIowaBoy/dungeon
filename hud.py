@@ -52,6 +52,8 @@ class HUD:
         self._draw_dodge_indicator(surface, view.dodge)
         self._draw_ability_indicator(surface, view.ability)
         self._draw_keystone_bonus_banner(surface, view.keystone_bonus_banner)
+        self._draw_boss_health_bar(surface, view.boss_health_bar)
+        self._draw_boss_intro_banner(surface, view.boss_intro_banner)
 
     # ── world-space health bars ─────────────────────────
     def _draw_entity_health_bars(self, surface, bar_views):
@@ -131,6 +133,54 @@ class HUD:
         composite.blit(fill, (1, 1))
         composite.set_alpha(alpha)
         rect = composite.get_rect(center=(SCREEN_WIDTH // 2, 56 - rise))
+        surface.blit(composite, rect)
+
+    # ── boss health bar (top-of-screen, mini-boss only) ─
+    def _draw_boss_health_bar(self, surface, bar):
+        if bar is None or bar.max_hp <= 0:
+            return
+        bar_w = min(420, SCREEN_WIDTH - 80)
+        bar_h = 16
+        x = (SCREEN_WIDTH - bar_w) // 2
+        y = 80
+        ratio = max(0.0, min(1.0, bar.current_hp / bar.max_hp))
+        pygame.draw.rect(surface, COLOR_HEALTH_BG, (x, y, bar_w, bar_h))
+        pygame.draw.rect(
+            surface, COLOR_HEALTH_BAR,
+            (x, y, int(bar_w * ratio), bar_h),
+        )
+        pygame.draw.rect(surface, COLOR_WHITE, (x, y, bar_w, bar_h), 1)
+        if bar.name:
+            label_font = pygame.font.SysFont("consolas", 16, bold=True)
+            label = bar.name
+            if bar.phase >= 2:
+                label = f"{label}  \u2014  PHASE 2"
+            outline = label_font.render(label, True, COLOR_BLACK)
+            fill = label_font.render(label, True, COLOR_WHITE)
+            lw, lh = fill.get_size()
+            lx = (SCREEN_WIDTH - lw) // 2
+            ly = y - lh - 2
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                surface.blit(outline, (lx + dx, ly + dy))
+            surface.blit(fill, (lx, ly))
+
+    # ── boss intro banner (mirrors keystone style, red palette) ─
+    def _draw_boss_intro_banner(self, surface, banner):
+        if banner is None:
+            return
+        font = pygame.font.SysFont("consolas", 36, bold=True)
+        alpha = max(0, int(255 * (1.0 - banner.age_fraction)))
+        rise = int(28 * banner.age_fraction)
+        text = banner.text.upper()
+        outline = font.render(text, True, COLOR_BLACK)
+        fill = font.render(text, True, COLOR_HEALTH_BAR)
+        ow, oh = fill.get_size()
+        composite = pygame.Surface((ow + 2, oh + 2), pygame.SRCALPHA)
+        for dx, dy in ((0, 0), (2, 0), (0, 2), (2, 2)):
+            composite.blit(outline, (dx, dy))
+        composite.blit(fill, (1, 1))
+        composite.set_alpha(alpha)
+        rect = composite.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 3 - rise))
         surface.blit(composite, rect)
 
     # ── health bar ──────────────────────────────────────

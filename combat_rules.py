@@ -1,5 +1,6 @@
 """Combat-specific runtime rules for Player state."""
 
+import armor_rules
 import damage_feedback
 import dodge_rules
 import identity_runes
@@ -9,6 +10,7 @@ from settings import INVINCIBILITY_MS
 
 def reset_runtime_combat(player, max_hp):
     base_max = stat_runes.modify_max_hp(player, max_hp)
+    base_max = armor_rules.apply_max_hp_bonus(player, base_max)
     player.max_hp = base_max
     player.current_hp = base_max
     player._invincible_until = 0
@@ -39,6 +41,7 @@ def take_damage(player, amount, now_ticks):
         return
 
     amount = stat_runes.modify_incoming_damage(player, amount)
+    amount = armor_rules.apply_incoming_damage_multiplier(player, amount)
     if amount <= 0:
         player._invincible_until = now_ticks + INVINCIBILITY_MS
         return

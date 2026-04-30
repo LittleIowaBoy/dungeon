@@ -12,8 +12,8 @@ from room import (
     ROOM_COLS, ROOM_ROWS,
 )
 from settings import (
-    TILE_SIZE, HAZARD_TICK_MS, HAZARD_TICK_DAMAGE,
-    QUICKSAND_DROWN_MS, CURRENT_PUSH_SPEED,
+    TILE_SIZE, HAZARD_TICK_MS, HAZARD_TICK_DAMAGE, STALAGMITE_STEP_DAMAGE,
+    QUICKSAND_PULL_SPEED, CURRENT_PUSH_SPEED,
 )
 
 
@@ -46,6 +46,7 @@ class _StubRoom:
         self.current_vectors = current_vectors or {}
         self._quicksand_drown_ms = 0
         self._hazard_last_tick_ms = 0
+        self._previous_player_tile: tuple[int, int] | None = None
 
     def tile_at(self, col, row):
         if 0 <= col < ROOM_COLS and 0 <= row < ROOM_ROWS:
@@ -105,62 +106,122 @@ class TerrainEffectsTests(unittest.TestCase):
         terrain_effects.apply_terrain_effects(player, room, 0, 16)
         self.assertLessEqual(player.current_hp, 0)
 
-    def test_spike_patch_ticks_at_cadence(self):
+    def test_spike_patch_damages_only_on_tile_entry(self):
+        """SPIKE_PATCH deals damage on the frame the player moves ONTO it.
+
+        Subsequent frames at the same tile coordinate are no-ops ("standing
+        motionless"), and stepping OFF a spike tile does not damage.
+        Walking from one spike tile to an adjacent spike tile triggers a
+        new entry damage event.
+        """
         grid = _wall_border_grid()
         grid[5][5] = SPIKE_PATCH
+        grid[5][6] = SPIKE_PATCH  # adjacent spike for the cross-tile test
         room = _StubRoom(grid=grid)
-        player = _make_player(5, 5)
+        player = _make_player(4, 5)  # start on FLOOR adjacent to the spike
         hp_before = player.current_hp
 
-        # First call ticks immediately (last_tick_ms == 0).
-        terrain_effects.apply_terrain_effects(player, room, HAZARD_TICK_MS, 16)
-        self.assertEqual(player.current_hp, hp_before - HAZARD_TICK_DAMAGE)
+        # Frame 1: player on FLOOR, no damage; pointer initialised.
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        self.assertEqual(player.current_hp, hp_before)
 
-        # A subsequent call within the tick window does nothing.
-        terrain_effects.apply_terrain_effects(player, room, HAZARD_TICK_MS + 50, 16)
-        self.assertEqual(player.current_hp, hp_before - HAZARD_TICK_DAMAGE)
-
-        # Past the cadence, another tick fires.  Clear i-frames left over
-        # from take_damage so the second hit can land.
-        player._invincible_until = 0
-        terrain_effects.apply_terrain_effects(
-            player, room, HAZARD_TICK_MS * 2 + 100, 16,
+        # Step onto first spike tile: damage fires once.
+        player.rect.center = (
+            5 * TILE_SIZE + TILE_SIZE // 2,
+            5 * TILE_SIZE + TILE_SIZE // 2,
         )
-        self.assertEqual(player.current_hp, hp_before - 2 * HAZARD_TICK_DAMAGE)
+        terrain_effects.apply_terrain_effects(player, room, 16, 16)
+        self.assertEqual(player.current_hp, hp_before - STALAGMITE_STEP_DAMAGE)
 
-    def test_quicksand_drowns_after_threshold(self):
+        # Standing motionless on the same spike tile: no further damage.
+        player._invincible_until = 0  # bypass i-frames so we can verify
+        for tick in range(2, 10):
+            terrain_effects.apply_terrain_effects(player, room, tick * 16, 16)
+        self.assertEqual(player.current_hp, hp_before - STALAGMITE_STEP_DAMAGE)
+
+        # Stepping onto the adjacent spike tile triggers a new entry hit.
+        player.rect.center = (
+            6 * TILE_SIZE + TILE_SIZE // 2,
+            5 * TILE_SIZE + TILE_SIZE // 2,
+        )
+        terrain_effects.apply_terrain_effects(player, room, 200, 16)
+        self.assertEqual(player.current_hp, hp_before - 2 * STALAGMITE_STEP_DAMAGE)
+
+        # Stepping OFF onto FLOOR: no damage.
+        player._invincible_until = 0
+        player.rect.center = (
+            7 * TILE_SIZE + TILE_SIZE // 2,
+            5 * TILE_SIZE + TILE_SIZE // 2,
+        )
+        terrain_effects.apply_terrain_effects(player, room, 300, 16)
+        self.assertEqual(player.current_hp, hp_before - 2 * STALAGMITE_STEP_DAMAGE)
+
+    def test_quicksand_pulls_player_toward_tile_centre(self):
+        """Standing on a quicksand tile drifts the player toward its centre.
+
+        The drowning timer model (lethal after a few seconds standing
+        still) was replaced by a pull-to-centre + dodge-to-escape loop:
+        no damage is dealt by the tile itself; the dodge ability is the
+        intended escape mechanic (see ``test_quicksand_pull_suppressed_*``).
+        """
+        grid = _wall_border_grid()
+        grid[5][5] = QUICKSAND
+        room = _StubRoom(grid=grid)
+        # Place player off-centre within the quicksand tile so the pull
+        # has a non-zero direction.
+        player = _make_player(5, 5)
+        tile_centre = (5 * TILE_SIZE + TILE_SIZE // 2,
+                       5 * TILE_SIZE + TILE_SIZE // 2)
+        player.rect.center = (tile_centre[0] + 6, tile_centre[1])
+        player._invincible_until = 0  # clear spawn i-frames
+        hp_before = player.current_hp
+
+        # A few ticks: player drifts strictly toward the tile centre and
+        # never loses HP.  Stop short of reaching the centre so every
+        # tick should still report ``quicksand_pull = True``.
+        prev_dist_x = abs(player.rect.centerx - tile_centre[0])
+        for _ in range(3):
+            diag = terrain_effects.apply_terrain_effects(player, room, 0, 16)
+            self.assertTrue(diag["quicksand_pull"])
+            self.assertEqual(player.current_hp, hp_before)
+            new_dist_x = abs(player.rect.centerx - tile_centre[0])
+            self.assertLess(new_dist_x, prev_dist_x)
+            prev_dist_x = new_dist_x
+
+    def test_quicksand_pull_suppressed_when_invincible(self):
+        """Dodge / spawn i-frames must let the player escape the pull.
+
+        ``terrain_effects`` skips the pull while the player is invincible
+        so the dodge ability (which grants i-frames + a 2.4x speed burst)
+        always wins the tug-of-war.
+        """
         grid = _wall_border_grid()
         grid[5][5] = QUICKSAND
         room = _StubRoom(grid=grid)
         player = _make_player(5, 5)
+        tile_centre = (5 * TILE_SIZE + TILE_SIZE // 2,
+                       5 * TILE_SIZE + TILE_SIZE // 2)
+        player.rect.center = (tile_centre[0] + 6, tile_centre[1])
+        # Force i-frames active for an absurd duration.
+        player._invincible_until = 10 ** 9
+        diag = terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        self.assertFalse(diag["quicksand_pull"])
+        # Position unchanged — no pull while invincible.
+        self.assertEqual(player.rect.centerx, tile_centre[0] + 6)
 
-        # Accumulate just under the threshold.
-        for _ in range(5):
-            diag = terrain_effects.apply_terrain_effects(player, room, 0, 500)
-        self.assertGreater(player.current_hp, 0)
-        self.assertEqual(diag["drown_ms"], 2500)
-
-        # One more step pushes us over.
-        terrain_effects.apply_terrain_effects(player, room, 0, 1000)
-        self.assertLessEqual(player.current_hp, 0)
-        # Timer resets after lethal damage so the room can re-spawn the
-        # player without immediately killing them again.
-        self.assertEqual(room._quicksand_drown_ms, 0)
-
-    def test_quicksand_timer_resets_on_step_off(self):
+    def test_quicksand_pull_stops_when_stepping_off(self):
+        """Stepping off the quicksand tile clears the pull diagnostic."""
         grid = _wall_border_grid()
         grid[5][5] = QUICKSAND
         room = _StubRoom(grid=grid)
         player = _make_player(5, 5)
-
-        terrain_effects.apply_terrain_effects(player, room, 0, 1000)
-        self.assertEqual(room._quicksand_drown_ms, 1000)
-
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
         # Step off onto floor.
         player.rect.center = (6 * TILE_SIZE + TILE_SIZE // 2,
                               5 * TILE_SIZE + TILE_SIZE // 2)
-        terrain_effects.apply_terrain_effects(player, room, 0, 16)
-        self.assertEqual(room._quicksand_drown_ms, 0)
+        player._invincible_until = 0  # clear spawn i-frames
+        diag = terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        self.assertFalse(diag["quicksand_pull"])
 
     def test_current_pushes_player_along_vector(self):
         grid = _wall_border_grid()
@@ -190,10 +251,17 @@ class TerrainEffectsTests(unittest.TestCase):
         grid = _wall_border_grid()
         grid[5][5] = SPIKE_PATCH
         room = _StubRoom(grid=grid)
-        player = _make_player(5, 5)
+        player = _make_player(4, 5)  # start adjacent so we can step onto spike
         # Force i-frames active for an absurd duration.
         player._invincible_until = 10 ** 9
         hp_before = player.current_hp
+        # Initialise the previous-tile pointer.
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        # Step onto spike with i-frames active — no damage.
+        player.rect.center = (
+            5 * TILE_SIZE + TILE_SIZE // 2,
+            5 * TILE_SIZE + TILE_SIZE // 2,
+        )
         terrain_effects.apply_terrain_effects(player, room, HAZARD_TICK_MS, 16)
         self.assertEqual(player.current_hp, hp_before)
 

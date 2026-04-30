@@ -12,8 +12,8 @@ complex hazards (cave-in, thin-ice collapse, tremors) are implemented as
 telegraphed entities in :mod:`objective_entities` — not here.
 """
 from settings import (
-    HAZARD_TICK_MS, HAZARD_TICK_DAMAGE,
-    QUICKSAND_DROWN_MS, CURRENT_PUSH_SPEED,
+    HAZARD_TICK_MS, HAZARD_TICK_DAMAGE, STALAGMITE_STEP_DAMAGE,
+    QUICKSAND_PULL_SPEED, CURRENT_PUSH_SPEED, TILE_SIZE,
 )
 
 
@@ -36,10 +36,10 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
     Returns
     -------
     dict
-        Diagnostics for tests/HUD (``{"tile": str, "drown_ms": int,
+        Diagnostics for tests/HUD (``{"tile": str, "quicksand_pull": bool,
         "tick_damage": int, "pushed": bool}``).  Stable contract.
     """
-    diag = {"tile": "floor", "drown_ms": 0, "tick_damage": 0, "pushed": False}
+    diag = {"tile": "floor", "quicksand_pull": False, "tick_damage": 0, "pushed": False}
     if room is None or player is None:
         return diag
 
@@ -53,32 +53,62 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
     diag["tile"] = tile
     invincible = bool(getattr(player, "is_invincible", False))
 
+    # Per-tile transition tracking.  Computed up-front so all branches
+    # share a single source of truth and so the previous-tile pointer is
+    # advanced exactly once per frame.
+    cur_tile_coord = (
+        int(player.rect.centerx) // TILE_SIZE,
+        int(player.rect.centery) // TILE_SIZE,
+    )
+    prev_tile_coord = getattr(room, "_previous_player_tile", None)
+    stepped_to_new_tile = (
+        prev_tile_coord is not None and prev_tile_coord != cur_tile_coord
+    )
+    # Always advance the pointer for next frame, regardless of which
+    # branches below early-return.
+    room._previous_player_tile = cur_tile_coord
+
     # ── PIT_TILE: instant lethal step ──────────────────────
     if tile == PIT_TILE:
         if not invincible and player.current_hp > 0:
             player.take_damage(player.current_hp)
         return diag
 
-    # ── QUICKSAND: drowning timer ──────────────────────────
+    # ── QUICKSAND: pull toward tile centre ─────────────
+    # Each frame the player stands on a quicksand tile, push them a small
+    # amount toward the tile's pixel centre.  Combined with the slow
+    # ``TERRAIN_SPEED['quicksand']`` multiplier this creates a sticky
+    # "trap" feel: standing still drifts the player into the centre of
+    # the patch and ordinary movement is too slow to escape.
+    #
+    # Pull is suppressed while the player is invincible (dodge / spawn
+    # i-frames) so the dodge ability always wins the tug-of-war — this
+    # is the intended escape mechanic ("mash dodge to break free").
     if tile == QUICKSAND:
-        room._quicksand_drown_ms += int(dt_ms)
-        diag["drown_ms"] = room._quicksand_drown_ms
-        if room._quicksand_drown_ms >= QUICKSAND_DROWN_MS:
-            if not invincible and player.current_hp > 0:
-                player.take_damage(player.current_hp)
-            room._quicksand_drown_ms = 0
+        if not invincible:
+            cx, cy = cur_tile_coord
+            tile_cx = cx * TILE_SIZE + TILE_SIZE // 2
+            tile_cy = cy * TILE_SIZE + TILE_SIZE // 2
+            dx = tile_cx - player.rect.centerx
+            dy = tile_cy - player.rect.centery
+            mag = (dx * dx + dy * dy) ** 0.5
+            if mag > 0.5:
+                pull_x = (dx / mag) * QUICKSAND_PULL_SPEED
+                pull_y = (dy / mag) * QUICKSAND_PULL_SPEED
+                _push_player(player, room, pull_x, pull_y)
+                diag["quicksand_pull"] = True
         return diag
-    # Reset drowning the moment the player steps off.
-    if room._quicksand_drown_ms:
-        room._quicksand_drown_ms = 0
 
-    # ── SPIKE_PATCH: passive tick damage ───────────────────
+    # ── SPIKE_PATCH: per-tile-entry damage ─────────────────
+    # Damage fires only on the frame the player moves ONTO a new spike
+    # tile.  Standing motionless on a spike tile and stepping OFF a
+    # spike tile do not deal damage.  Walking from one spike tile to
+    # an adjacent spike tile does damage on the transition (each
+    # "step onto" is its own event).
     if tile == SPIKE_PATCH:
-        if now_ticks - room._hazard_last_tick_ms >= HAZARD_TICK_MS:
-            room._hazard_last_tick_ms = now_ticks
-            if not invincible:
-                player.take_damage(HAZARD_TICK_DAMAGE)
-                diag["tick_damage"] = HAZARD_TICK_DAMAGE
+        if stepped_to_new_tile and not invincible:
+            player.take_damage(STALAGMITE_STEP_DAMAGE)
+            diag["tick_damage"] = STALAGMITE_STEP_DAMAGE
 
     # ── CURRENT: directional push (additive to movement) ───
     if tile == CURRENT:

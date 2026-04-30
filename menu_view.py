@@ -317,9 +317,30 @@ def build_character_customize_view(screen):
     if compatible_items:
         selected_item_index = min(screen.selected_item, len(compatible_items) - 1)
 
+    # Equipment-derived stat summary (Phase 0e).  Empty string when no
+    # bonus-bearing armor is currently equipped, so the legacy default
+    # subtitle stays in place.
+    import armor_rules  # local to avoid menu_view top-level cycle
+    stats = armor_rules.aggregate_equipped_stats(screen.progress)
+    parts = []
+    if stats["max_hp_bonus"]:
+        parts.append(f"+{int(stats['max_hp_bonus'])} HP")
+    if stats["crit_chance"]:
+        parts.append(f"+{int(round(stats['crit_chance'] * 100))}% crit")
+    if stats["damage_reduction"]:
+        parts.append(f"+{int(round(stats['damage_reduction'] * 100))}% DR")
+    if stats["speed_bonus"]:
+        parts.append(f"+{int(round(stats['speed_bonus'] * 100))}% speed")
+    if stats["outgoing_damage_bonus"]:
+        parts.append(f"+{int(round(stats['outgoing_damage_bonus'] * 100))}% damage")
+    if parts:
+        subtitle = "Equipped bonuses: " + ", ".join(parts)
+    else:
+        subtitle = "Select a slot, then equip from stored compatible gear."
+
     return CharacterCustomizeView(
         title="Character Loadout",
-        subtitle="Select a slot, then equip from stored compatible gear.",
+        subtitle=subtitle,
         slots=slots,
         selected_slot_index=screen.selected_slot,
         slot_panel_focused=screen.focus == "slots",

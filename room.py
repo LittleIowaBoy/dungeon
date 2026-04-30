@@ -22,6 +22,11 @@ from settings import (
     CHEST_SPAWN_CHANCE,
     TERRAIN_PATCH_MIN, TERRAIN_PATCH_MAX,
     TERRAIN_PATCH_SIZE_MIN, TERRAIN_PATCH_SIZE_MAX,
+    STALAGMITE_FIELD_DOOR_BUFFER, STALAGMITE_FIELD_SINGLETON_COUNT_RANGE,
+    QUICKSAND_TRAP_DOOR_BUFFER,
+    WATER_RIVER_DOOR_BUFFER, WATER_RIVER_WIDTH_RANGE,
+    WATER_WATERFALL_BAND_WIDTH, WATER_WATERFALL_POOL_RADIUS,
+    WATER_WATERFALL_DOOR_BUFFER,
 )
 from enemies import (
     ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy,
@@ -353,6 +358,13 @@ class Room:
 
         # build grid
         self.grid = [[FLOOR] * ROOM_COLS for _ in range(ROOM_ROWS)]
+        # ``current_vectors`` is consulted during _place_terrain polish
+        # for hazard-room families (e.g. water_river_room) that lay
+        # CURRENT tiles, so initialise it before terrain placement.
+        self.current_vectors: dict[tuple[int, int], tuple[float, float]] = {}
+        # Stash for the waterfall room's chest pocket (set during
+        # polish; consumed during chest placement below).
+        self._waterfall_chest_tile: tuple[int, int] | None = None
         self._place_walls()
         self._place_doors()
         self._place_terrain()
@@ -366,10 +378,19 @@ class Room:
         # builders can override these defaults — e.g. earth_echo_cavern
         # narrows ``vision_radius`` to enable the fog-of-war camera pass.
         self.vision_radius: int | None = None
-        self.current_vectors: dict[tuple[int, int], tuple[float, float]] = {}
         self._room_buffs: list[dict] = []
+        # Per-frame quicksand pull tracking.  The drowning-timer model has
+        # been replaced with pull-to-tile-centre (see terrain_effects.py),
+        # but the legacy field name is preserved as a no-op so older
+        # save snapshots / room-test stubs that initialise it stay valid.
         self._quicksand_drown_ms: int = 0
         self._hazard_last_tick_ms: int = 0
+        # Tracks the player's last tile coordinate so terrain_effects can
+        # detect the per-tile transition that triggers SPIKE_PATCH damage.
+        # ``None`` means "no previous tile recorded yet" — the first tick
+        # after room entry initialises the value without dealing damage,
+        # so the player's spawn tile never auto-damages on entry.
+        self._previous_player_tile: tuple[int, int] | None = None
 
         # spawn configs (created once, enemies re-instantiated on each visit)
         self.enemy_configs = self._gen_enemy_configs()
@@ -414,6 +435,10 @@ class Room:
                 self.chest_pos = self._trap_reward_position()
         elif self.room_plan and self.room_plan.room_id == TUNING_TEST_ROOM_ID:
             self.chest_pos = None
+        elif self.room_plan and self.room_plan.room_id == "water_waterfall_room" and self._waterfall_chest_tile is not None:
+            cc, rr = self._waterfall_chest_tile
+            self.chest_pos = (cc * TILE_SIZE + TILE_SIZE // 2,
+                              rr * TILE_SIZE + TILE_SIZE // 2)
         elif self.room_plan and self.room_plan.guaranteed_chest:
             self.chest_pos = self._random_floor_pos(margin=3)
         elif random.random() < chest_spawn_chance:
@@ -486,6 +511,7 @@ class Room:
         self._room_buffs = []
         self._quicksand_drown_ms = 0
         self._hazard_last_tick_ms = 0
+        self._previous_player_tile = None
 
     def get_wall_rects(self):
         """Return a list of pygame.Rects for all WALL tiles.
@@ -582,6 +608,24 @@ class Room:
                 self.grid[mid_row + dr][ROOM_COLS - 1] = DOOR
 
     def _place_terrain(self):
+        # Boulder Run is an open arena: skip random terrain entirely so
+        # the vertical boulder lanes never clip through patches.  The
+        # boulder spawner provides the room's only obstacles.
+        if (
+            self.room_plan is not None
+            and self.room_plan.room_id in ("earth_boulder_run", "earth_golem_arena")
+        ):
+            return
+        # Waterfall room: skip random terrain (the cascade is the room's
+        # only feature) and run the dedicated polish directly so the
+        # builder still lays its CURRENT band + WATER pool + chest pocket.
+        if (
+            self.room_plan is not None
+            and self.room_plan.room_id == "water_waterfall_room"
+        ):
+            self._polish_waterfall_room()
+            return
+
         if self.room_plan and self.room_plan.terrain_patch_count_range:
             count_lo, count_hi = self.room_plan.terrain_patch_count_range
         else:
@@ -608,6 +652,351 @@ class Room:
 
         if self.room_plan and self.room_plan.clear_center:
             self._clear_center_arena()
+
+        # Per-room polish for hazard rooms.  Pure post-processing on top
+        # of the rectangle-cluster output so other rooms keep their
+        # existing placement untouched.
+        if self.room_plan is not None:
+            if self.room_plan.room_id == "earth_stalagmite_field":
+                self._polish_stalagmite_field()
+            elif self.room_plan.room_id == "earth_quicksand_trap":
+                self._polish_quicksand_trap()
+            elif self.room_plan.room_id == "water_river_room":
+                self._polish_river_room()
+            elif self.room_plan.room_id == "water_waterfall_room":
+                self._polish_waterfall_room()
+
+    def _polish_stalagmite_field(self):
+        """Refine the spike-patch grid for the Stalagmite Field room.
+
+        Three-pass cleanup:
+
+        1. Clear any spike tile within :data:`STALAGMITE_FIELD_DOOR_BUFFER`
+           chebyshev distance of an open door, so the player never spawns
+           on top of damage.
+        2. BFS from each open-door interior tile to the room centre.  If
+           an entrance is walled in by spikes, carve a one-tile-wide path
+           by flipping the blocking spike tiles back to floor.
+        3. Sprinkle :data:`STALAGMITE_FIELD_SINGLETON_COUNT_RANGE` lone
+           spike tiles on remaining floor (outside the door buffer) for
+           visual texture and stalagmite-spine feel.
+        """
+        door_tiles = self._door_tile_set()
+
+        # Pass 1: clear door buffers.
+        buffer_radius = STALAGMITE_FIELD_DOOR_BUFFER
+        for r in range(ROOM_ROWS):
+            for c in range(ROOM_COLS):
+                if self.grid[r][c] != SPIKE_PATCH:
+                    continue
+                if self._near_door_tile(c, r, door_tiles, buffer_radius):
+                    self.grid[r][c] = FLOOR
+
+        # Pass 2: guarantee connectivity from each entrance to the
+        # room centre.  We carve along the spike-cells of a BFS-derived
+        # path (treating spikes as high cost rather than impassable).
+        # Iterate doors in a deterministic order: set iteration is
+        # hash-randomized across processes, which made the carve order
+        # (and downstream grid) non-reproducible.
+        center = (ROOM_COLS // 2, ROOM_ROWS // 2)
+        carved_path_tiles: set[tuple[int, int]] = set()
+        for door_col, door_row in sorted(door_tiles):
+            entry = self._interior_neighbor(door_col, door_row)
+            if entry is None:
+                continue
+            path = self._bfs_path_with_spikes(entry, center)
+            if path is None:
+                continue
+            for c, r in path:
+                if self.grid[r][c] == SPIKE_PATCH:
+                    self.grid[r][c] = FLOOR
+                carved_path_tiles.add((c, r))
+
+        # Pass 3: sprinkle isolated spikes on remaining floor.  Use a
+        # local Random seeded from the post-pass grid so the result is
+        # reproducible per-room without bumping the global RNG state
+        # (which downstream room generation depends on).
+        lo, hi = STALAGMITE_FIELD_SINGLETON_COUNT_RANGE
+        local_seed = hash((
+            tuple(tuple(row) for row in self.grid),
+            tuple(sorted(door_tiles)),
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+        sprinkle = local_rng.randint(lo, hi)
+        candidates = [
+            (c, r)
+            for r in range(2, ROOM_ROWS - 2)
+            for c in range(2, ROOM_COLS - 2)
+            if self.grid[r][c] == FLOOR
+            and not self._near_door_tile(c, r, door_tiles, buffer_radius)
+            and (c, r) not in carved_path_tiles
+        ]
+        local_rng.shuffle(candidates)
+        for c, r in candidates[:sprinkle]:
+            self.grid[r][c] = SPIKE_PATCH
+
+    def _interior_neighbor(self, col, row):
+        """Return the floor-side neighbor of an edge door tile, or None."""
+        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nc, nr = col + dc, row + dr
+            if 0 < nc < ROOM_COLS - 1 and 0 < nr < ROOM_ROWS - 1:
+                return (nc, nr)
+        return None
+
+    def _bfs_path_with_spikes(self, start, goal):
+        """Backward-compat wrapper: BFS treating SPIKE_PATCH as passable."""
+        return self._bfs_path_through_hazard(start, goal, SPIKE_PATCH)
+
+    def _bfs_path_through_hazard(self, start, goal, hazard_tile):
+        """BFS treating ``hazard_tile`` (and FLOOR) as passable.
+
+        Walls / doors / other terrain block the search.  Returns a list
+        of (col, row) tiles from start to goal inclusive, or None if no
+        path exists.
+        """
+        if start == goal:
+            return [start]
+        from collections import deque
+        visited = {start}
+        parents = {start: None}
+        queue = deque([start])
+        while queue:
+            c, r = queue.popleft()
+            if (c, r) == goal:
+                path = []
+                cur = (c, r)
+                while cur is not None:
+                    path.append(cur)
+                    cur = parents[cur]
+                path.reverse()
+                return path
+            for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nc, nr = c + dc, r + dr
+                if not (0 < nc < ROOM_COLS - 1 and 0 < nr < ROOM_ROWS - 1):
+                    continue
+                if (nc, nr) in visited:
+                    continue
+                tile = self.grid[nr][nc]
+                if tile != FLOOR and tile != hazard_tile:
+                    continue
+                visited.add((nc, nr))
+                parents[(nc, nr)] = (c, r)
+                queue.append((nc, nr))
+        return None
+
+    def _polish_quicksand_trap(self):
+        """Refine the QUICKSAND grid for the Quicksand Trap room.
+
+        Two-pass cleanup mirroring the Stalagmite Field polish:
+
+        1. Clear any QUICKSAND tile within
+           :data:`QUICKSAND_TRAP_DOOR_BUFFER` chebyshev distance of an
+           open door, so the player never spawns into a pull zone.
+        2. BFS from each open-door interior tile to the room centre and
+           carve any blocking quicksand tiles back to floor, guaranteeing
+           an entrance->exit walkable corridor.
+
+        No singleton-sprinkle pass: quicksand patches are designed to be
+        large pull zones, so peppering lone tiles would dilute the
+        mechanic.
+        """
+        door_tiles = self._door_tile_set()
+        buffer_radius = QUICKSAND_TRAP_DOOR_BUFFER
+
+        # Pass 1: clear door buffers.
+        for r in range(ROOM_ROWS):
+            for c in range(ROOM_COLS):
+                if self.grid[r][c] != QUICKSAND:
+                    continue
+                if self._near_door_tile(c, r, door_tiles, buffer_radius):
+                    self.grid[r][c] = FLOOR
+
+        # Pass 2: guarantee connectivity from each entrance to the
+        # room centre via a quicksand-passable BFS.
+        center = (ROOM_COLS // 2, ROOM_ROWS // 2)
+        for door_col, door_row in door_tiles:
+            entry = self._interior_neighbor(door_col, door_row)
+            if entry is None:
+                continue
+            path = self._bfs_path_through_hazard(entry, center, QUICKSAND)
+            if path is None:
+                continue
+            for c, r in path:
+                if self.grid[r][c] == QUICKSAND:
+                    self.grid[r][c] = FLOOR
+
+    def _polish_river_room(self):
+        """Lay a CURRENT band spanning the room for the River Room.
+
+        The river runs full width along one axis (horizontal or vertical
+        chosen at random) at a width drawn from
+        :data:`WATER_RIVER_WIDTH_RANGE`, with a directional push vector
+        per tile.  The band overrides whatever the random terrain pass
+        placed (FLOOR or biome WATER patches) on the affected tiles.
+
+        Two cleanup passes mirror the other hazard-room polish:
+
+        1. Clear any CURRENT tile within
+           :data:`WATER_RIVER_DOOR_BUFFER` chebyshev distance of an
+           open door, so the player never spawns directly into the
+           push.
+        2. BFS from each open-door interior tile to the room centre,
+           treating CURRENT as walkable.  If the river fully bisects an
+           entrance from the centre, carve any CURRENT tiles on the
+           BFS path back to floor so a safe corridor exists.
+        """
+        # Wipe any random biome terrain patches (MUD/ICE/WATER) the
+        # default placer scattered: the river is the room's defining
+        # feature, so any other interior tile that isn't a wall/door
+        # resets to FLOOR before the band is laid.  This also keeps the
+        # connectivity carve simple (only FLOOR vs CURRENT to reason
+        # about).
+        for r in range(1, ROOM_ROWS - 1):
+            for c in range(1, ROOM_COLS - 1):
+                if self.grid[r][c] in (MUD, ICE, WATER):
+                    self.grid[r][c] = FLOOR
+
+        # Random orientation: True = horizontal river (push along X),
+        # False = vertical river (push along Y).  Direction sign also
+        # picked from the global RNG so successive river rooms differ.
+        horizontal = random.random() < 0.5
+        sign = random.choice((-1, 1))
+        width_lo, width_hi = WATER_RIVER_WIDTH_RANGE
+        width = random.randint(width_lo, width_hi)
+
+        if horizontal:
+            # Centre band ± small offset so the river isn't always at
+            # the exact room centre.
+            mid_row = ROOM_ROWS // 2
+            offset = random.randint(-2, 2)
+            top_row = max(2, min(ROOM_ROWS - 2 - width, mid_row - width // 2 + offset))
+            for r in range(top_row, top_row + width):
+                for c in range(1, ROOM_COLS - 1):
+                    if self.grid[r][c] in (FLOOR, MUD, ICE, WATER):
+                        self.grid[r][c] = CURRENT
+                        self.current_vectors[(c, r)] = (float(sign), 0.0)
+        else:
+            mid_col = ROOM_COLS // 2
+            offset = random.randint(-2, 2)
+            left_col = max(2, min(ROOM_COLS - 2 - width, mid_col - width // 2 + offset))
+            for c in range(left_col, left_col + width):
+                for r in range(1, ROOM_ROWS - 1):
+                    if self.grid[r][c] in (FLOOR, MUD, ICE, WATER):
+                        self.grid[r][c] = CURRENT
+                        self.current_vectors[(c, r)] = (0.0, float(sign))
+
+        # Pass 1: clear door buffer.
+        door_tiles = self._door_tile_set()
+        buffer_radius = WATER_RIVER_DOOR_BUFFER
+        for r in range(ROOM_ROWS):
+            for c in range(ROOM_COLS):
+                if self.grid[r][c] != CURRENT:
+                    continue
+                if self._near_door_tile(c, r, door_tiles, buffer_radius):
+                    self.grid[r][c] = FLOOR
+                    self.current_vectors.pop((c, r), None)
+
+        # Pass 2: guarantee connectivity from each entrance to the
+        # room centre via a CURRENT-passable BFS.  Carve any CURRENT
+        # tiles along the chosen path back to floor so a safe corridor
+        # exists across the river for every door.
+        center = (ROOM_COLS // 2, ROOM_ROWS // 2)
+        for door_col, door_row in sorted(door_tiles):
+            entry = self._interior_neighbor(door_col, door_row)
+            if entry is None:
+                continue
+            path = self._bfs_path_through_hazard(entry, center, CURRENT)
+            if path is None:
+                continue
+            for c, r in path:
+                if self.grid[r][c] == CURRENT:
+                    self.grid[r][c] = FLOOR
+                    self.current_vectors.pop((c, r), None)
+
+    def _polish_waterfall_room(self):
+        """Lay a vertical CURRENT cascade with a WATER pool for the Waterfall Room.
+
+        Layout:
+
+        * A vertical band of CURRENT tiles
+          (:data:`WATER_WATERFALL_BAND_WIDTH` wide) hugs one side wall
+          (left or right, chosen at random).  Vectors push downward
+          everywhere — gravity-style "waterfall".
+        * A small pool of WATER tiles
+          (radius :data:`WATER_WATERFALL_POOL_RADIUS`) sits at the
+          base of the cascade, immediately below the CURRENT band's
+          interior column.
+        * A single FLOOR pocket is carved at the TOP of the cascade
+          (one tile below the top wall, inside the band).  This pocket
+          stores the guaranteed-chest position so the player has to
+          push UP through the downward current to reach the loot.
+        * Door buffers (radius :data:`WATER_WATERFALL_DOOR_BUFFER`)
+          stay clear of CURRENT so spawning beside the cascade doesn't
+          immediately punt the player away.
+        """
+        # Pick wall: True = right wall, False = left wall.  (Cascade is
+        # always vertical; horizontal cascades would break the gravity
+        # metaphor.)
+        on_right = random.random() < 0.5
+        width = WATER_WATERFALL_BAND_WIDTH
+        if on_right:
+            band_cols = list(range(ROOM_COLS - 1 - width, ROOM_COLS - 1))
+        else:
+            band_cols = list(range(1, 1 + width))
+
+        # Lay CURRENT tiles top-to-bottom inside the band, pushing down.
+        for r in range(1, ROOM_ROWS - 1):
+            for c in band_cols:
+                if self.grid[r][c] == FLOOR:
+                    self.grid[r][c] = CURRENT
+                    self.current_vectors[(c, r)] = (0.0, 1.0)
+
+        # Carve a chest pocket at the TOP of the cascade (interior
+        # column of the band, one tile below the top wall).  Stash the
+        # tile so the chest-placement step can target it.
+        chest_col = band_cols[len(band_cols) // 2]
+        chest_row = 1
+        # Defensive: clamp inside playable area.
+        chest_row = max(1, min(ROOM_ROWS - 2, chest_row))
+        if self.grid[chest_row][chest_col] == CURRENT:
+            self.grid[chest_row][chest_col] = FLOOR
+            self.current_vectors.pop((chest_col, chest_row), None)
+        self._waterfall_chest_tile = (chest_col, chest_row)
+
+        # WATER pool at the base of the cascade.  Replace bottom-most
+        # CURRENT tiles in a small disc with WATER so the cascade
+        # visually "splashes" into a pool.  Pool tiles are visual /
+        # biome only (WATER terrain); they don't push the player.
+        pool_cy = ROOM_ROWS - 2
+        pool_cx = chest_col
+        radius = WATER_WATERFALL_POOL_RADIUS
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                if dc * dc + dr * dr > radius * radius:
+                    continue
+                rr, cc = pool_cy + dr, pool_cx + dc
+                if not (0 < rr < ROOM_ROWS - 1 and 0 < cc < ROOM_COLS - 1):
+                    continue
+                # Only convert CURRENT or FLOOR — never overwrite
+                # walls or the chest pocket.
+                if (cc, rr) == self._waterfall_chest_tile:
+                    continue
+                if self.grid[rr][cc] in (CURRENT, FLOOR):
+                    self.grid[rr][cc] = WATER
+                    self.current_vectors.pop((cc, rr), None)
+
+        # Door-buffer clear: any CURRENT tile within the (small)
+        # buffer of an open door is reverted so the player has at
+        # least one tile of breathing room when entering.
+        door_tiles = self._door_tile_set()
+        buffer_radius = WATER_WATERFALL_DOOR_BUFFER
+        for r in range(ROOM_ROWS):
+            for c in range(ROOM_COLS):
+                if self.grid[r][c] != CURRENT:
+                    continue
+                if self._near_door_tile(c, r, door_tiles, buffer_radius):
+                    self.grid[r][c] = FLOOR
+                    self.current_vectors.pop((c, r), None)
 
     def _place_portal(self):
         cx, cy = ROOM_COLS // 2, ROOM_ROWS // 2
@@ -2340,6 +2729,8 @@ class Room:
             self.objective_entity_configs = self._build_boulder_run_configs()
         elif self.room_plan.room_id == "earth_shrine_circle":
             self.objective_entity_configs = self._build_shrine_circle_configs()
+        elif self.room_plan.room_id == "earth_golem_arena":
+            self.objective_entity_configs = self._build_golem_arena_configs()
 
     def _build_crystal_vein_configs(self):
         """Place 3-4 destructible vein crystals on FLOOR cells.
@@ -2497,34 +2888,55 @@ class Room:
         ]
 
     def _build_boulder_run_configs(self):
-        """Pick 2-3 lane rows and spawn one telegraphed boulder per lane.
+        """Place a single :class:`BoulderRunSpawner` config for the room.
 
-        Lanes alternate direction; phases are staggered so boulders don't
-        all strike on the same beat.
+        The spawner picks ONE source wall (top or bottom) at room build
+        time and then continuously fires vertical :class:`Boulder`
+        projectiles at random valid columns at random intervals.  Door
+        columns (the 3-tile-wide opening at the centre of each wall) are
+        excluded so traversal lanes always stay clear.  ``exit_wall`` is
+        the opposite wall — surfaced for HUD/AI consumers that want to
+        steer the player toward it.
         """
-        candidate_rows = [3, 6, 9, 12]
-        boulder_count = random.randint(2, 3)
-        random.shuffle(candidate_rows)
-        lane_rows = sorted(candidate_rows[:boulder_count])
-        cycle_ms = 3600
-        configs = []
-        for index, row in enumerate(lane_rows):
-            cy = row * TILE_SIZE + TILE_SIZE // 2
-            direction = 1 if index % 2 == 0 else -1
-            configs.append({
-                "kind": "boulder",
-                "lane_y": cy,
-                "pos": (-1000, cy),
-                "direction": direction,
-                "cycle_ms": cycle_ms,
-                "telegraph_ms": 900,
-                "speed": 6,
-                "damage": 10,
-                "knockback_px": 32,
-                "damage_cooldown_ms": 700,
-                "offset_ms": (cycle_ms // boulder_count) * index,
-            })
-        return configs
+        source_wall = random.choice(("top", "bottom"))
+        exit_wall = "bottom" if source_wall == "top" else "top"
+        mid_col = ROOM_COLS // 2
+        half = DOOR_WIDTH // 2
+        door_cols = set(range(mid_col - half, mid_col + half + 1))
+        return [{
+            "kind": "boulder_run_spawner",
+            "source_wall": source_wall,
+            "exit_wall": exit_wall,
+            "door_columns": door_cols,
+        }]
+
+    def _build_golem_arena_configs(self):
+        """Spawn the Golem mini-boss controller config.
+
+        The Golem itself is registered through the regular enemy_configs
+        pipeline (see :meth:`_gen_enemy_configs`) so it lives in the
+        normal :class:`~enemies.Enemy` group and the ``clear_enemies``
+        objective rule naturally seals/unseals the portal as the boss
+        and shard waves rise and fall.
+
+        This config carries the wave-spec table consumed by
+        ``rpg.py`` after each :meth:`BossController.update` tick:
+
+        * ``wave_specs`` maps HP-threshold (float) -> shard count (int)
+        * ``shard_spawn_radius`` is the arena-edge radius the spawner
+          uses when placing each shard around the boss.
+        * ``loot_granted`` flips True the single tick the Golem dies
+          (after ``armor_rules.roll_boss_loot`` has been called).
+        """
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        return [{
+            "kind": "golem_arena_controller",
+            "boss_pos": (cx, cy),
+            "wave_specs": {0.75: 2, 0.5: 4, 0.25: 6},
+            "shard_spawn_radius": int(5 * TILE_SIZE),
+            "loot_granted": False,
+        }]
 
     def _build_shrine_circle_configs(self):
         """Lay a 3x3 GLYPH_TILE shrine in the room centre + place the glyph entity.
@@ -3759,6 +4171,17 @@ class Room:
         return False
 
     def _gen_enemy_configs(self):
+        # Golem arena: the only enemy at room-build time is the Golem
+        # itself.  Shards are spawned dynamically by the BossController
+        # at each HP threshold, not by the random palette.
+        if (
+            self.room_plan is not None
+            and self.room_plan.room_id == "earth_golem_arena"
+        ):
+            from enemies import Golem
+            cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+            cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+            return [(Golem, (cx, cy))]
         return self._gen_enemy_configs_for_range(self._enemy_count_range)
 
     def _build_enemy_palette(self):

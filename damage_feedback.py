@@ -25,6 +25,7 @@ DAMAGE_NUMBER_RISE_PIXELS = 28
 BIOME_REWARD_FLASH_LIFETIME_MS = 600
 BIOME_REWARD_FLASH_MAX_RADIUS = 48
 KEYSTONE_BONUS_BANNER_LIFETIME_MS = 2400
+BOSS_INTRO_BANNER_LIFETIME_MS = 2500
 
 # Biome challenge-route reward activation flashes share the icon colors used
 # by their item-catalog entries and the HUD quick-bar badges, so the spend
@@ -198,6 +199,47 @@ def get_keystone_bonus_banner_tracker():
     return _keystone_bonus_banner_tracker
 
 
+class BossIntroBannerTracker:
+    """Single-shot top-screen banner announcing a mini-boss encounter.
+
+    Mirrors :class:`KeystoneBonusBannerTracker`: holds at most one active
+    banner; re-reporting replaces it; expires automatically after
+    ``BOSS_INTRO_BANNER_LIFETIME_MS``.
+    """
+
+    def __init__(self):
+        self._spawn_ticks = None
+        self._text = ""
+
+    def report(self, text, now_ticks):
+        if not text:
+            return
+        self._text = str(text)
+        self._spawn_ticks = now_ticks
+
+    def active(self, now_ticks):
+        """Return ``(text, age_fraction)`` or ``None`` if no live banner."""
+        if self._spawn_ticks is None:
+            return None
+        age = now_ticks - self._spawn_ticks
+        if age < 0 or age >= BOSS_INTRO_BANNER_LIFETIME_MS:
+            self._spawn_ticks = None
+            self._text = ""
+            return None
+        return (self._text, age / BOSS_INTRO_BANNER_LIFETIME_MS)
+
+    def reset(self):
+        self._spawn_ticks = None
+        self._text = ""
+
+
+_boss_intro_banner_tracker = BossIntroBannerTracker()
+
+
+def get_boss_intro_banner_tracker():
+    return _boss_intro_banner_tracker
+
+
 def report_keystone_starting_bonus(amount, now_ticks=None):
     """Queue the once-per-run keystone starting-coin bonus banner."""
     if amount <= 0:
@@ -230,6 +272,37 @@ def build_keystone_bonus_banner_view(now_ticks=None):
     if now_ticks is None:
         now_ticks = pygame.time.get_ticks()
     return _keystone_bonus_banner_tracker.active(now_ticks)
+
+
+def report_boss_intro(name, now_ticks=None):
+    """Queue the mini-boss intro banner shown on encounter start."""
+    if not name:
+        return
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    _boss_intro_banner_tracker.report(str(name), now_ticks)
+
+
+def report_boss_loot(item_name, now_ticks=None):
+    """Queue a "{name} acquired" banner after a boss-loot drop.
+
+    Reuses the keystone bonus banner slot (same lifetime + render) so the
+    player gets the same prominent toast as keystone awards.  When two
+    drops land on the same tick, the second clobbers the first — an
+    accepted tradeoff for keeping the single-slot tracker simple.
+    """
+    if not item_name:
+        return
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    _keystone_bonus_banner_tracker.report(f"{item_name} acquired", now_ticks)
+
+
+def build_boss_intro_banner_view(now_ticks=None):
+    """Project the active boss intro as ``(text, age_fraction)`` or ``None``."""
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    return _boss_intro_banner_tracker.active(now_ticks)
 
 
 def get_biome_reward_flash_tracker():
@@ -267,6 +340,7 @@ def reset_all():
     _damage_number_tracker.reset()
     _biome_reward_flash_tracker.reset()
     _keystone_bonus_banner_tracker.reset()
+    _boss_intro_banner_tracker.reset()
 
 
 # ── public API ─────────────────────────────────────────

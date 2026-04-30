@@ -31,7 +31,9 @@ from objective_entities import (
     MiningCart,
     BurrowSpawner,
     Boulder,
+    BoulderRunSpawner,
     ShrineGlyph,
+    BossController,
 )
 from room_selector import RoomSelector
 
@@ -198,6 +200,10 @@ class Dungeon:
         # Telegraphed-attack secondary entities (rings + projectiles).
         self.enemy_projectile_group: pygame.sprite.Group = pygame.sprite.Group()
         self.pulsator_ring_group: pygame.sprite.Group = pygame.sprite.Group()
+        # Mini-boss orchestrator for the current room. Populated by room
+        # builders (e.g. earth_golem_arena) when a boss is present, then
+        # cleared on room exit. Read by hud_view to surface the boss bar.
+        self.boss_controller = None
 
     # ── public API ──────────────────────────────────────
     @property
@@ -413,6 +419,7 @@ class Dungeon:
             self.enemy_projectile_group.empty()
         if hasattr(self, "pulsator_ring_group"):
             self.pulsator_ring_group.empty()
+        self.boss_controller = None
 
         room = self.current_room
         # Phase 1 biome-room infra: per-room buffs / hazard timers do not
@@ -484,8 +491,40 @@ class Dungeon:
                 self.objective_group.add(BurrowSpawner(config))
             elif config["kind"] == "boulder":
                 self.objective_group.add(Boulder(config))
+            elif config["kind"] == "boulder_run_spawner":
+                spawner = BoulderRunSpawner(config)
+                # Spawner needs a live group reference so it can drop
+                # freshly spawned boulders straight into the scene.
+                spawner.objective_group = self.objective_group
+                self.objective_group.add(spawner)
             elif config["kind"] == "shrine_glyph":
                 self.objective_group.add(ShrineGlyph(config))
+            elif config["kind"] == "golem_arena_controller":
+                # Locate the Golem we just spawned via enemy_configs and
+                # wrap it in a BossController.  Wave thresholds default
+                # to 0.75 / 0.5 / 0.25 — the same keys as wave_specs so
+                # rpg.py can map ``new_waves`` straight to shard counts.
+                from enemies import Golem
+                boss = next(
+                    (e for e in self.enemy_group if isinstance(e, Golem)),
+                    None,
+                )
+                if boss is not None:
+                    self.boss_controller = BossController(
+                        boss, name="Stone Golem",
+                    )
+                    # Stash the room's golem-arena config so rpg.py can
+                    # read wave_specs / shard_spawn_radius / loot_granted.
+                    self.boss_controller.arena_config = config
+                    # Seal the exit portal until the boss falls; the
+                    # ``clear_enemies`` rule will unseal it once the
+                    # Golem and all spawned shards are dead.
+                    if hasattr(self.current_room, "_set_portal_active"):
+                        self.current_room._set_portal_active(False)
+                    # Fire the one-shot intro banner so the player gets
+                    # the same encounter-start cue as keystone bonuses.
+                    import damage_feedback
+                    damage_feedback.report_boss_intro(self.boss_controller.name)
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

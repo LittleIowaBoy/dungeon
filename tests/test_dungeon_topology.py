@@ -142,6 +142,16 @@ class DungeonTopologyIntegrationTests(unittest.TestCase):
     def tearDownClass(cls):
         pygame.quit()
 
+    def setUp(self):
+        # Dungeon construction uses the global RNG; seed for determinism
+        # so layout-shape assertions (branch counts, terminals) don't
+        # depend on test execution order.
+        self._rng_state = random.getstate()
+        random.seed(0)
+
+    def tearDown(self):
+        random.setstate(self._rng_state)
+
     def test_dungeon_uses_planned_doors_and_preseeds_branches(self):
         dungeon = Dungeon(get_dungeon("mud_caverns"))
 
