@@ -493,6 +493,107 @@ WATER_RIVER_WIDTH_RANGE = (2, 3)
 WATER_WATERFALL_BAND_WIDTH = 3
 WATER_WATERFALL_POOL_RADIUS = 2
 WATER_WATERFALL_DOOR_BUFFER = 1
+# Water Spirit Room polish: several WATER pool patches are placed at
+# random interior positions, each housing a stationary WaterSpiritEnemy.
+WATER_SPIRIT_POOL_COUNT_RANGE = (2, 3)
+WATER_SPIRIT_POOL_RADIUS      = 2
+WATER_SPIRIT_DOOR_BUFFER      = 3
+# WaterSpiritEnemy stats.
+WATER_SPIRIT_HP                  = 1        # functionally invulnerable (take_damage is a no-op)
+COLOR_WATER_SPIRIT               = (80, 180, 255)
+WATER_SPIRIT_PROJECTILE_SPEED    = 2
+WATER_SPIRIT_PROJECTILE_RANGE    = 280
+WATER_SPIRIT_PROJECTILE_DAMAGE   = 10
+WATER_SPIRIT_PROJECTILE_SIZE     = 10
+WATER_SPIRIT_ATTACK_WINDUP_MS    = 800
+WATER_SPIRIT_ATTACK_STRIKE_MS    = 120
+WATER_SPIRIT_ATTACK_COOLDOWN_MS  = 2200
+WATER_SPIRIT_ATTACK_TRIGGER      = 380  # px; only attacks when player is within this range
+# WaterSpiritEnemy anchor cycle: periodic vulnerability window.
+# Every INTERVAL ms the spirit becomes mortal for DURATION ms, then restores.
+WATER_SPIRIT_ANCHOR_INTERVAL_MS  = 5000   # ms between anchor events
+WATER_SPIRIT_ANCHOR_DURATION_MS  = 2000   # ms the spirit stays vulnerable
+WATER_SPIRIT_ANCHOR_HP           = 40     # HP granted during the window
+COLOR_WATER_SPIRIT_ANCHORED      = (220, 240, 255)  # bright flash while anchored
+
+# ── WATER tile submersion hazard ─────────────────────────────────────────────
+# Standing in a WATER tile for longer than DELAY ms triggers damage every
+# TICK ms until the player leaves the tile.  Invincibility frames suppress
+# each tick.  Moving off the tile resets the timer.
+WATER_SUBMERSION_DELAY_MS    = 2000   # ms before first submersion tick
+WATER_SUBMERSION_TICK_MS     = 800    # ms between subsequent ticks
+WATER_SUBMERSION_TICK_DAMAGE = 5      # HP per tick
+
+# ── Enemy CURRENT push ────────────────────────────────────────────────────────
+# Fraction of CURRENT_PUSH_SPEED applied to enemies standing on CURRENT tiles.
+# Frozen and immobilised enemies are not affected.
+ENEMY_CURRENT_PUSH_FACTOR    = 0.5
+
+# ── THIN_ICE cracking mechanic ────────────────────────────────────────────────
+# Walking onto a THIN_ICE tile increments a per-tile step counter stored on
+# the room.  After THIN_ICE_STEPS_TO_CRACK steps on the same tile, that tile
+# collapses to PIT_TILE (lethal).  The cracking is permanent for the room's
+# lifetime; tiles do not regenerate between visits.
+THIN_ICE_STEPS_TO_CRACK = 3
+# Thin Ice Field room polish constants (analog of STALAGMITE_FIELD_*).
+ICE_THIN_ICE_FIELD_DOOR_BUFFER          = 2
+ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE = (4, 7)
+
+# ── IceCrystalEnemy (ice_crystal_room) ───────────────────────────────────────
+# Stationary crystal pillars that periodically blast nearby targets with
+# a freezing pulse.  They are immortal room fixtures; wave-spawned crystal
+# shards created by a future boss may be mortal.
+ICE_CRYSTAL_HP               = 1          # effectively invulnerable
+COLOR_ICE_CRYSTAL            = (180, 230, 255)
+COLOR_ICE_CRYSTAL_PULSE      = (220, 245, 255)   # tint during active pulse
+ICE_CRYSTAL_SIZE             = 20         # sprite size (px)
+ICE_CRYSTAL_PULSE_RADIUS     = 96         # px; players within this radius get frozen
+ICE_CRYSTAL_PULSE_INTERVAL_MS = 4500      # ms between pulse events
+ICE_CRYSTAL_PULSE_WINDUP_MS  = 900        # telegraph (crystal brightens)
+ICE_CRYSTAL_PULSE_STRIKE_MS  = 200        # active damage window
+ICE_CRYSTAL_PULSE_COOLDOWN_MS = 3400      # return-to-idle window
+ICE_CRYSTAL_FREEZE_DURATION_MS = 1200     # how long the applied FROZEN status lasts
+# Ice Crystal Room layout constants.
+ICE_CRYSTAL_ROOM_CRYSTAL_COUNT = 3        # number of crystals placed per room
+ICE_CRYSTAL_ROOM_DOOR_BUFFER   = 3        # chebyshev radius around doors kept crystal-free
+
+# ── Tide Lord mini-boss (water_tide_lord_arena) ─────────────────────────────
+# Slow-moving water-biome boss with two telegraphed attacks:
+#   Tide Crash  — close-range AOE circle (like Golem slam).
+#   Wave Surge  — fan of water projectiles; phase 2 widens the fan.
+# At 75 / 50 / 25 % HP the BossController summons WaterSpirit adds.
+TIDE_LORD_HP                    = 650
+TIDE_LORD_SPEED                 = 0.65
+COLOR_TIDE_LORD                 = (30, 90, 190)
+TIDE_LORD_SIZE                  = 52
+
+# Tide Crash: close-range AOE slam.
+TIDE_LORD_CRASH_RANGE           = int(2.0 * TILE_SIZE)   # trigger distance (px)
+TIDE_LORD_CRASH_RADIUS          = int(2.4 * TILE_SIZE)   # hitbox radius (px)
+TIDE_LORD_CRASH_DAMAGE          = 30
+TIDE_LORD_CRASH_WINDUP_MS       = 900
+TIDE_LORD_CRASH_STRIKE_MS       = 160
+TIDE_LORD_CRASH_COOLDOWN_MS     = 1400
+
+# Wave Surge: radial fan of projectiles.
+TIDE_LORD_SURGE_RANGE           = int(9.0 * TILE_SIZE)   # trigger distance (px)
+TIDE_LORD_SURGE_WINDUP_MS       = 1100
+TIDE_LORD_SURGE_STRIKE_MS       = 120
+TIDE_LORD_SURGE_COOLDOWN_MS     = 2000
+TIDE_LORD_SURGE_SPREAD_DEG      = 30   # degrees between adjacent shots in fan
+TIDE_LORD_SURGE_SHOTS_P1        = 3    # phase-1 fan width
+TIDE_LORD_SURGE_SHOTS_P2        = 5    # phase-2 fan width (unlocked at 50 % HP)
+
+# Wave Surge projectile.
+TIDE_LORD_PROJECTILE_SPEED      = 3.2
+TIDE_LORD_PROJECTILE_RANGE      = int(10.0 * TILE_SIZE)
+TIDE_LORD_PROJECTILE_DAMAGE     = 16
+TIDE_LORD_PROJECTILE_SIZE       = 14
+
+# Arena layout.
+TIDE_LORD_ARENA_FLOOD_RADIUS    = 4    # tile radius of central WATER disc
+TIDE_LORD_ARENA_CURRENT_BAND    = 2    # tile width of outward-CURRENT ring
+TIDE_LORD_WAVE_SPAWN_RADIUS     = int(4 * TILE_SIZE)  # px from boss centre for wave spawns
 
 # ── Terrain generation ──────────────────────────────────
 TERRAIN_PATCH_MIN = 2

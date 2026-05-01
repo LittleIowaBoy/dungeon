@@ -307,7 +307,7 @@ class GameRuntimeTests(unittest.TestCase):
         self.assertIsNone(game._pre_level_progress_snapshot)
         self.assertIsNone(game._level_complete)
         self.assertIsNone(game._room_test_entry)
-        self.assertEqual(game.state, rpg.GameState.ROOM_TEST_SELECT)
+        self.assertEqual(game.state, rpg.GameState.ROOM_TEST_CATEGORY)
 
     def test_room_test_spawn_position_places_player_one_tile_inside_entry_door(self):
         # Left door: door_pixel_pos returns x at col 0, inward = right (+1, 0)

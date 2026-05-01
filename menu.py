@@ -65,7 +65,7 @@ class MainMenuScreen:
                 if choice == "Play":
                     return GameState.DUNGEON_SELECT
                 elif choice == "Room Tests":
-                    return GameState.ROOM_TEST_SELECT
+                    return GameState.ROOM_TEST_CATEGORY
                 elif choice == "Character":
                     return GameState.CHARACTER_CUSTOMIZE
                 elif choice == "Shop":
@@ -163,7 +163,7 @@ class RoomTestSelectScreen:
             if event.type != pygame.KEYDOWN:
                 continue
             if event.key == pygame.K_ESCAPE:
-                return (GameState.MAIN_MENU, None, None)
+                return (GameState.ROOM_TEST_CATEGORY, None, None)
             if event.key in (pygame.K_LEFT, pygame.K_a):
                 self.spawn_direction_index = (
                     self.spawn_direction_index - 1
@@ -228,6 +228,96 @@ class RoomTestSelectScreen:
                 f"Spawn from: {view.spawn_direction_label}", True, (100, 200, 255)
             )
             surface.blit(dir_surf, (54, info_box_y + 38 + len(view.detail_lines) * 18 + 2))
+
+        hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
+        surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
+
+
+# ═════════════════════════════════════════════════════════
+#  Room Test Category Select
+# ═════════════════════════════════════════════════════════
+class RoomTestCategoryScreen:
+    def __init__(self):
+        from room_test_catalog import ROOM_TEST_CATEGORIES, load_room_test_entries_for_category, _build_tuning_test_entry
+        self.categories = ROOM_TEST_CATEGORIES
+        self._tuning_entry = _build_tuning_test_entry()
+        # Index 0 is the tuning shortcut; indices 1..N are the biome/mission categories.
+        self._total_items = 1 + len(self.categories)
+        # Cache counts once at init — the catalog doesn't change during a session.
+        # This avoids SQLite queries on every render frame (which caused input latency).
+        self._entry_counts = tuple(
+            len(load_room_test_entries_for_category(cat)) for cat in self.categories
+        )
+        self.selected_index = 0
+        self._font = None
+        self._title_font = None
+        self._small_font = None
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 36)
+            self._font = pygame.font.SysFont("consolas", 26)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def handle_events(self, events):
+        """Returns (GameState, item, extra) or None.
+
+        When the tuning shortcut (index 0) is confirmed, returns
+        (GameState.PLAYING, tuning_entry, "left") for direct room launch.
+        Otherwise returns (GameState.ROOM_TEST_SELECT, category_name, None).
+        """
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return (GameState.MAIN_MENU, None, None)
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.selected_index = (self.selected_index - 1) % self._total_items
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected_index = (self.selected_index + 1) % self._total_items
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                if self.selected_index == 0 and self._tuning_entry is not None:
+                    return (GameState.PLAYING, self._tuning_entry, "left")
+                elif self.selected_index > 0:
+                    return (GameState.ROOM_TEST_SELECT, self.categories[self.selected_index - 1], None)
+        return None
+
+    def draw(self, surface, view):
+        self._ensure_fonts()
+        surface.fill(COLOR_BLACK)
+
+        title = self._title_font.render(view.title, True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 60)))
+
+        start_y = 160
+        spacing = 52
+
+        # Index 0: tuning test room shortcut
+        tuning_selected = (view.selected_index == 0)
+        tuning_color = COLOR_WHITE if tuning_selected else COLOR_GRAY
+        tuning_prefix = "> " if tuning_selected else "  "
+        tuning_line = self._font.render(
+            tuning_prefix + view.tuning_shortcut_label + "  [launch]", True, tuning_color
+        )
+        surface.blit(tuning_line, (SCREEN_WIDTH // 2 - 200, start_y))
+
+        # Separator between shortcut and category list
+        sep_y = start_y + spacing - 12
+        pygame.draw.line(
+            surface, COLOR_DARK_GRAY,
+            (SCREEN_WIDTH // 2 - 200, sep_y),
+            (SCREEN_WIDTH // 2 + 200, sep_y),
+        )
+
+        # Indices 1..N: categories
+        for i, category in enumerate(view.categories):
+            actual_index = i + 1
+            selected = (actual_index == view.selected_index)
+            color = COLOR_WHITE if selected else COLOR_GRAY
+            prefix = "> " if selected else "  "
+            count_str = f"  ({view.entry_counts[i]} tests)" if view.entry_counts else ""
+            line = self._font.render(prefix + category + count_str, True, color)
+            surface.blit(line, (SCREEN_WIDTH // 2 - 200, start_y + actual_index * spacing))
 
         hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))

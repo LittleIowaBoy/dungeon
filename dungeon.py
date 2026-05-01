@@ -525,6 +525,21 @@ class Dungeon:
                     # the same encounter-start cue as keystone bonuses.
                     import damage_feedback
                     damage_feedback.report_boss_intro(self.boss_controller.name)
+            elif config["kind"] == "tide_lord_arena_controller":
+                from enemies import TideLord
+                boss = next(
+                    (e for e in self.enemy_group if isinstance(e, TideLord)),
+                    None,
+                )
+                if boss is not None:
+                    self.boss_controller = BossController(
+                        boss, name="Tide Lord",
+                    )
+                    self.boss_controller.arena_config = config
+                    if hasattr(self.current_room, "_set_portal_active"):
+                        self.current_room._set_portal_active(False)
+                    import damage_feedback
+                    damage_feedback.report_boss_intro(self.boss_controller.name)
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""

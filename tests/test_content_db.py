@@ -157,6 +157,8 @@ class RoomContentBootstrapTests(unittest.TestCase):
             "water_waterfall_room",
             "water_spirit_room",
             "water_tide_lord_arena",
+            "ice_thin_ice_field",
+            "ice_crystal_room",
         })
         self.assertEqual(seeded_templates["standard_combat"], (1, "implemented", "", 0, 1, "avoid", 0, "any", "immediate", "", 0, 0, 0, 0, "", 0, "", "", "", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))
         self.assertEqual(seeded_templates["survival_holdout"], (1, "prototype", "", 4, 4, "prefer", 2, "finale", "holdout_timer", "1,2,3", 96, 0, 1, 1500, "", 0, "", "", "", 0, "", "", "", "", 0, 0, 0, 0.0, 0, 0, 0, 0, 0))

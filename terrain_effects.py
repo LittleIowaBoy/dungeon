@@ -14,6 +14,9 @@ telegraphed entities in :mod:`objective_entities` — not here.
 from settings import (
     HAZARD_TICK_MS, HAZARD_TICK_DAMAGE, STALAGMITE_STEP_DAMAGE,
     QUICKSAND_PULL_SPEED, CURRENT_PUSH_SPEED, TILE_SIZE,
+    WATER_SUBMERSION_DELAY_MS, WATER_SUBMERSION_TICK_MS, WATER_SUBMERSION_TICK_DAMAGE,
+    ENEMY_CURRENT_PUSH_FACTOR,
+    THIN_ICE_STEPS_TO_CRACK,
 )
 
 
@@ -39,14 +42,21 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
         Diagnostics for tests/HUD (``{"tile": str, "quicksand_pull": bool,
         "tick_damage": int, "pushed": bool}``).  Stable contract.
     """
-    diag = {"tile": "floor", "quicksand_pull": False, "tick_damage": 0, "pushed": False}
+    diag = {
+        "tile": "floor",
+        "quicksand_pull": False,
+        "tick_damage": 0,
+        "pushed": False,
+        "submerged": False,
+        "thin_ice_cracked": False,
+    }
     if room is None or player is None:
         return diag
 
     # Lazy import to avoid circular dependency (room imports from settings,
     # this imports from settings; player.py would create the cycle).
     from room import (
-        QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT,
+        QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT, WATER, THIN_ICE,
     )
 
     tile = room.terrain_at_pixel(player.rect.centerx, player.rect.centery)
@@ -67,6 +77,34 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
     # Always advance the pointer for next frame, regardless of which
     # branches below early-return.
     room._previous_player_tile = cur_tile_coord
+
+    # Reset the submersion timer whenever the player is NOT on a WATER tile
+    # so leaving the pool immediately cancels any in-progress drowning.
+    if tile != WATER:
+        room._water_entry_ticks = None
+
+    # ── THIN_ICE: cracking tile mechanic ─────────────────────────────────
+    # Each time the player steps ONTO a new THIN_ICE tile, a per-tile
+    # step counter on the room is incremented.  Once the counter for a
+    # tile reaches THIN_ICE_STEPS_TO_CRACK, the tile collapses to
+    # PIT_TILE instantly (lethal on the same frame if the player lingers).
+    # Exiting and re-entering the room preserves collapsed tiles — the
+    # step_counts dict is kept on the room object for its lifetime.
+    if tile == THIN_ICE and stepped_to_new_tile:
+        counts = getattr(room, "_thin_ice_step_counts", None)
+        if counts is None:
+            room._thin_ice_step_counts = {}
+            counts = room._thin_ice_step_counts
+        counts[cur_tile_coord] = counts.get(cur_tile_coord, 0) + 1
+        if counts[cur_tile_coord] >= THIN_ICE_STEPS_TO_CRACK:
+            col, row = cur_tile_coord
+            room.grid[row][col] = PIT_TILE
+            diag["thin_ice_cracked"] = True
+            # Immediately deal the PIT lethal damage so the player can't
+            # survive the frame they crack through.
+            if not invincible and player.current_hp > 0:
+                player.take_damage(player.current_hp)
+            return diag
 
     # ── PIT_TILE: instant lethal step ──────────────────────
     if tile == PIT_TILE:
@@ -122,7 +160,73 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
                 _push_player(player, room, push_x, push_y)
                 diag["pushed"] = True
 
+    # ── WATER: submersion hazard ────────────────────────────────────────────
+    # The speed slow-down is handled by TERRAIN_SPEED in movement_rules.
+    # Here we track how long the player has stood in water; after
+    # WATER_SUBMERSION_DELAY_MS, we fire a damage tick every
+    # WATER_SUBMERSION_TICK_MS.  Invincibility (dodge i-frames) suppresses
+    # each individual tick so dodging through pools is always safe.
+    if tile == WATER:
+        if getattr(room, "_water_entry_ticks", None) is None:
+            room._water_entry_ticks = now_ticks
+            room._water_next_tick_ms = now_ticks + WATER_SUBMERSION_DELAY_MS
+        if now_ticks >= getattr(room, "_water_next_tick_ms", 0):
+            diag["submerged"] = True
+            if not invincible:
+                player.take_damage(WATER_SUBMERSION_TICK_DAMAGE)
+                diag["tick_damage"] = WATER_SUBMERSION_TICK_DAMAGE
+            room._water_next_tick_ms = now_ticks + WATER_SUBMERSION_TICK_MS
+
     return diag
+
+
+def apply_current_to_enemies(enemies, room, now_ticks):
+    """Push enemies standing on CURRENT tiles in the current direction.
+
+    Called once per frame from the runtime after enemy movement so that
+    enemies in river rooms are swept downstream just like the player, but
+    at a reduced magnitude (ENEMY_CURRENT_PUSH_FACTOR × CURRENT_PUSH_SPEED).
+    Frozen enemies and enemies with active immobilise status are skipped so
+    freeze mechanics still lock enemies in place.
+    """
+    import status_effects as _se
+    from room import CURRENT
+
+    walls = room.get_wall_rects()
+    for enemy in list(enemies):
+        if getattr(enemy, "is_frozen", False):
+            continue
+        if _se.is_immobilized(enemy, now_ticks):
+            continue
+        vec = room.current_vector_at_pixel(enemy.rect.centerx, enemy.rect.centery)
+        if vec is None:
+            continue
+        dx, dy = vec
+        mag = (dx * dx + dy * dy) ** 0.5
+        if mag <= 0:
+            continue
+        push_x = (dx / mag) * CURRENT_PUSH_SPEED * ENEMY_CURRENT_PUSH_FACTOR
+        push_y = (dy / mag) * CURRENT_PUSH_SPEED * ENEMY_CURRENT_PUSH_FACTOR
+        # X axis
+        if push_x:
+            enemy.rect.x += int(round(push_x))
+            for wall in walls:
+                if enemy.rect.colliderect(wall):
+                    if push_x > 0:
+                        enemy.rect.right = wall.left
+                    else:
+                        enemy.rect.left = wall.right
+                    break
+        # Y axis
+        if push_y:
+            enemy.rect.y += int(round(push_y))
+            for wall in walls:
+                if enemy.rect.colliderect(wall):
+                    if push_y > 0:
+                        enemy.rect.bottom = wall.top
+                    else:
+                        enemy.rect.top = wall.bottom
+                    break
 
 
 def _push_player(player, room, dx, dy):

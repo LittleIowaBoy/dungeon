@@ -10,6 +10,7 @@ from settings import (
     DIR_OFFSETS, OPPOSITE_DIR,
     COLOR_BLACK,
     PLAYTEST_ROOM_IDENTIFIER_ENABLED,
+    ICE_CRYSTAL_FREEZE_DURATION_MS,
 )
 from hud_view import (
     build_game_over_overlay_view,
@@ -31,6 +32,7 @@ from save_system import save_progress, load_progress
 from menu import (
     MainMenuScreen,
     RoomTestSelectScreen,
+    RoomTestCategoryScreen,
     DungeonSelectScreen,
     CharacterCustomizeScreen,
     ShopScreen,
@@ -49,10 +51,11 @@ from menu_view import (
     build_pause_screen_view,
     build_records_view,
     build_room_test_select_view,
+    build_room_test_category_view,
     build_rune_altar_pick_view,
     build_shop_view,
 )
-from room_test_catalog import build_room_test_plan, load_room_test_entries
+from room_test_catalog import build_room_test_plan, load_room_test_entries, load_room_test_entries_for_category
 from shop import Shop
 import ability_rules
 import allies
@@ -124,6 +127,7 @@ class Game:
 
         # menu screens
         self._main_menu = MainMenuScreen(self.progress)
+        self._room_test_category = RoomTestCategoryScreen()
         self._room_test_select = RoomTestSelectScreen(load_room_test_entries())
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
@@ -275,10 +279,10 @@ class Game:
         self.state = GameState.MAIN_MENU
 
     def _return_to_room_tests(self):
-        """Drop the current room-test runtime and reopen the selector."""
+        """Drop the current room-test runtime and reopen the category selector."""
         self._restore_room_test_loadout()
         self._reset_runtime_state()
-        self.state = GameState.ROOM_TEST_SELECT
+        self.state = GameState.ROOM_TEST_CATEGORY
 
     def _enter_current_room(self, entry_direction=None):
         if self.dungeon is not None:
@@ -343,10 +347,16 @@ class Game:
     def _update_boss_controller(self):
         """Drive the active room's BossController and react to its events.
 
-        Currently the only boss is the Stone Golem (``earth_golem_arena``).
-        Wave thresholds spawn :class:`~enemies.GolemShard` reinforcements
-        around the Golem; the defeat event rolls + grants armor loot via
-        :mod:`armor_rules` exactly once.
+        Handles two arena types via ``arena_cfg["kind"]``:
+
+        * ``golem_arena_controller`` — spawns :class:`~enemies.GolemShard`
+          reinforcements at wave thresholds; Golem stays phase-1 until the
+          BossController fires ``phase_advanced`` (50 % HP).
+        * ``tide_lord_arena_controller`` — spawns mortal
+          :class:`~enemies.WaterSpiritEnemy` adds at wave thresholds;
+          sets :attr:`TideLord.phase_2` on phase transition.
+
+        Both arenas roll armor loot once on defeat via :mod:`armor_rules`.
         """
         controller = getattr(self.dungeon, "boss_controller", None)
         if controller is None:
@@ -355,30 +365,50 @@ class Game:
         arena_cfg = getattr(controller, "arena_config", None)
         if arena_cfg is None:
             return
+        arena_kind = arena_cfg.get("kind", "golem_arena_controller")
 
-        # Wave triggers — spawn GolemShard adds for each new threshold.
+        # Phase 2 unlock.
+        if events.phase_advanced and arena_kind == "tide_lord_arena_controller":
+            boss = controller.boss
+            if boss is not None:
+                boss.phase_2 = True
+
+        # Wave triggers.
         if events.new_waves:
-            from enemies import GolemShard
+            import math
+            import random as _random
             wave_specs = arena_cfg.get("wave_specs", {})
-            radius = int(arena_cfg.get("shard_spawn_radius", 0))
             boss = controller.boss
             cx = boss.rect.centerx if boss is not None else 0
             cy = boss.rect.centery if boss is not None else 0
-            import math
-            import random as _random
-            for threshold in events.new_waves:
-                count = int(wave_specs.get(threshold, 0))
-                if count <= 0:
-                    continue
-                for i in range(count):
-                    # Distribute shards evenly around the Golem with a
-                    # small random jitter so successive waves don't pile
-                    # onto the same exact pixels.
-                    angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
-                    sx = int(cx + radius * math.cos(angle))
-                    sy = int(cy + radius * math.sin(angle))
-                    shard = GolemShard(sx, sy)
-                    self.dungeon.enemy_group.add(shard)
+
+            if arena_kind == "golem_arena_controller":
+                from enemies import GolemShard
+                radius = int(arena_cfg.get("shard_spawn_radius", 0))
+                for threshold in events.new_waves:
+                    count = int(wave_specs.get(threshold, 0))
+                    if count <= 0:
+                        continue
+                    for i in range(count):
+                        angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
+                        sx = int(cx + radius * math.cos(angle))
+                        sy = int(cy + radius * math.sin(angle))
+                        shard = GolemShard(sx, sy)
+                        self.dungeon.enemy_group.add(shard)
+
+            elif arena_kind == "tide_lord_arena_controller":
+                from enemies import WaterSpiritEnemy
+                radius = int(arena_cfg.get("wave_spawn_radius", 0))
+                for threshold in events.new_waves:
+                    count = int(wave_specs.get(threshold, 0))
+                    if count <= 0:
+                        continue
+                    for i in range(count):
+                        angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
+                        sx = int(cx + radius * math.cos(angle))
+                        sy = int(cy + radius * math.sin(angle))
+                        spirit = WaterSpiritEnemy(sx, sy, immortal=False)
+                        self.dungeon.enemy_group.add(spirit)
 
         # Defeat: roll + grant loot once.
         if events.defeated and not arena_cfg.get("loot_granted"):
@@ -458,6 +488,8 @@ class Game:
 
             if self.state == GameState.MAIN_MENU:
                 self._handle_main_menu(events)
+            elif self.state == GameState.ROOM_TEST_CATEGORY:
+                self._handle_room_test_category(events)
             elif self.state == GameState.ROOM_TEST_SELECT:
                 self._handle_room_test_select(events)
             elif self.state == GameState.DUNGEON_SELECT:
@@ -495,11 +527,28 @@ class Game:
             save_progress(self.progress)
             pygame.quit()
             sys.exit()
+        elif result == GameState.ROOM_TEST_CATEGORY:
+            self.state = result
         elif result == GameState.ROOM_TEST_SELECT:
             self._room_test_select.set_entries(load_room_test_entries())
             self.state = result
         elif result is not None:
             self.state = result
+
+    def _handle_room_test_category(self, events):
+        result = self._room_test_category.handle_events(events)
+        if result is None:
+            return
+        next_state, item, extra = result
+        if next_state == GameState.PLAYING and item is not None:
+            # Tuning test shortcut — launch directly from the category screen.
+            self._start_room_test(item, extra or "left")
+        elif next_state == GameState.ROOM_TEST_SELECT and item is not None:
+            entries = load_room_test_entries_for_category(item)
+            self._room_test_select.set_entries(entries)
+            self.state = next_state
+        else:
+            self.state = next_state
 
     def _handle_room_test_select(self, events):
         result = self._room_test_select.handle_events(events)
@@ -785,6 +834,9 @@ class Game:
             # is False — this is what powers the test-room attack toggle.
             if hasattr(enemy, "update_attack_state"):
                 enemy.update_attack_state(enemy_focus_rect, now_ticks)
+            # W3: advance anchor cycle for spirits that have one.
+            if hasattr(enemy, "update_anchor_cycle"):
+                enemy.update_anchor_cycle(now_ticks)
             if getattr(enemy, "is_frozen", False):
                 # Drain any rings/projectiles emitted while frozen attacks fire,
                 # but skip movement entirely.
@@ -813,12 +865,28 @@ class Game:
             if hasattr(enemy, "consume_emitted_projectiles"):
                 for proj in enemy.consume_emitted_projectiles():
                     self.dungeon.enemy_projectile_group.add(proj)
+            # I2: drain freeze pulses from crystal pillars.
+            if hasattr(enemy, "consume_freeze_pulses"):
+                if enemy.consume_freeze_pulses():
+                    cx, cy = enemy.rect.centerx, enemy.rect.centery
+                    from settings import ICE_CRYSTAL_PULSE_RADIUS
+                    dx = self.player.rect.centerx - cx
+                    dy = self.player.rect.centery - cy
+                    if dx * dx + dy * dy <= ICE_CRYSTAL_PULSE_RADIUS * ICE_CRYSTAL_PULSE_RADIUS:
+                        status_effects.apply_status(
+                            self.player, status_effects.FROZEN,
+                            now_ticks, duration_ms=ICE_CRYSTAL_FREEZE_DURATION_MS,
+                        )
 
         # Necromancer: spawn a SkeletonAlly when a kill milestone is pending.
         if identity_runes.necromancer_consume_pending(self.player):
             allies.spawn_skeleton_near(
                 self.player, self.dungeon.ally_group, now_ticks,
             )
+        # W2: push enemies that are standing on CURRENT tiles downstream.
+        terrain_effects.apply_current_to_enemies(
+            self.dungeon.enemy_group, room, now_ticks,
+        )
         # Allies: chase nearest enemy and melee.
         allies.update_allies(
             self.dungeon.ally_group,
@@ -943,12 +1011,20 @@ class Game:
         if not self.player.alive:
             self._on_death()
 
-        # mark room cleared when all enemies are gone after combat started
+        # mark room cleared when all *mortal* enemies are gone.
+        # Immortal enemies (WaterSpiritEnemy pool guardians) remain in the
+        # group indefinitely but must not block objective completion.
         room = self.dungeon.current_room
+        _mortal_alive = any(
+            not getattr(e, "immortal", False) for e in self.dungeon.enemy_group
+        )
+        _had_mortal = any(
+            not getattr(cls, "immortal", False) for cls, _ in room.enemy_configs
+        )
         if (
             not room.enemies_cleared
-            and not self.dungeon.enemy_group
-            and room.enemy_configs
+            and _had_mortal
+            and not _mortal_alive
             and room.respawn_enemies_after_ms is None
         ):
             room.enemies_cleared = True
@@ -1104,6 +1180,12 @@ class Game:
 
         if self.state == GameState.MAIN_MENU:
             self._main_menu.draw(self.screen, build_main_menu_view(self._main_menu))
+
+        elif self.state == GameState.ROOM_TEST_CATEGORY:
+            self._room_test_category.draw(
+                self.screen,
+                build_room_test_category_view(self._room_test_category),
+            )
 
         elif self.state == GameState.ROOM_TEST_SELECT:
             self._room_test_select.draw(

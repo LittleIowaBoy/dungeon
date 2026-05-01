@@ -8,12 +8,14 @@ import terrain_effects
 from player import Player
 from progress import PlayerProgress
 from room import (
-    FLOOR, WALL, QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT,
+    FLOOR, WALL, QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT, WATER,
     ROOM_COLS, ROOM_ROWS,
 )
 from settings import (
     TILE_SIZE, HAZARD_TICK_MS, HAZARD_TICK_DAMAGE, STALAGMITE_STEP_DAMAGE,
     QUICKSAND_PULL_SPEED, CURRENT_PUSH_SPEED,
+    WATER_SUBMERSION_DELAY_MS, WATER_SUBMERSION_TICK_MS, WATER_SUBMERSION_TICK_DAMAGE,
+    ENEMY_CURRENT_PUSH_FACTOR,
 )
 
 
@@ -350,6 +352,174 @@ class CameraFogOfWarTests(unittest.TestCase):
         self.assertLess(sum(surface.get_at((0, 0))[:3]), 60)
         # Player centre stays bright (transparent hole over the fill).
         self.assertEqual(surface.get_at((50, 50))[:3], (20, 20, 20))
+
+
+class WaterSubmersionTests(unittest.TestCase):
+    """W1: WATER tile submersion hazard."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        pygame.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        pygame.quit()
+
+    def _water_room(self):
+        """Room with a single WATER tile at (5, 5)."""
+        grid = _wall_border_grid()
+        grid[5][5] = WATER
+        return _StubRoom(grid=grid)
+
+    def test_no_damage_before_delay(self):
+        room = self._water_room()
+        player = _make_player(5, 5)
+        hp = player.current_hp
+        # Call at t=0 and at t=DELAY-1 (not yet expired)
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        diag = terrain_effects.apply_terrain_effects(player, room, WATER_SUBMERSION_DELAY_MS - 1, 16)
+        self.assertEqual(player.current_hp, hp)
+        self.assertFalse(diag["submerged"])
+
+    def test_damage_fires_at_delay(self):
+        room = self._water_room()
+        player = _make_player(5, 5)
+        hp = player.current_hp
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        diag = terrain_effects.apply_terrain_effects(player, room, WATER_SUBMERSION_DELAY_MS, 16)
+        self.assertTrue(diag["submerged"])
+        self.assertEqual(diag["tick_damage"], WATER_SUBMERSION_TICK_DAMAGE)
+        self.assertEqual(player.current_hp, hp - WATER_SUBMERSION_TICK_DAMAGE)
+
+    def test_repeated_ticks_after_delay(self):
+        room = self._water_room()
+        player = _make_player(5, 5)
+        hp = player.current_hp
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        # First tick
+        diag1 = terrain_effects.apply_terrain_effects(player, room, WATER_SUBMERSION_DELAY_MS, 16)
+        self.assertTrue(diag1["submerged"])
+        self.assertEqual(diag1["tick_damage"], WATER_SUBMERSION_TICK_DAMAGE)
+        # Clear i-frames that take_damage grants so the next tick isn't suppressed.
+        player._invincible_until = 0
+        # No second tick immediately
+        diag2 = terrain_effects.apply_terrain_effects(player, room, WATER_SUBMERSION_DELAY_MS + 1, 16)
+        self.assertFalse(diag2["submerged"])
+        self.assertEqual(player.current_hp, hp - WATER_SUBMERSION_TICK_DAMAGE)
+        # Second tick fires after TICK_MS more
+        diag3 = terrain_effects.apply_terrain_effects(
+            player, room, WATER_SUBMERSION_DELAY_MS + WATER_SUBMERSION_TICK_MS, 16
+        )
+        self.assertTrue(diag3["submerged"])
+        self.assertEqual(diag3["tick_damage"], WATER_SUBMERSION_TICK_DAMAGE)
+        self.assertEqual(player.current_hp, hp - 2 * WATER_SUBMERSION_TICK_DAMAGE)
+
+    def test_timer_resets_on_exit(self):
+        room = self._water_room()
+        player = _make_player(5, 5)
+        hp = player.current_hp
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        # Move player off the WATER tile before the delay expires
+        player.rect.center = (3 * TILE_SIZE + TILE_SIZE // 2, 3 * TILE_SIZE + TILE_SIZE // 2)
+        terrain_effects.apply_terrain_effects(player, room, WATER_SUBMERSION_DELAY_MS, 16)
+        self.assertIsNone(room._water_entry_ticks,
+                          "Exiting water should clear _water_entry_ticks")
+        self.assertEqual(player.current_hp, hp, "No damage after leaving water")
+
+    def test_invincible_suppresses_damage_but_submerged_flag_set(self):
+        room = self._water_room()
+        player = _make_player(5, 5)
+        # Force the player into invincible state using the internal field.
+        player._invincible_until = 999_999_999
+        hp = player.current_hp
+        terrain_effects.apply_terrain_effects(player, room, 0, 16)
+        diag = terrain_effects.apply_terrain_effects(player, room, WATER_SUBMERSION_DELAY_MS, 16)
+        self.assertTrue(diag["submerged"], "Submerged flag set even when invincible")
+        self.assertEqual(player.current_hp, hp, "Invincible player takes no damage")
+
+
+class _FakeEnemy(pygame.sprite.Sprite):
+    """Minimal enemy stub for W2 (enemy current push) tests."""
+
+    def __init__(self, col, row):
+        super().__init__()
+        size = TILE_SIZE - 4
+        self.image = pygame.Surface((size, size))
+        self.rect = self.image.get_rect(
+            center=(col * TILE_SIZE + TILE_SIZE // 2, row * TILE_SIZE + TILE_SIZE // 2)
+        )
+        self.is_frozen = False
+        # Minimal status-effects surface so is_immobilized works
+        import status_effects
+        status_effects.reset_statuses(self)
+
+
+class EnemyCurrentPushTests(unittest.TestCase):
+    """W2: enemies standing on CURRENT tiles are pushed downstream."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        pygame.init()
+
+    @classmethod
+    def tearDownClass(cls):
+        pygame.quit()
+
+    def test_enemy_on_current_is_pushed(self):
+        grid = _wall_border_grid()
+        grid[5][5] = CURRENT
+        room = _StubRoom(grid=grid, current_vectors={(5, 5): (1, 0)})  # push right
+        enemy = _FakeEnemy(5, 5)
+        start_x = enemy.rect.centerx
+
+        import pygame.sprite
+        group = pygame.sprite.Group(enemy)
+        terrain_effects.apply_current_to_enemies(group, room, 0)
+        self.assertGreater(enemy.rect.centerx, start_x,
+                           "Enemy on CURRENT tile should be pushed right")
+
+    def test_frozen_enemy_on_current_not_pushed(self):
+        grid = _wall_border_grid()
+        grid[5][5] = CURRENT
+        room = _StubRoom(grid=grid, current_vectors={(5, 5): (1, 0)})
+        enemy = _FakeEnemy(5, 5)
+        enemy.is_frozen = True
+        start_x = enemy.rect.centerx
+
+        import pygame.sprite
+        group = pygame.sprite.Group(enemy)
+        terrain_effects.apply_current_to_enemies(group, room, 0)
+        self.assertEqual(enemy.rect.centerx, start_x,
+                         "Frozen enemy should not be pushed by current")
+
+    def test_enemy_off_current_not_pushed(self):
+        grid = _wall_border_grid()
+        grid[5][5] = CURRENT
+        room = _StubRoom(grid=grid, current_vectors={(5, 5): (1, 0)})
+        enemy = _FakeEnemy(3, 3)  # on FLOOR, not CURRENT
+        start_x = enemy.rect.centerx
+
+        import pygame.sprite
+        group = pygame.sprite.Group(enemy)
+        terrain_effects.apply_current_to_enemies(group, room, 0)
+        self.assertEqual(enemy.rect.centerx, start_x,
+                         "Enemy not on CURRENT tile should not be pushed")
+
+    def test_push_magnitude_matches_factor(self):
+        """Push is CURRENT_PUSH_SPEED * ENEMY_CURRENT_PUSH_FACTOR in one axis."""
+        grid = _wall_border_grid()
+        grid[5][5] = CURRENT
+        room = _StubRoom(grid=grid, current_vectors={(5, 5): (1, 0)})
+        enemy = _FakeEnemy(5, 5)
+        start_x = enemy.rect.centerx
+
+        import pygame.sprite
+        group = pygame.sprite.Group(enemy)
+        terrain_effects.apply_current_to_enemies(group, room, 0)
+        expected = int(round(CURRENT_PUSH_SPEED * ENEMY_CURRENT_PUSH_FACTOR))
+        self.assertEqual(enemy.rect.centerx - start_x, expected)
 
 
 if __name__ == "__main__":

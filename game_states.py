@@ -5,6 +5,7 @@ from enum import Enum, auto
 class GameState(Enum):
     MAIN_MENU           = auto()
     ROOM_TEST_SELECT    = auto()
+    ROOM_TEST_CATEGORY  = auto()
     DUNGEON_SELECT      = auto()
     CHARACTER_CUSTOMIZE = auto()
     SHOP                = auto()

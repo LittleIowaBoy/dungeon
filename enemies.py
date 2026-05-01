@@ -57,6 +57,33 @@ from settings import (
     GOLEM_SHARD_ATTACK_WINDUP_MS, GOLEM_SHARD_ATTACK_STRIKE_MS,
     GOLEM_SHARD_ATTACK_COOLDOWN_MS,
     DROP_CHANCE,
+    COLOR_WATER_SPIRIT,
+    WATER_SPIRIT_HP,
+    WATER_SPIRIT_ATTACK_WINDUP_MS,
+    WATER_SPIRIT_ATTACK_STRIKE_MS,
+    WATER_SPIRIT_ATTACK_COOLDOWN_MS,
+    WATER_SPIRIT_ATTACK_TRIGGER,
+    WATER_SPIRIT_PROJECTILE_SPEED,
+    WATER_SPIRIT_PROJECTILE_RANGE,
+    WATER_SPIRIT_PROJECTILE_DAMAGE,
+    WATER_SPIRIT_PROJECTILE_SIZE,
+    WATER_SPIRIT_ANCHOR_INTERVAL_MS,
+    WATER_SPIRIT_ANCHOR_DURATION_MS,
+    WATER_SPIRIT_ANCHOR_HP,
+    COLOR_WATER_SPIRIT_ANCHORED,
+    ICE_CRYSTAL_HP, COLOR_ICE_CRYSTAL, COLOR_ICE_CRYSTAL_PULSE,
+    ICE_CRYSTAL_SIZE,
+    ICE_CRYSTAL_PULSE_RADIUS, ICE_CRYSTAL_PULSE_INTERVAL_MS,
+    ICE_CRYSTAL_PULSE_WINDUP_MS, ICE_CRYSTAL_PULSE_STRIKE_MS,
+    ICE_CRYSTAL_PULSE_COOLDOWN_MS, ICE_CRYSTAL_FREEZE_DURATION_MS,
+    TIDE_LORD_HP, TIDE_LORD_SPEED, COLOR_TIDE_LORD, TIDE_LORD_SIZE,
+    TIDE_LORD_CRASH_RANGE, TIDE_LORD_CRASH_RADIUS, TIDE_LORD_CRASH_DAMAGE,
+    TIDE_LORD_CRASH_WINDUP_MS, TIDE_LORD_CRASH_STRIKE_MS, TIDE_LORD_CRASH_COOLDOWN_MS,
+    TIDE_LORD_SURGE_RANGE, TIDE_LORD_SURGE_WINDUP_MS, TIDE_LORD_SURGE_STRIKE_MS,
+    TIDE_LORD_SURGE_COOLDOWN_MS, TIDE_LORD_SURGE_SPREAD_DEG,
+    TIDE_LORD_SURGE_SHOTS_P1, TIDE_LORD_SURGE_SHOTS_P2,
+    TIDE_LORD_PROJECTILE_SPEED, TIDE_LORD_PROJECTILE_RANGE,
+    TIDE_LORD_PROJECTILE_DAMAGE, TIDE_LORD_PROJECTILE_SIZE,
 )
 from item_catalog import ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS
 from items import LootDrop, Coin
@@ -1065,6 +1092,400 @@ class GolemShard(Enemy):
         return (rect,)
 
 
+# ── WaterSpiritEnemy ────────────────────────────────────
+class WaterSpiritProjectile(pygame.sprite.Sprite):
+    """Slow orb fired by a WaterSpiritEnemy toward the player.
+
+    Behaves identically to LauncherProjectile but uses the spirit's colour
+    and range settings.  Damage is delivered by the launcher-projectile
+    pipeline in enemy_attack_rules.
+    """
+
+    SIZE = WATER_SPIRIT_PROJECTILE_SIZE
+    damage = WATER_SPIRIT_PROJECTILE_DAMAGE
+
+    def __init__(self, x, y, vx, vy):
+        super().__init__()
+        self.image = make_rect_surface(self.SIZE, self.SIZE, COLOR_WATER_SPIRIT)
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._vx = float(vx)
+        self._vy = float(vy)
+        self._distance_traveled = 0.0
+
+    def update(self, *_args, **_kwargs):
+        self.rect.x += self._vx
+        self.rect.y += self._vy
+        self._distance_traveled += math.hypot(self._vx, self._vy)
+        if self._distance_traveled >= WATER_SPIRIT_PROJECTILE_RANGE:
+            self.kill()
+
+    def collide_walls(self, wall_rects):
+        for wall in wall_rects:
+            if self.rect.colliderect(wall):
+                self.kill()
+                return True
+        return False
+
+
+class WaterSpiritEnemy(Enemy):
+    """Stationary water-spirit guardian placed at pool centres or summoned in waves.
+
+    By default (``immortal=True``) the spirit ignores all incoming damage and
+    cannot be killed; this is used for pool guardians in water_spirit_room.
+    Wave-spawned spirits in the Tide Lord arena are created with
+    ``immortal=False`` so they contribute to the clear_enemies objective.
+
+    The spirit never moves; it fires a WaterSpiritProjectile toward the player
+    whenever they are within WATER_SPIRIT_ATTACK_TRIGGER range.  Room-placed
+    spirits are excluded from ENEMY_CLASSES (never randomly spawned).
+    """
+
+    hp = WATER_SPIRIT_HP
+    speed = 0
+    damage = 0
+    color = COLOR_WATER_SPIRIT
+    immortal = True   # class-level default; wave-spawned copies set immortal=False
+
+    attack_damage = 0   # damage delivered by projectile, not hitbox
+    attack_windup_ms = WATER_SPIRIT_ATTACK_WINDUP_MS
+    attack_strike_ms = WATER_SPIRIT_ATTACK_STRIKE_MS
+    attack_cooldown_ms = WATER_SPIRIT_ATTACK_COOLDOWN_MS
+
+    def __init__(self, x, y, *, is_frozen=False, immortal=True):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self.immortal = immortal
+        self._fire_dir = (1.0, 0.0)
+        self.emitted_projectiles: list[WaterSpiritProjectile] = []
+        # Anchor cycle: pool spirits (immortal=True at birth) periodically
+        # become vulnerable for WATER_SPIRIT_ANCHOR_DURATION_MS so the player
+        # has a timing window to deal damage.  Wave-spawned mortal spirits
+        # (_can_anchor=False) are already permanently mortal and skip this.
+        self._can_anchor = bool(immortal)
+        self._next_anchor_at: int = 0   # 0 = not initialised yet
+        self._anchor_ends_at: int = 0
+
+    def take_damage(self, amount):
+        """Invulnerable when immortal=True; mortal wave-spirits use normal damage."""
+        if self.immortal:
+            return
+        super().take_damage(amount)
+
+    def update_movement(self, _player_rect, _wall_rects):
+        """Spirits are stationary — no movement logic."""
+
+    def _can_begin_attack(self, player_rect):
+        if player_rect is None:
+            return False
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        return (dx * dx + dy * dy) <= (WATER_SPIRIT_ATTACK_TRIGGER * WATER_SPIRIT_ATTACK_TRIGGER)
+
+    def _on_telegraph_start(self, player_rect, _now_ticks):
+        if player_rect is None:
+            return
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy) or 1.0
+        self._fire_dir = (dx / dist, dy / dist)
+
+    def _on_strike_start(self, _player_rect, _now_ticks):
+        fx, fy = self._fire_dir
+        speed = WATER_SPIRIT_PROJECTILE_SPEED
+        proj = WaterSpiritProjectile(
+            self.rect.centerx, self.rect.centery, fx * speed, fy * speed,
+        )
+        self.emitted_projectiles.append(proj)
+
+    def consume_emitted_projectiles(self):
+        out = self.emitted_projectiles
+        self.emitted_projectiles = []
+        return out
+
+    def update_anchor_cycle(self, now_ticks):
+        """Advance the immortal ↔ vulnerable anchor cycle.
+
+        Called once per frame by the runtime for every WaterSpiritEnemy.
+        Wave-spawned spirits (``_can_anchor=False``) are permanently mortal
+        and skip this method immediately.
+
+        States:
+        - **Immortal (idle)** — spirit is invulnerable.  At ``_next_anchor_at``
+          it switches to the anchor (vulnerable) state, gains
+          ``WATER_SPIRIT_ANCHOR_HP`` HP, and its tint changes to
+          ``COLOR_WATER_SPIRIT_ANCHORED``.
+        - **Anchor (vulnerable)** — spirit is mortal and can be burst down.
+          At ``_anchor_ends_at`` it returns to immortal, HP is restored to 1,
+          and the next anchor window is scheduled.
+        """
+        if not self._can_anchor:
+            return
+        # Deferred initialisation: set the first window on the first real tick.
+        if self._next_anchor_at == 0:
+            self._next_anchor_at = now_ticks + WATER_SPIRIT_ANCHOR_INTERVAL_MS
+            return
+        if self.immortal:
+            # Check whether it is time to open the vulnerability window.
+            if now_ticks >= self._next_anchor_at:
+                self.immortal = False
+                self.current_hp = WATER_SPIRIT_ANCHOR_HP
+                self._anchor_ends_at = now_ticks + WATER_SPIRIT_ANCHOR_DURATION_MS
+                self.image = make_rect_surface(ENEMY_SIZE, ENEMY_SIZE, COLOR_WATER_SPIRIT_ANCHORED)
+        else:
+            # In anchor window: check for expiry.
+            if self._anchor_ends_at > 0 and now_ticks >= self._anchor_ends_at:
+                self.immortal = True
+                self.current_hp = self.hp  # restore to WATER_SPIRIT_HP (= 1)
+                self._anchor_ends_at = 0
+                self._next_anchor_at = now_ticks + WATER_SPIRIT_ANCHOR_INTERVAL_MS
+                self.image = self._base_image
+
+
+# ── Ice Crystal (ice_crystal_room) ────────────────────────────────────────
+class IceCrystalEnemy(Enemy):
+    """Stationary ice-crystal pillar placed in the Ice Crystal Room.
+
+    The crystal never moves and is immortal (cannot be destroyed by normal
+    attacks).  Every :data:`ICE_CRYSTAL_PULSE_INTERVAL_MS` it telegraphs
+    a freeze blast — the attack-state machine drives the windup / strike /
+    cooldown cycle.
+
+    Unlike :class:`WaterSpiritEnemy`, this enemy emits *freeze pulses*
+    rather than projectiles.  The strike event is recorded via
+    :attr:`_freeze_pulse_pending`; :meth:`consume_freeze_pulses` lets
+    the runtime apply :data:`FROZEN` status to nearby targets.
+    """
+
+    hp = ICE_CRYSTAL_HP
+    speed = 0
+    damage = 0
+    color = COLOR_ICE_CRYSTAL
+    immortal = True
+
+    # Use the attack-state machine for the windup/telegraph animation.
+    attack_damage = 0
+    attack_windup_ms = ICE_CRYSTAL_PULSE_WINDUP_MS
+    attack_strike_ms = ICE_CRYSTAL_PULSE_STRIKE_MS
+    attack_cooldown_ms = ICE_CRYSTAL_PULSE_COOLDOWN_MS
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self._freeze_pulse_pending = False
+        self._next_pulse_at: int = ICE_CRYSTAL_PULSE_INTERVAL_MS  # deferred init
+
+    def take_damage(self, amount):
+        """Crystals are immortal room fixtures."""
+
+    def update_movement(self, _player_rect, _wall_rects):
+        """Crystals are stationary."""
+
+    def _can_begin_attack(self, player_rect):
+        """Always pulse on schedule, regardless of player distance."""
+        return True
+
+    def _on_telegraph_start(self, player_rect, now_ticks):
+        """Shift to brighter tint during windup so players have a warning."""
+        self.image = make_rect_surface(
+            ICE_CRYSTAL_SIZE, ICE_CRYSTAL_SIZE, COLOR_ICE_CRYSTAL_PULSE
+        )
+
+    def _on_strike_start(self, player_rect, now_ticks):
+        """Mark a freeze pulse for the runtime to read and dispatch."""
+        self._freeze_pulse_pending = True
+        # Revert visual at strike start.
+        self.image = self._base_image
+
+    def consume_freeze_pulses(self):
+        """Return True (and clear the flag) if a freeze pulse fired this frame."""
+        if self._freeze_pulse_pending:
+            self._freeze_pulse_pending = False
+            return True
+        return False
+
+    def update_attack_state(self, player_rect, now_ticks):
+        """Gate the first pulse behind the initial interval delay.
+
+        The parent attack-state machine would fire immediately on the
+        first frame (because ``_can_begin_attack`` always returns True).
+        Instead, we defer the first attack until ``_next_pulse_at`` so
+        crystals don't fire the instant the player enters the room.
+        """
+        # Deferred init: _next_pulse_at holds an offset until the first tick.
+        if self._next_pulse_at > 0 and self._next_pulse_at < 100_000:
+            # First real call — promote to absolute timestamp.
+            self._next_pulse_at = now_ticks + self._next_pulse_at
+        if now_ticks < self._next_pulse_at:
+            return
+        # Hand off to the parent state machine for the rest of the cycle.
+        if self._attack_state == ATTACK_IDLE:
+            self._next_pulse_at = 0  # clear; parent machine owns timing now
+        super().update_attack_state(player_rect, now_ticks)
+
+
+# ── Tide Lord mini-boss (water_tide_lord_arena) ────────────────────────────
+_TIDE_LORD_ATTACK_NONE  = "none"
+_TIDE_LORD_ATTACK_CRASH = "crash"
+_TIDE_LORD_ATTACK_SURGE = "surge"
+
+
+class TideLordProjectile(pygame.sprite.Sprite):
+    """Water projectile fired in a fan by :class:`TideLord` during Wave Surge.
+
+    Behaves identically to :class:`LauncherProjectile`: linear motion,
+    despawns after travelling :data:`TIDE_LORD_PROJECTILE_RANGE` pixels or on
+    wall contact.  Damage is delivered by the launcher-projectile pipeline.
+    """
+
+    SIZE = TIDE_LORD_PROJECTILE_SIZE
+    damage = TIDE_LORD_PROJECTILE_DAMAGE
+
+    def __init__(self, x, y, vx, vy):
+        super().__init__()
+        self.image = make_rect_surface(self.SIZE, self.SIZE, COLOR_TIDE_LORD)
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._vx = float(vx)
+        self._vy = float(vy)
+        self._distance_traveled = 0.0
+
+    def update(self, *_args, **_kwargs):
+        self.rect.x += self._vx
+        self.rect.y += self._vy
+        self._distance_traveled += math.hypot(self._vx, self._vy)
+        if self._distance_traveled >= TIDE_LORD_PROJECTILE_RANGE:
+            self.kill()
+
+    def collide_walls(self, wall_rects):
+        for wall in wall_rects:
+            if self.rect.colliderect(wall):
+                self.kill()
+                return True
+        return False
+
+
+class TideLord(Enemy):
+    """Water-biome mini-boss with two telegraphed attacks.
+
+    * **Tide Crash** (player within :data:`TIDE_LORD_CRASH_RANGE`) — AOE circle
+      slam centred on the boss; high damage, moderate windup.
+    * **Wave Surge** (player within :data:`TIDE_LORD_SURGE_RANGE`) — fan of
+      :data:`TIDE_LORD_SURGE_SHOTS_P1` water projectiles; widens to
+      :data:`TIDE_LORD_SURGE_SHOTS_P2` shots when ``phase_2`` is True.
+
+    ``phase_2`` is set externally by the :class:`~objective_entities.BossController`
+    when HP drops to 50%.  Wave-spirit adds at 75/50/25 % are also managed by
+    the controller (via rpg.py), not here.
+    """
+
+    hp = TIDE_LORD_HP
+    speed = TIDE_LORD_SPEED
+    damage = 0
+    color = COLOR_TIDE_LORD
+
+    attack_damage     = 0
+    attack_windup_ms  = TIDE_LORD_CRASH_WINDUP_MS
+    attack_strike_ms  = TIDE_LORD_CRASH_STRIKE_MS
+    attack_cooldown_ms = TIDE_LORD_CRASH_COOLDOWN_MS
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self.image = make_rect_surface(TIDE_LORD_SIZE, TIDE_LORD_SIZE, self.color)
+        self._base_image = self.image
+        self.rect = self.image.get_rect(center=(x, y))
+        self.phase_2 = False
+        self._pending_attack = _TIDE_LORD_ATTACK_NONE
+        self._committed_attack = _TIDE_LORD_ATTACK_NONE
+        self._surge_dir = (1.0, 0.0)
+        self.emitted_projectiles: list[TideLordProjectile] = []
+
+    # ── movement ────────────────────────────────────────
+    def update_movement(self, player_rect, wall_rects):
+        if self.is_attacking_blocking_movement():
+            return
+        if player_rect is None:
+            return
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+        nx, ny = dx / dist, dy / dist
+        self._move_axis(nx * self.speed, 0, wall_rects)
+        self._move_axis(0, ny * self.speed, wall_rects)
+
+    # ── attack selection ────────────────────────────────
+    def _player_dist(self, player_rect):
+        if player_rect is None:
+            return float("inf")
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        return math.hypot(dx, dy)
+
+    def _can_begin_attack(self, player_rect):
+        dist = self._player_dist(player_rect)
+        if dist == float("inf"):
+            return False
+        if dist <= TIDE_LORD_CRASH_RANGE:
+            self._pending_attack = _TIDE_LORD_ATTACK_CRASH
+            return True
+        if dist <= TIDE_LORD_SURGE_RANGE:
+            self._pending_attack = _TIDE_LORD_ATTACK_SURGE
+            return True
+        return False
+
+    def _on_telegraph_start(self, player_rect, _now_ticks):
+        kind = self._pending_attack
+        self._committed_attack = kind
+        if kind == _TIDE_LORD_ATTACK_CRASH:
+            self.attack_windup_ms   = TIDE_LORD_CRASH_WINDUP_MS
+            self.attack_strike_ms   = TIDE_LORD_CRASH_STRIKE_MS
+            self.attack_cooldown_ms = TIDE_LORD_CRASH_COOLDOWN_MS
+        elif kind == _TIDE_LORD_ATTACK_SURGE:
+            self.attack_windup_ms   = TIDE_LORD_SURGE_WINDUP_MS
+            self.attack_strike_ms   = TIDE_LORD_SURGE_STRIKE_MS
+            self.attack_cooldown_ms = TIDE_LORD_SURGE_COOLDOWN_MS
+            if player_rect is not None:
+                dx = player_rect.centerx - self.rect.centerx
+                dy = player_rect.centery - self.rect.centery
+                d = math.hypot(dx, dy) or 1.0
+                self._surge_dir = (dx / d, dy / d)
+        self._attack_state_until = _now_ticks + max(1, self.attack_windup_ms)
+
+    def _on_strike_start(self, _player_rect, now_ticks):
+        self._attack_state_until = now_ticks + max(1, self.attack_strike_ms)
+        if self._committed_attack == _TIDE_LORD_ATTACK_SURGE:
+            shots = TIDE_LORD_SURGE_SHOTS_P2 if self.phase_2 else TIDE_LORD_SURGE_SHOTS_P1
+            spread_rad = math.radians(TIDE_LORD_SURGE_SPREAD_DEG)
+            fx, fy = self._surge_dir
+            base_angle = math.atan2(fy, fx)
+            half = (shots - 1) / 2.0
+            for i in range(shots):
+                angle = base_angle + spread_rad * (i - half)
+                vx = math.cos(angle) * TIDE_LORD_PROJECTILE_SPEED
+                vy = math.sin(angle) * TIDE_LORD_PROJECTILE_SPEED
+                proj = TideLordProjectile(
+                    self.rect.centerx, self.rect.centery, vx, vy
+                )
+                self.emitted_projectiles.append(proj)
+
+    def _on_strike_end(self, _now_ticks):
+        self._attack_state_until = _now_ticks + max(0, self.attack_cooldown_ms)
+        self._committed_attack = _TIDE_LORD_ATTACK_NONE
+        self._pending_attack   = _TIDE_LORD_ATTACK_NONE
+
+    def _hitbox_geometry(self):
+        if self._committed_attack == _TIDE_LORD_ATTACK_CRASH:
+            self.attack_damage = TIDE_LORD_CRASH_DAMAGE
+            size = TIDE_LORD_CRASH_RADIUS * 2
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = self.rect.center
+            return (rect,)
+        return ()
+
+    def consume_emitted_projectiles(self):
+        out = self.emitted_projectiles
+        self.emitted_projectiles = []
+        return out
+
+
 ENEMY_CLASSES = [
     PatrolEnemy,
     RandomEnemy,
@@ -1074,5 +1495,7 @@ ENEMY_CLASSES = [
 ]
 # SentryEnemy is intentionally excluded — it is spawned only by stealth-room
 # objective configs, not by the random-palette pool.
-# Golem and GolemShard are likewise excluded; they are spawned exclusively
-# by the earth_golem_arena boss room and its scripted wave triggers.
+# Golem, GolemShard, TideLord are likewise excluded; they are spawned
+# exclusively by their respective boss-room builders and wave triggers.
+# WaterSpiritEnemy is likewise excluded; it is placed explicitly by
+# _polish_water_spirit_room() at pool centres, never by the random palette.

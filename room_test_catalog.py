@@ -10,6 +10,37 @@ from room_selector import RoomSelector
 
 _BASE_CONTEXT_LABEL = "Base Layout"
 
+# ── Room-test category constants ───────────────────────
+# Each category matches the context_label on RoomTestEntry so routing is a
+# simple equality check rather than a room_id prefix scan.
+ROOM_TEST_CATEGORY_BASE_LAYOUT   = "Base Layout"
+ROOM_TEST_CATEGORY_MUD_CAVERNS   = "Mud Caverns"
+ROOM_TEST_CATEGORY_FROZEN_DEPTHS = "Frozen Depths"
+ROOM_TEST_CATEGORY_SUNKEN_RUINS  = "Sunken Ruins"
+ROOM_TEST_CATEGORIES = (
+    ROOM_TEST_CATEGORY_BASE_LAYOUT,
+    ROOM_TEST_CATEGORY_MUD_CAVERNS,
+    ROOM_TEST_CATEGORY_FROZEN_DEPTHS,
+    ROOM_TEST_CATEGORY_SUNKEN_RUINS,
+)
+
+
+def _category_for_entry(entry):
+    """Return the category string for a RoomTestEntry, or None for the tuning shortcut."""
+    if entry.room_id == TUNING_TEST_ROOM_ID:
+        return None  # top-level shortcut; not listed in any category
+    label = entry.context_label
+    if label in ROOM_TEST_CATEGORIES:
+        return label
+    # Fallback: anything without an explicit biome context goes to Base Layout.
+    return ROOM_TEST_CATEGORY_BASE_LAYOUT
+
+
+def load_room_test_entries_for_category(category):
+    """Return entries belonging to *category*."""
+    return tuple(e for e in load_room_test_entries() if _category_for_entry(e) == category)
+
+
 # Identifier for the bespoke "Tuning Test Room" surfaced as the first entry
 # in the room-test menu.  The actual layout is hard-coded in
 # Room._build_tuning_test_room (keyed off the same string) so we don't add a

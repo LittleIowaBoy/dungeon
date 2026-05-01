@@ -1,4 +1,4 @@
-"""Room: tile grid, terrain, walls/doors, enemy/chest spawn configs."""
+import math
 import random
 import pygame
 import rune_rules
@@ -27,10 +27,16 @@ from settings import (
     WATER_RIVER_DOOR_BUFFER, WATER_RIVER_WIDTH_RANGE,
     WATER_WATERFALL_BAND_WIDTH, WATER_WATERFALL_POOL_RADIUS,
     WATER_WATERFALL_DOOR_BUFFER,
+    WATER_SPIRIT_POOL_COUNT_RANGE, WATER_SPIRIT_POOL_RADIUS, WATER_SPIRIT_DOOR_BUFFER,
+    TIDE_LORD_ARENA_FLOOD_RADIUS, TIDE_LORD_ARENA_CURRENT_BAND,
+    TIDE_LORD_WAVE_SPAWN_RADIUS,
+    ICE_THIN_ICE_FIELD_DOOR_BUFFER, ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE,
+    ICE_CRYSTAL_ROOM_CRYSTAL_COUNT, ICE_CRYSTAL_ROOM_DOOR_BUFFER,
 )
 from enemies import (
     ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy,
-    PulsatorEnemy, LauncherEnemy, SentryEnemy,
+    PulsatorEnemy, LauncherEnemy, SentryEnemy, WaterSpiritEnemy, TideLord,
+    IceCrystalEnemy,
 )
 
 # tile type constants
@@ -96,6 +102,7 @@ HAZARD_ROOM_TERRAIN = {
     "earth_stalagmite_field": SPIKE_PATCH,
     "earth_quicksand_trap":   QUICKSAND,
     "earth_tremor_chamber":   HEARTH,
+    "ice_thin_ice_field":     THIN_ICE,
 }
 
 # Identifier for the bespoke "Tuning Test Room" used by the room-test menu.
@@ -365,6 +372,10 @@ class Room:
         # Stash for the waterfall room's chest pocket (set during
         # polish; consumed during chest placement below).
         self._waterfall_chest_tile: tuple[int, int] | None = None
+        # Pre-initialise enemy_configs as an empty list so per-room polish
+        # methods (e.g. _polish_water_spirit_room) can append explicit
+        # enemy placements during _place_terrain before _gen_enemy_configs runs.
+        self.enemy_configs: list = []
         self._place_walls()
         self._place_doors()
         self._place_terrain()
@@ -393,7 +404,9 @@ class Room:
         self._previous_player_tile: tuple[int, int] | None = None
 
         # spawn configs (created once, enemies re-instantiated on each visit)
-        self.enemy_configs = self._gen_enemy_configs()
+        # Polish methods may have already added explicit placements (e.g.
+        # WaterSpiritEnemy at pool centres) — extend rather than replace.
+        self.enemy_configs = list(self.enemy_configs) + list(self._gen_enemy_configs())
         self._build_objective_configs()
         # Test rooms can opt into auto-respawning slain enemies after a delay.
         # When None (default), enemies stay dead for the run as usual.
@@ -625,6 +638,12 @@ class Room:
         ):
             self._polish_waterfall_room()
             return
+        if (
+            self.room_plan is not None
+            and self.room_plan.room_id == "water_tide_lord_arena"
+        ):
+            self._polish_tide_lord_arena()
+            return
 
         if self.room_plan and self.room_plan.terrain_patch_count_range:
             count_lo, count_hi = self.room_plan.terrain_patch_count_range
@@ -665,6 +684,12 @@ class Room:
                 self._polish_river_room()
             elif self.room_plan.room_id == "water_waterfall_room":
                 self._polish_waterfall_room()
+            elif self.room_plan.room_id == "water_spirit_room":
+                self._polish_water_spirit_room()
+            elif self.room_plan.room_id == "ice_thin_ice_field":
+                self._polish_thin_ice_field()
+            elif self.room_plan.room_id == "ice_crystal_room":
+                self._polish_ice_crystal_room()
 
     def _polish_stalagmite_field(self):
         """Refine the spike-patch grid for the Stalagmite Field room.
@@ -824,6 +849,115 @@ class Room:
             for c, r in path:
                 if self.grid[r][c] == QUICKSAND:
                     self.grid[r][c] = FLOOR
+
+    def _polish_thin_ice_field(self):
+        """Refine the THIN_ICE grid for the Thin Ice Field room.
+
+        Three-pass cleanup mirrors the Stalagmite Field pattern:
+
+        1. Clear any THIN_ICE tile within
+           :data:`ICE_THIN_ICE_FIELD_DOOR_BUFFER` chebyshev distance of
+           an open door so the player never spawns onto cracking ice.
+        2. BFS from each open-door interior tile to the room centre,
+           carving any blocking THIN_ICE tiles back to FLOOR to guarantee
+           a safe (but dull) route.
+        3. Sprinkle
+           :data:`ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE` lone
+           THIN_ICE tiles on remaining FLOOR for visual texture.
+        """
+        door_tiles = self._door_tile_set()
+        buffer_radius = ICE_THIN_ICE_FIELD_DOOR_BUFFER
+
+        # Pass 1: clear door buffers.
+        for r in range(ROOM_ROWS):
+            for c in range(ROOM_COLS):
+                if self.grid[r][c] != THIN_ICE:
+                    continue
+                if self._near_door_tile(c, r, door_tiles, buffer_radius):
+                    self.grid[r][c] = FLOOR
+
+        # Pass 2: guarantee connectivity from each entrance to the centre.
+        center = (ROOM_COLS // 2, ROOM_ROWS // 2)
+        carved_path_tiles: set[tuple[int, int]] = set()
+        for door_col, door_row in sorted(door_tiles):
+            entry = self._interior_neighbor(door_col, door_row)
+            if entry is None:
+                continue
+            path = self._bfs_path_through_hazard(entry, center, THIN_ICE)
+            if path is None:
+                continue
+            for c, r in path:
+                if self.grid[r][c] == THIN_ICE:
+                    self.grid[r][c] = FLOOR
+                carved_path_tiles.add((c, r))
+
+        # Pass 3: sprinkle isolated THIN_ICE tiles.
+        lo, hi = ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE
+        local_seed = hash((
+            tuple(tuple(row) for row in self.grid),
+            tuple(sorted(door_tiles)),
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+        sprinkle = local_rng.randint(lo, hi)
+        candidates = [
+            (c, r)
+            for r in range(2, ROOM_ROWS - 2)
+            for c in range(2, ROOM_COLS - 2)
+            if self.grid[r][c] == FLOOR
+            and not self._near_door_tile(c, r, door_tiles, buffer_radius)
+            and (c, r) not in carved_path_tiles
+        ]
+        local_rng.shuffle(candidates)
+        for c, r in candidates[:sprinkle]:
+            self.grid[r][c] = THIN_ICE
+
+    def _polish_ice_crystal_room(self):
+        """Place :data:`ICE_CRYSTAL_ROOM_CRYSTAL_COUNT` IceCrystalEnemy fixtures.
+
+        Crystals are placed at random interior FLOOR positions that are:
+        - at least :data:`ICE_CRYSTAL_ROOM_DOOR_BUFFER` chebyshev tiles
+          away from any door (so the player never spawns adjacent to a
+          crystal).
+        - at least 4 tiles apart from each other so they don't cluster.
+
+        The room's existing ICE terrain patches (placed by the standard
+        random pass) are kept intact so the sliding mechanic still applies;
+        the crystals are placed on FLOOR tiles only.
+        """
+        door_tiles = self._door_tile_set()
+        buffer = ICE_CRYSTAL_ROOM_DOOR_BUFFER
+        min_sep = 4  # chebyshev tiles between any two crystals
+
+        candidates = [
+            (c, r)
+            for r in range(2, ROOM_ROWS - 2)
+            for c in range(2, ROOM_COLS - 2)
+            if self.grid[r][c] == FLOOR
+            and not self._near_door_tile(c, r, door_tiles, buffer)
+        ]
+
+        local_seed = hash(tuple(
+            self.grid[r][c]
+            for r in range(ROOM_ROWS)
+            for c in range(ROOM_COLS)
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+        local_rng.shuffle(candidates)
+
+        placed: list[tuple[int, int]] = []
+        for c, r in candidates:
+            too_close = any(
+                max(abs(c - pc), abs(r - pr)) < min_sep
+                for pc, pr in placed
+            )
+            if too_close:
+                continue
+            placed.append((c, r))
+            px = c * TILE_SIZE + TILE_SIZE // 2
+            py = r * TILE_SIZE + TILE_SIZE // 2
+            self.enemy_configs.append((IceCrystalEnemy, (px, py)))
+            if len(placed) >= ICE_CRYSTAL_ROOM_CRYSTAL_COUNT:
+                break
 
     def _polish_river_room(self):
         """Lay a CURRENT band spanning the room for the River Room.
@@ -997,6 +1131,94 @@ class Room:
                 if self._near_door_tile(c, r, door_tiles, buffer_radius):
                     self.grid[r][c] = FLOOR
                     self.current_vectors.pop((c, r), None)
+
+    def _polish_water_spirit_room(self):
+        """Decorate the Water Spirit room with WATER pools and spirit guardians.
+
+        Layout:
+        * WATER_SPIRIT_POOL_COUNT_RANGE pools of WATER tiles (radius
+          WATER_SPIRIT_POOL_RADIUS) are placed at random interior positions
+          away from doors and room edges.
+        * One WaterSpiritEnemy is appended to enemy_configs at each pool centre.
+          Spirits are invulnerable; the room is cleared via its objective.
+        """
+        door_tiles = self._door_tile_set()
+        buffer = WATER_SPIRIT_DOOR_BUFFER
+        radius = WATER_SPIRIT_POOL_RADIUS
+        count = random.randint(*WATER_SPIRIT_POOL_COUNT_RANGE)
+        margin = buffer + radius + 1
+
+        placed_centres = []
+        for _ in range(count * 10):  # max attempts
+            if len(placed_centres) >= count:
+                break
+            c = random.randint(margin, ROOM_COLS - 1 - margin)
+            r = random.randint(margin, ROOM_ROWS - 1 - margin)
+            if self.grid[r][c] != FLOOR:
+                continue
+            if self._near_door_tile(c, r, door_tiles, buffer):
+                continue
+            # Ensure spacing between pools.
+            too_close = any(
+                abs(c - pc) + abs(r - pr) < radius * 4
+                for pc, pr in placed_centres
+            )
+            if too_close:
+                continue
+            placed_centres.append((c, r))
+            # Carve WATER disc.
+            for dr in range(-radius, radius + 1):
+                for dc in range(-radius, radius + 1):
+                    if dc * dc + dr * dr > radius * radius:
+                        continue
+                    rr, cc = r + dr, c + dc
+                    if 0 < rr < ROOM_ROWS - 1 and 0 < cc < ROOM_COLS - 1:
+                        if self.grid[rr][cc] == FLOOR:
+                            if not self._near_door_tile(cc, rr, door_tiles, buffer):
+                                self.grid[rr][cc] = WATER
+
+        # Spawn one WaterSpiritEnemy at each pool centre.
+        for pc, pr in placed_centres:
+            px = pc * TILE_SIZE + TILE_SIZE // 2
+            py = pr * TILE_SIZE + TILE_SIZE // 2
+            self.enemy_configs.append((WaterSpiritEnemy, (px, py)))
+
+    def _polish_tide_lord_arena(self):
+        """Flood the Tide Lord arena with a central WATER disc and outward CURRENT ring.
+
+        Layout:
+
+        * A disc of radius :data:`TIDE_LORD_ARENA_FLOOD_RADIUS` tiles at the
+          room centre is filled with WATER tiles, representing a flooded pool.
+        * A band of :data:`TIDE_LORD_ARENA_CURRENT_BAND` tiles rings the outside
+          of the disc with CURRENT tiles; each tile's vector points radially
+          outward from the centre so the player is pushed away when crossing
+          toward the boss.
+        * A chebyshev buffer of 3 tiles around each open door is kept as FLOOR
+          so the player never spawns on WATER/CURRENT.
+        """
+        flood_r = TIDE_LORD_ARENA_FLOOD_RADIUS
+        band    = TIDE_LORD_ARENA_CURRENT_BAND
+        door_buf = 3
+        door_tiles = self._door_tile_set()
+        cx_col = ROOM_COLS // 2
+        cy_row = ROOM_ROWS // 2
+        outer = flood_r + band
+        for dr in range(-outer, outer + 1):
+            for dc in range(-outer, outer + 1):
+                rr = cy_row + dr
+                cc = cx_col + dc
+                if not (1 <= rr < ROOM_ROWS - 1 and 1 <= cc < ROOM_COLS - 1):
+                    continue
+                if self._near_door_tile(cc, rr, door_tiles, door_buf):
+                    continue
+                dist = math.hypot(dc, dr)
+                if dist <= flood_r:
+                    self.grid[rr][cc] = WATER
+                elif dist <= outer:
+                    self.grid[rr][cc] = CURRENT
+                    if dist > 0:
+                        self.current_vectors[(cc, rr)] = (dc / dist, dr / dist)
 
     def _place_portal(self):
         cx, cy = ROOM_COLS // 2, ROOM_ROWS // 2
@@ -2731,6 +2953,8 @@ class Room:
             self.objective_entity_configs = self._build_shrine_circle_configs()
         elif self.room_plan.room_id == "earth_golem_arena":
             self.objective_entity_configs = self._build_golem_arena_configs()
+        elif self.room_plan.room_id == "water_tide_lord_arena":
+            self.objective_entity_configs = self._build_tide_lord_arena_configs()
 
     def _build_crystal_vein_configs(self):
         """Place 3-4 destructible vein crystals on FLOOR cells.
@@ -2935,6 +3159,31 @@ class Room:
             "boss_pos": (cx, cy),
             "wave_specs": {0.75: 2, 0.5: 4, 0.25: 6},
             "shard_spawn_radius": int(5 * TILE_SIZE),
+            "loot_granted": False,
+        }]
+
+    def _build_tide_lord_arena_configs(self):
+        """Spawn the Tide Lord mini-boss controller config.
+
+        The TideLord is registered through the regular enemy_configs pipeline
+        so it lives in :data:`~dungeon.Dungeon.enemy_group` and the
+        ``clear_enemies`` objective rule unseals the portal once it (and all
+        wave-spawned spirits) are dead.
+
+        Config keys consumed by ``rpg.py``:
+
+        * ``wave_specs`` — HP-threshold (float) → spirit count (int).
+        * ``wave_spawn_radius`` — pixel radius around the boss used when
+          placing each wave-spirit.
+        * ``loot_granted`` — flips True once defeat loot has been awarded.
+        """
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        return [{
+            "kind": "tide_lord_arena_controller",
+            "boss_pos": (cx, cy),
+            "wave_specs": {0.75: 2, 0.5: 3, 0.25: 4},
+            "wave_spawn_radius": TIDE_LORD_WAVE_SPAWN_RADIUS,
             "loot_granted": False,
         }]
 
@@ -4182,6 +4431,13 @@ class Room:
             cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
             cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
             return [(Golem, (cx, cy))]
+        if (
+            self.room_plan is not None
+            and self.room_plan.room_id == "water_tide_lord_arena"
+        ):
+            cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+            cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+            return [(TideLord, (cx, cy))]
         return self._gen_enemy_configs_for_range(self._enemy_count_range)
 
     def _build_enemy_palette(self):

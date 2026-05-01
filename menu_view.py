@@ -51,6 +51,16 @@ class RoomTestRowView:
 
 
 @dataclass(frozen=True)
+class RoomTestCategoryView:
+    title: str
+    categories: tuple[str, ...]
+    selected_index: int
+    entry_counts: tuple[int, ...]
+    footer_hint: str
+    tuning_shortcut_label: str = "Tuning Test Room"
+
+
+@dataclass(frozen=True)
 class RoomTestSelectView:
     title: str
     rows: tuple[RoomTestRowView, ...]
@@ -287,6 +297,18 @@ def build_room_test_select_view(screen):
         spawn_direction_label=screen.SPAWN_DIRECTION_LABELS.get(
             screen.spawn_direction, screen.spawn_direction
         ),
+    )
+
+
+def build_room_test_category_view(screen):
+    """Build a RoomTestCategoryView for the category selection screen."""
+    from room_test_catalog import ROOM_TEST_CATEGORIES
+    return RoomTestCategoryView(
+        title="Room Tests",
+        categories=ROOM_TEST_CATEGORIES,
+        selected_index=screen.selected_index,
+        entry_counts=screen._entry_counts,
+        footer_hint="Enter: select category  Esc: back",
     )
 
 
