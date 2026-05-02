@@ -4608,7 +4608,9 @@ class Room:
             del tile
             labels.append((label, _cell_center(col, hazard_row - 1)))
         labels.append(("PORTAL", _cell_center(portal_col, 1)))
-        labels.append(("FLOOR", _cell_center(10, 6)))
+        # Row 5 (between terrain sections and hazard-label row) is plain FLOOR;
+        # keep the label away from col 10 which is used by the THIN ICE hazard.
+        labels.append(("FLOOR", _cell_center(10, 5)))
         labels.append(("DOOR", _cell_center(2, ROOM_ROWS // 2)))
         for cls, col, label in enemy_sections:
             del cls

@@ -16,6 +16,21 @@ def reset_runtime_visuals(player):
 
 
 def update_runtime_visuals(player, now):
+    # ── Pit fall shrink animation takes visual priority ───────────────────────
+    # During "shrinking" and "pause" phases the sprite scales down to nothing.
+    # _pit_fall_shrink_t progresses 0.0 → 1.0 during shrinking; 1.0 during pause.
+    shrink_t = getattr(player, "_pit_fall_shrink_t", 0.0)
+    if shrink_t > 0.0:
+        if shrink_t >= 1.0:
+            # Fully shrunk — render a 1×1 transparent surface (effectively invisible).
+            _set_image(player, pygame.Surface((1, 1), pygame.SRCALPHA))
+        else:
+            size = max(2, int(PLAYER_SIZE * (1.0 - shrink_t)))
+            small = pygame.transform.scale(player._base_image, (size, size))
+            _set_image(player, small)
+        player._visible = shrink_t < 1.0
+        return
+
     if now < player._invincible_until:
         player._visible = ((now // FLASH_INTERVAL_MS) % 2 == 0)
         if player._visible:

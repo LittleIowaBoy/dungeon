@@ -3,8 +3,10 @@ import pygame
 from settings import (
     TILE_SIZE, ROOM_COLS, ROOM_ROWS,
     COLOR_DOOR_ONE_WAY,
+    THIN_ICE_CRACK_COLORS,
 )
-from room import TERRAIN_COLORS
+from room import TERRAIN_COLORS, THIN_ICE
+from terrain_effects import thin_ice_crack_stage
 
 
 # Biome-themed seal door palettes.  Keys match Room.biome_terrain
@@ -59,6 +61,16 @@ class Camera:
                     surface, color,
                     (c * TILE_SIZE, r * TILE_SIZE, TILE_SIZE, TILE_SIZE),
                 )
+                # ── Thin-ice crack overlay ───────────────────────────────────
+                # Draw progressively darker crack lines over THIN_ICE tiles
+                # based on how many times the player has stepped on each one.
+                if tile == THIN_ICE:
+                    stage = thin_ice_crack_stage(room, c, r)
+                    if 0 < stage <= len(THIN_ICE_CRACK_COLORS):
+                        crack_color = THIN_ICE_CRACK_COLORS[stage - 1]
+                        self._draw_thin_ice_cracks(
+                            surface, c, r, stage, crack_color
+                        )
 
         # sprites
         overlay_sprites = []
@@ -204,3 +216,76 @@ class Camera:
             surface, frame,
             pygame.Rect(cx - 3, cy - 3, 6, 6),
         )
+
+    # ------------------------------------------------------------------
+    def _draw_thin_ice_cracks(self, surface, col, row, stage, crack_color):
+        """Draw crack lines on a THIN_ICE tile proportional to *stage*.
+
+        Stage 1: two crossing primary cracks with a couple of short branches.
+        Stage 2: the stage-1 lines remain, additional secondary cracks radiate
+        outward from the crossing point, and the tile edge begins to show
+        stress marks — giving a heavily fractured look just before collapse.
+        """
+        x0 = col * TILE_SIZE
+        y0 = row * TILE_SIZE
+        ts = TILE_SIZE
+
+        overlay = pygame.Surface((ts, ts), pygame.SRCALPHA)
+
+        r, g, b, a = crack_color
+        line_color = (r, g, b, a)
+        branch_color = (r, g, b, max(0, a - 30))
+        thin_color   = (r, g, b, max(0, a - 60))
+
+        # ── Stage 1: two primary crossing cracks + 3 branches ──────────────
+        # Primary crack: top-left quadrant → bottom-right quadrant
+        pygame.draw.line(overlay, line_color,
+                         (ts // 5,      ts // 4),
+                         (ts * 4 // 5,  ts * 3 // 4), 2)
+        # Second primary: top-right → bottom-left
+        pygame.draw.line(overlay, line_color,
+                         (ts * 3 // 4,  ts // 5),
+                         (ts // 5,      ts * 4 // 5), 2)
+
+        mid_x, mid_y = ts // 2, ts // 2
+
+        # Branches sprouting from the crossing centre
+        pygame.draw.line(overlay, branch_color,
+                         (mid_x, mid_y), (mid_x - ts // 4, mid_y - ts // 8), 1)
+        pygame.draw.line(overlay, branch_color,
+                         (mid_x, mid_y), (mid_x + ts // 4, mid_y + ts // 8), 1)
+        pygame.draw.line(overlay, branch_color,
+                         (mid_x, mid_y), (mid_x + ts // 8, mid_y - ts // 4), 1)
+
+        if stage >= 2:
+            # ── Stage 2: extra radiating cracks + edge stress lines ─────────
+            # Additional diagonal splinters from the centre
+            pygame.draw.line(overlay, branch_color,
+                             (mid_x, mid_y), (mid_x - ts // 5, mid_y + ts // 3), 1)
+            pygame.draw.line(overlay, branch_color,
+                             (mid_x, mid_y), (mid_x + ts // 3, mid_y - ts // 5), 1)
+            pygame.draw.line(overlay, branch_color,
+                             (mid_x, mid_y), (ts - 2, mid_y + ts // 6), 1)
+            pygame.draw.line(overlay, branch_color,
+                             (mid_x, mid_y), (ts // 6, 2), 1)
+
+            # Hairline stress cracks near tile edges (makes the ice look
+            # like it is about to shatter at the seams)
+            pygame.draw.line(overlay, thin_color,
+                             (1, ts // 3),       (ts // 4, ts // 2), 1)
+            pygame.draw.line(overlay, thin_color,
+                             (ts - 2, ts * 2 // 3), (ts * 3 // 4, ts // 2), 1)
+            pygame.draw.line(overlay, thin_color,
+                             (ts // 3, 1),       (ts // 2, ts // 4), 1)
+            pygame.draw.line(overlay, thin_color,
+                             (ts * 2 // 3, ts - 2), (ts // 2, ts * 3 // 4), 1)
+
+            # Small corner chips
+            pygame.draw.line(overlay, thin_color,
+                             (2, 2), (ts // 6, ts // 7), 1)
+            pygame.draw.line(overlay, thin_color,
+                             (ts - 2, ts - 2), (ts * 5 // 6, ts * 6 // 7), 1)
+
+        surface.blit(overlay, (x0, y0))
+
+

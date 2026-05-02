@@ -16,7 +16,9 @@ from settings import (
     QUICKSAND_PULL_SPEED, CURRENT_PUSH_SPEED, TILE_SIZE,
     WATER_SUBMERSION_DELAY_MS, WATER_SUBMERSION_TICK_MS, WATER_SUBMERSION_TICK_DAMAGE,
     ENEMY_CURRENT_PUSH_FACTOR,
-    THIN_ICE_STEPS_TO_CRACK,
+    THIN_ICE_STEPS_TO_CRACK, THIN_ICE_RESPAWN_MS,
+    PIT_FALL_SLIDE_MS, PIT_FALL_SHRINK_MS, PIT_FALL_PAUSE_MS,
+    PIT_FALL_ANIM_TOTAL_MS, PIT_FALL_RESPAWN_IFRAMES_MS, PIT_FALL_HP_PENALTY,
 )
 
 
@@ -49,6 +51,7 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
         "pushed": False,
         "submerged": False,
         "thin_ice_cracked": False,
+        "pit_fall_triggered": False,
     }
     if room is None or player is None:
         return diag
@@ -87,9 +90,9 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
     # Each time the player steps ONTO a new THIN_ICE tile, a per-tile
     # step counter on the room is incremented.  Once the counter for a
     # tile reaches THIN_ICE_STEPS_TO_CRACK, the tile collapses to
-    # PIT_TILE instantly (lethal on the same frame if the player lingers).
-    # Exiting and re-entering the room preserves collapsed tiles — the
-    # step_counts dict is kept on the room object for its lifetime.
+    # PIT_TILE.  The crack timestamp (room._thin_ice_crack_times) is
+    # stored so advance_thin_ice_respawn() can regenerate the tile after
+    # THIN_ICE_RESPAWN_MS.
     if tile == THIN_ICE and stepped_to_new_tile:
         counts = getattr(room, "_thin_ice_step_counts", None)
         if counts is None:
@@ -100,16 +103,23 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
             col, row = cur_tile_coord
             room.grid[row][col] = PIT_TILE
             diag["thin_ice_cracked"] = True
-            # Immediately deal the PIT lethal damage so the player can't
-            # survive the frame they crack through.
-            if not invincible and player.current_hp > 0:
-                player.take_damage(player.current_hp)
+            # Record when this tile cracked so it can respawn later.
+            crack_times = getattr(room, "_thin_ice_crack_times", None)
+            if crack_times is None:
+                room._thin_ice_crack_times = {}
+            room._thin_ice_crack_times[cur_tile_coord] = now_ticks
+            # Trigger the pit fall animation instead of instant death.
+            if not invincible:
+                _start_pit_fall(player, col, row, prev_tile_coord, now_ticks)
+                diag["pit_fall_triggered"] = True
             return diag
 
-    # ── PIT_TILE: instant lethal step ──────────────────────
+    # ── PIT_TILE: trigger fall animation (or skip if already falling / invincible)
     if tile == PIT_TILE:
-        if not invincible and player.current_hp > 0:
-            player.take_damage(player.current_hp)
+        if not invincible and getattr(player, "_pit_fall_phase", None) is None:
+            pit_col, pit_row = cur_tile_coord
+            _start_pit_fall(player, pit_col, pit_row, prev_tile_coord, now_ticks)
+            diag["pit_fall_triggered"] = True
         return diag
 
     # ── QUICKSAND: pull toward tile centre ─────────────
@@ -256,3 +266,196 @@ def _push_player(player, room, dx, dy):
                 else:
                     player.rect.top = wall.bottom
                 break
+
+
+# ── Pit fall animation helpers ───────────────────────────────────────────────
+
+def _start_pit_fall(player, pit_col, pit_row, prev_tile_coord, now_ticks):
+    """Arm the pit fall animation on *player*.
+
+    Records the pit tile, the entry tile (used as the respawn candidate), and
+    the player's current pixel position (used as the slide start point).
+    Sets ``_invincible_until`` to cover the entire animation so damage is
+    blocked for the full fall duration.
+    """
+    player._pit_fall_phase = "falling"
+    player._pit_fall_started_at = now_ticks
+    player._pit_fall_pit_col = pit_col
+    player._pit_fall_pit_row = pit_row
+    player._pit_fall_start_x = player.rect.centerx
+    player._pit_fall_start_y = player.rect.centery
+    player._pit_fall_shrink_t = 0.0
+    # Record where the player came from so we can respawn them there.
+    if prev_tile_coord is not None and prev_tile_coord != (pit_col, pit_row):
+        player._pit_entry_col, player._pit_entry_row = prev_tile_coord
+    else:
+        # No previous-tile data available — default to the tile above the pit.
+        player._pit_entry_col = pit_col
+        player._pit_entry_row = max(0, pit_row - 1)
+    # Cover the entire animation with i-frames so enemies / hazards cannot
+    # deal additional damage while the player is helplessly falling.
+    player._invincible_until = now_ticks + PIT_FALL_ANIM_TOTAL_MS
+
+
+def advance_pit_fall_animation(player, room, now_ticks):
+    """Drive one frame of the pit fall state machine.
+
+    Must be called every frame while ``player._pit_fall_phase is not None``.
+    Returns ``True`` while the animation is running, ``False`` once it has
+    finished (phase reset to ``None`` after respawn completes).
+
+    Animation phases:
+    - "falling"  : player slides to the pit tile center over PIT_FALL_SLIDE_MS.
+    - "shrinking": sprite shrinks (visual handled by player_visual_rules) over
+                   PIT_FALL_SHRINK_MS.  Player position is locked to pit center.
+    - "pause"    : player is fully shrunk and invisible for PIT_FALL_PAUSE_MS
+                   before the respawn fires.
+    """
+    phase = getattr(player, "_pit_fall_phase", None)
+    if phase is None:
+        return False
+
+    elapsed = now_ticks - player._pit_fall_started_at
+    pit_cx = player._pit_fall_pit_col * TILE_SIZE + TILE_SIZE // 2
+    pit_cy = player._pit_fall_pit_row * TILE_SIZE + TILE_SIZE // 2
+
+    if phase == "falling":
+        t = min(1.0, elapsed / PIT_FALL_SLIDE_MS)
+        sx, sy = player._pit_fall_start_x, player._pit_fall_start_y
+        player.rect.centerx = int(sx + (pit_cx - sx) * t)
+        player.rect.centery = int(sy + (pit_cy - sy) * t)
+        if elapsed >= PIT_FALL_SLIDE_MS:
+            player._pit_fall_phase = "shrinking"
+            player._pit_fall_started_at = now_ticks
+
+    elif phase == "shrinking":
+        player._pit_fall_shrink_t = min(1.0, elapsed / PIT_FALL_SHRINK_MS)
+        # Lock position to pit center throughout the shrink.
+        player.rect.centerx = pit_cx
+        player.rect.centery = pit_cy
+        if elapsed >= PIT_FALL_SHRINK_MS:
+            player._pit_fall_shrink_t = 1.0
+            player._pit_fall_phase = "pause"
+            player._pit_fall_started_at = now_ticks
+
+    elif phase == "pause":
+        # Player is fully invisible — wait for the pause window then respawn.
+        if elapsed >= PIT_FALL_PAUSE_MS:
+            _complete_pit_respawn(player, room, now_ticks)
+
+    return player._pit_fall_phase is not None
+
+
+def _complete_pit_respawn(player, room, now_ticks):
+    """Teleport the player to the best nearby non-pit tile and grant i-frames."""
+    rc, rr = _find_pit_respawn_pos(player, room)
+    player.rect.centerx = rc * TILE_SIZE + TILE_SIZE // 2
+    player.rect.centery = rr * TILE_SIZE + TILE_SIZE // 2
+    # Apply HP penalty but never kill the player.
+    penalty = min(PIT_FALL_HP_PENALTY, max(0, player.current_hp - 1))
+    player.current_hp = max(1, player.current_hp - penalty)
+    # Grant extended i-frames — the standard flash visual in player_visual_rules
+    # will blink the player for the entire RESPAWN_IFRAMES_MS window, giving a
+    # clear signal that the player is temporarily invulnerable.
+    player._invincible_until = now_ticks + PIT_FALL_RESPAWN_IFRAMES_MS
+    # Clear animation state so the normal game loop resumes.
+    player._pit_fall_phase = None
+    player._pit_fall_shrink_t = 0.0
+
+
+def _find_pit_respawn_pos(player, room):
+    """Return ``(col, row)`` of the nearest walkable, non-pit tile.
+
+    Priority:
+    1. The tile the player stepped from before entering the pit
+       (``_pit_entry_col`` / ``_pit_entry_row``).
+    2. BFS from the pit tile outward — first non-blocked tile found.
+
+    Tiles in ``_BLOCKED`` are never used as a respawn destination.
+    THIN_ICE is intentionally excluded: respawning onto thin ice that is
+    about to crack would immediately re-trigger the fall animation.
+    """
+    from room import PIT_TILE, WALL, THIN_ICE
+    from collections import deque
+
+    _BLOCKED = {PIT_TILE, WALL, THIN_ICE}
+
+    # First preference: the tile the player came from.
+    entry_col = getattr(player, "_pit_entry_col", None)
+    entry_row = getattr(player, "_pit_entry_row", None)
+    if entry_col is not None and entry_row is not None:
+        if room.tile_at(entry_col, entry_row) not in _BLOCKED:
+            return (entry_col, entry_row)
+
+    # Fallback: BFS expanding from the pit tile.
+    pit_col = player._pit_fall_pit_col
+    pit_row = player._pit_fall_pit_row
+    visited = {(pit_col, pit_row)}
+    queue = deque([(pit_col, pit_row)])
+    while queue:
+        col, row = queue.popleft()
+        for dc, dr in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            nc, nr = col + dc, row + dr
+            if (nc, nr) in visited:
+                continue
+            visited.add((nc, nr))
+            t = room.tile_at(nc, nr)
+            if t not in _BLOCKED:
+                return (nc, nr)
+            queue.append((nc, nr))
+
+    # Ultimate fallback — pit tile itself (should be unreachable in practice).
+    return (pit_col, pit_row)
+
+
+def advance_thin_ice_respawn(room, now_ticks):
+    """Restore cracked thin-ice pits whose THIN_ICE_RESPAWN_MS window has expired.
+
+    Called every frame from the runtime.  Iterates ``room._thin_ice_crack_times``
+    (populated by the THIN_ICE crack handler in :func:`apply_terrain_effects`)
+    and, for each tile whose crack timestamp is old enough:
+
+    - Sets ``room.grid[row][col]`` back to ``THIN_ICE``.
+    - Removes the entry from ``_thin_ice_crack_times``.
+    - Resets the step count for that tile to 0 so the player gets a fresh
+      cracking progression on the regenerated tile.
+
+    Tiles that are currently occupied by the player (mid-fall animation) are
+    skipped until the fall finishes so the grid never changes under an
+    in-progress pit-fall.
+    """
+    crack_times = getattr(room, "_thin_ice_crack_times", None)
+    if not crack_times:
+        return
+
+    from room import THIN_ICE, PIT_TILE
+
+    expired = [
+        coord for coord, cracked_at in crack_times.items()
+        if now_ticks - cracked_at >= THIN_ICE_RESPAWN_MS
+    ]
+    for coord in expired:
+        col, row = coord
+        # Only restore tiles that are still PIT_TILE — if the room was
+        # reloaded or the tile was overwritten by something else, skip.
+        if room.tile_at(col, row) == PIT_TILE:
+            room.grid[row][col] = THIN_ICE
+        del crack_times[coord]
+        # Reset the step counter so the regenerated tile starts fresh.
+        step_counts = getattr(room, "_thin_ice_step_counts", None)
+        if step_counts is not None:
+            step_counts.pop(coord, None)
+
+
+def thin_ice_crack_stage(room, col, row):
+    """Return the 0-based crack stage for a THIN_ICE tile (0 = untouched).
+
+    Used by the renderer to choose the correct crack-overlay colour.
+    Returns 0 when the tile has never been stepped on or the room has no
+    step-count data.  The maximum return value is
+    ``THIN_ICE_STEPS_TO_CRACK - 1`` (one step before collapse).
+    """
+    counts = getattr(room, "_thin_ice_step_counts", None)
+    if counts is None:
+        return 0
+    return counts.get((col, row), 0)

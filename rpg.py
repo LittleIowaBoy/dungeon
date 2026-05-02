@@ -71,6 +71,7 @@ import stat_runes
 import status_effects
 import time_rules
 import terrain_effects
+import player_visual_rules
 from settings import BIOME_TROPHY_IDS, BIOME_TROPHY_KEYSTONE_ID
 
 
@@ -732,6 +733,17 @@ class Game:
         walls = room.get_wall_rects()
         now_ticks = pygame.time.get_ticks()
 
+        # ── Pit fall animation ────────────────────────────────────────────────
+        # While the player is falling into a pit the normal game loop is paused
+        # (enemies, portals, items, etc. do not advance).  Only the animation
+        # state machine and the visual update run until the respawn fires.
+        if getattr(self.player, "_pit_fall_phase", None) is not None:
+            terrain_effects.advance_pit_fall_animation(
+                self.player, room, now_ticks
+            )
+            player_visual_rules.update_runtime_visuals(self.player, now_ticks)
+            return
+
         # Track HP at the start of the frame so we can detect any damage source
         # (enemy contact, traps, altars, etc.) and drop the heartstone if hit.
         hp_at_frame_start = self.player.current_hp
@@ -746,6 +758,7 @@ class Game:
             self.player, room, now_ticks, self.clock.get_time(),
         )
         room.prune_expired_room_buffs(now_ticks)
+        terrain_effects.advance_thin_ice_respawn(room, now_ticks)
         is_moving = self.player.rect.center != prev_center
         stat_runes.update_movement_state(
             self.player, now_ticks, self.clock.get_time(), is_moving

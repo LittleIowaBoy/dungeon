@@ -328,7 +328,9 @@ class ThinIceCrackingTests(unittest.TestCase):
         self.assertTrue(diag.get("thin_ice_cracked", False))
         self.assertEqual(room.grid[row][col], PIT_TILE)
 
-    def test_cracking_deals_lethal_damage(self):
+    def test_cracking_triggers_fall_animation(self):
+        # Cracking through thin ice no longer kills instantly; it starts the
+        # pit fall animation so the player survives and is respawned nearby.
         room = self._room_with_thin_ice()
         col, row = 5, 5
         player = self._player_on_tile(col, row)
@@ -341,7 +343,8 @@ class ThinIceCrackingTests(unittest.TestCase):
             terrain_effects.apply_terrain_effects(player, room, i * 100, 16)
         room._previous_player_tile = (col + 1, row)
         terrain_effects.apply_terrain_effects(player, room, THIN_ICE_STEPS_TO_CRACK * 100, 16)
-        self.assertEqual(player.current_hp, 0)
+        self.assertEqual(player._pit_fall_phase, "falling")
+        self.assertGreater(player.current_hp, 0)
 
     def test_no_crack_without_new_step(self):
         room = self._room_with_thin_ice()

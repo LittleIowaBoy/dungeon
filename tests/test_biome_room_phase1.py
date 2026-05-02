@@ -100,13 +100,17 @@ class TerrainEffectsTests(unittest.TestCase):
         self.assertEqual(diag["tile"], FLOOR)
         self.assertEqual(player.current_hp, hp)
 
-    def test_pit_tile_is_lethal(self):
+    def test_pit_tile_triggers_fall_animation(self):
+        # PIT_TILE no longer kills instantly; it starts the fall animation so
+        # the player can be respawned nearby after a short delay.
         grid = _wall_border_grid()
         grid[5][5] = PIT_TILE
         room = _StubRoom(grid=grid)
         player = _make_player(5, 5)
+        player._invincible_until = 0
         terrain_effects.apply_terrain_effects(player, room, 0, 16)
-        self.assertLessEqual(player.current_hp, 0)
+        self.assertEqual(player._pit_fall_phase, "falling")
+        self.assertGreater(player.current_hp, 0)
 
     def test_spike_patch_damages_only_on_tile_entry(self):
         """SPIKE_PATCH deals damage on the frame the player moves ONTO it.

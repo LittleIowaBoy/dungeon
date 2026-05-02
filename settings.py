@@ -535,6 +535,37 @@ ENEMY_CURRENT_PUSH_FACTOR    = 0.5
 # collapses to PIT_TILE (lethal).  The cracking is permanent for the room's
 # lifetime; tiles do not regenerate between visits.
 THIN_ICE_STEPS_TO_CRACK = 3
+# How long (ms) a cracked-through thin-ice pit waits before regenerating back
+# into a fresh THIN_ICE tile.
+THIN_ICE_RESPAWN_MS = 15_000
+
+# Crack-stage overlay colours for thin-ice tiles.  Index 0 = first step
+# (lightest crack lines), ascending up to THIN_ICE_STEPS_TO_CRACK - 1 (final
+# stage just before collapse).  Each value is an RGBA colour drawn on top of
+# the base COLOR_THIN_ICE tile so only the crack lines are visible.
+THIN_ICE_CRACK_COLORS = (
+    (160, 200, 230, 140),   # stage 1 – visible hairline crossing cracks
+    (110, 160, 210, 210),   # stage 2 – heavy fracture network
+    # stage 3 = collapse; no overlay needed (tile becomes PIT_TILE)
+)
+
+# ── Pit fall animation ────────────────────────────────────────────────────────
+# When a player contacts a PIT_TILE (or cracks through thin ice), rather than
+# dying instantly the player plays a three-phase fall animation:
+#   1. "falling"  — slides to the center of the pit tile over SLIDE_MS.
+#   2. "shrinking" — sprite shrinks from full size to nothing over SHRINK_MS.
+#   3. "pause"    — brief invisible pause before respawn (PAUSE_MS).
+# Then the player is placed on the nearest walkable non-pit tile and granted
+# extended i-frames (RESPAWN_IFRAMES_MS) that drive the standard flash visual.
+# ANIM_TOTAL_MS covers the entire animation and is used as the initial i-frame
+# window so damage is blocked for the full duration of the fall.
+PIT_FALL_SLIDE_MS            = 300    # ms to glide player to pit center
+PIT_FALL_SHRINK_MS           = 600    # ms to shrink sprite from full → nothing
+PIT_FALL_PAUSE_MS            = 250    # ms pause while fully shrunk before respawn
+PIT_FALL_ANIM_TOTAL_MS       = 1150   # SLIDE + SHRINK + PAUSE  (i-frame cover)
+PIT_FALL_RESPAWN_IFRAMES_MS  = 2500   # i-frames granted on respawn (drives flash)
+PIT_FALL_HP_PENALTY          = 15     # HP deducted on respawn; never lethal
+
 # Thin Ice Field room polish constants (analog of STALAGMITE_FIELD_*).
 ICE_THIN_ICE_FIELD_DOOR_BUFFER          = 2
 ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE = (4, 7)

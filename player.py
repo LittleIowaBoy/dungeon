@@ -71,6 +71,18 @@ class Player(pygame.sprite.Sprite):
         # heartstone carry state (Heartstone Claim room)
         self.carrying_heartstone = False
 
+        # pit fall animation state
+        # _pit_fall_phase cycles: None → "falling" → "shrinking" → "pause" → None
+        self._pit_fall_phase = None
+        self._pit_fall_started_at = 0
+        self._pit_fall_pit_col = 0
+        self._pit_fall_pit_row = 0
+        self._pit_fall_start_x = 0   # player pixel-x when the fall began
+        self._pit_fall_start_y = 0   # player pixel-y when the fall began
+        self._pit_entry_col = 0      # tile col the player stepped from (respawn target)
+        self._pit_entry_row = 0      # tile row the player stepped from (respawn target)
+        self._pit_fall_shrink_t = 0.0  # 0.0→1.0 progress through shrink phase
+
         # runes (per-dungeon loadout + scratch state)
         self.equipped_runes = rune_rules.empty_loadout()
         self.rune_state = {}
