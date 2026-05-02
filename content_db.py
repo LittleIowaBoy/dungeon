@@ -808,7 +808,7 @@ BASE_ROOM_TEMPLATES = (
         "repeat_cooldown": 1,
         "reward_affinity": "any",
         **_plan_shape(
-            objective_rule="clear_enemies",
+            objective_rule="immediate",
             objective_label="Boulder Run",
         ),
         "notes": "Boulders crash in from one wall, rolling straight down lanes — weave between drops to reach the exit.",
@@ -994,7 +994,7 @@ BASE_ROOM_TEMPLATES = (
         "terminal_preference": "avoid",
         "repeat_cooldown": 1,
         "reward_affinity": "any",
-        **_plan_shape(objective_rule="clear_enemies"),
+        **_plan_shape(objective_rule="immediate"),
         "notes": "A chamber of cracking ice tiles that collapse into lethal pits after a few steps; safe floor corridors connect the doors to the room centre.",
     },
     {

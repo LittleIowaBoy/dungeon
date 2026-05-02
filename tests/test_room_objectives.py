@@ -1711,7 +1711,8 @@ class RoomObjectiveTests(unittest.TestCase):
         room.on_enter(1000)
         room.objective_entity_configs[0]["reached_exit"] = True
         update = room.update_objective(2000, [])
-        self.assertEqual(update, {"kind": "despawn_escort"})
+        self.assertEqual(update["kind"], "despawn_escort")
+        self.assertIn("pos", update)
         self.assertTrue(room.objective_entity_configs[0]["destroyed"])
         # Idempotent: a subsequent update should not re-emit.
         followup = room.update_objective(2100, [])
@@ -1726,7 +1727,8 @@ class RoomObjectiveTests(unittest.TestCase):
         room.on_enter(1000)
         room.objective_entity_configs[0]["reached_exit"] = True
         update = room.update_objective(2000, [])
-        self.assertEqual(update, {"kind": "despawn_escort"})
+        self.assertEqual(update["kind"], "despawn_escort")
+        self.assertIn("pos", update)
         self.assertTrue(room.objective_entity_configs[0]["destroyed"])
 
     def test_escort_room_uses_metadata_profile(self):
@@ -1778,7 +1780,10 @@ class RoomObjectiveTests(unittest.TestCase):
 
         room.on_enter(1000, entry_direction="left", player_position=(60, 300))
 
-        self.assertEqual(room.objective_entity_configs[0]["pos"], (100, 300))
+        # Entering from the left: preferred spawn is 1 tile toward the entry
+        # door (col 0), but that is a DOOR tile and not walkable.  The next
+        # preferred offset is perpendicular up (col 1, row 6) = pixel (60, 260).
+        self.assertEqual(room.objective_entity_configs[0]["pos"], (60, 260))
 
     def test_escort_room_goal_marker_matches_exit_portal_center(self):
         room = Room(

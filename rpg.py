@@ -22,7 +22,7 @@ from dungeon import Dungeon
 from camera import Camera
 from hud import HUD
 from room import DOOR, PORTAL, WALL
-from items import LootDrop
+from items import Coin, LootDrop
 from item_catalog import ITEM_DATABASE
 from game_states import GameState
 from content_db import ensure_room_content_db
@@ -306,7 +306,8 @@ class Game:
             return
         room = self.dungeon.current_room
         if update_result.get("kind") in {"spawn_reinforcements", "spawn_enemies"}:
-            if not room.enemies_cleared:
+            is_escort_wave = update_result.get("source") == "escort_wave"
+            if is_escort_wave or not room.enemies_cleared:
                 for cls, (px, py) in update_result.get("enemy_configs", ()):
                     self.dungeon.enemy_group.add(cls(px, py))
         elif update_result.get("kind") == "forfeit_chest":
@@ -334,9 +335,17 @@ class Game:
                     )
                 )
         elif update_result.get("kind") == "despawn_escort":
+            pos = update_result.get("pos")
             for objective in list(self.dungeon.objective_group):
                 if isinstance(objective, EscortNPC):
                     objective.kill()
+            # Drop a coin reward at the escort's vanish point.
+            if pos is not None:
+                import random as _random
+                for _ in range(6):
+                    cx = pos[0] + _random.randint(-14, 14)
+                    cy = pos[1] + _random.randint(-14, 14)
+                    self.dungeon.item_group.add(Coin(cx, cy))
         elif update_result.get("kind") == "spawn_heartstone":
             x, y = update_result.get("position", (None, None))
             if x is not None and y is not None:
@@ -1023,6 +1032,7 @@ class Game:
         # death check
         if not self.player.alive:
             self._on_death()
+            return
 
         # mark room cleared when all *mortal* enemies are gone.
         # Immortal enemies (WaterSpiritEnemy pool guardians) remain in the
@@ -1089,7 +1099,11 @@ class Game:
         if choice == "Play Again":
             self._start_dungeon(self._current_dungeon_id)
         elif choice == "Return to Dungeon Select":
-            self._return_to_menu()
+            # complete_dungeon_from_runtime already synced coins/armor and
+            # wiped progress.equipped_runes.  Passing sync_player_state=False
+            # prevents the still-live player (whose equipped_runes haven't
+            # been cleared) from re-polluting progress before we save again.
+            self._return_to_menu(sync_player_state=False)
 
     # ── game over / win handlers ────────────────────────
     def _handle_game_over(self, events):

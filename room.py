@@ -19,6 +19,7 @@ from settings import (
     COLOR_BLACK, COLOR_WHITE,
     ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM,
     ENEMY_DOOR_BUFFER_TILES, ROOM_MAX_DISTINCT_ENEMY_TYPES,
+    ENEMY_TYPE_CAP_CHASER, ENEMY_TYPE_CAP_PULSATOR,
     CHEST_SPAWN_CHANCE,
     TERRAIN_PATCH_MIN, TERRAIN_PATCH_MAX,
     TERRAIN_PATCH_SIZE_MIN, TERRAIN_PATCH_SIZE_MAX,
@@ -1430,8 +1431,11 @@ class Room:
                 if not already_completed and not escort.get("destroyed"):
                     # Mark destroyed so re-entering the room won't respawn the
                     # escort sprite, and tell rpg.py to despawn the live one.
+                    # Pass the NPC's final pixel position so rpg.py can place
+                    # the loot drop at the spot where they vanished.
+                    pos = escort.get("pos")
                     escort["destroyed"] = True
-                    return {"kind": "despawn_escort"}
+                    return {"kind": "despawn_escort", "pos": pos}
             elif escort.get("destroyed"):
                 failure_status = (
                     "carrier_down" if rule == "escort_bomb_to_exit" else "escort_down"
@@ -1441,6 +1445,9 @@ class Room:
             else:
                 self.objective_status = "active"
                 self._set_portal_active(False)
+                wave_update = self._maybe_spawn_escort_wave(escort)
+                if wave_update is not None:
+                    return wave_update
             return None
 
         if rule == "avoid_alarm_zones":
@@ -2228,6 +2235,58 @@ class Room:
         self._set_portal_active(False)
         return {"kind": "restore_chest"}
 
+    def _maybe_spawn_escort_wave(self, escort):
+        """Fire a reinforcement wave when the escort crosses 40% or 80% of
+        the way from its spawn origin to its goal position.
+
+        Returns a ``spawn_reinforcements`` update dict on the tick the
+        threshold is first crossed, otherwise ``None``.  Each threshold fires
+        at most once per room entry regardless of NPC movement direction.
+        """
+        goal_pos = escort.get("goal_pos")
+        if not goal_pos:
+            return None
+
+        # Lazily record the NPC's initial position as the wave origin.
+        if escort.get("_wave_origin") is None:
+            escort["_wave_origin"] = escort["pos"]
+
+        origin = escort["_wave_origin"]
+        current = escort["pos"]
+
+        ox, oy = origin
+        gx, gy = goal_pos
+        total_sq = (gx - ox) ** 2 + (gy - oy) ** 2
+        if total_sq == 0:
+            return None
+
+        # Signed progress: component of (current - origin) along (goal - origin).
+        travelled_x = current[0] - ox
+        travelled_y = current[1] - oy
+        import math
+        total_dist = math.sqrt(total_sq)
+        dx, dy = (gx - ox) / total_dist, (gy - oy) / total_dist
+        progress = (travelled_x * dx + travelled_y * dy) / total_dist
+        progress = max(0.0, min(1.0, progress))
+
+        waves_fired = escort.setdefault("_waves_fired", set())
+        thresholds = (40, 80)  # as integer percentages
+
+        for threshold in thresholds:
+            if threshold in waves_fired:
+                continue
+            if progress >= threshold / 100:
+                waves_fired.add(threshold)
+                reinforcements = self._gen_enemy_configs_for_range((2, 3))
+                self.enemy_configs.extend(reinforcements)
+                return {
+                    "kind": "spawn_reinforcements",
+                    "source": "escort_wave",
+                    "enemy_configs": reinforcements,
+                }
+
+        return None
+
     def _maybe_spawn_holdout_wave(self, elapsed_ms):
         thresholds = self._holdout_wave_thresholds()
         if self._holdout_wave_index >= len(thresholds):
@@ -2903,6 +2962,11 @@ class Room:
                     "waiting_for_clearance": False,
                     "damage_cooldown_ms": damage_cooldown_ms,
                     "damage_cooldown_until": 0,
+                    # Progress-wave tracking: record spawn position on first
+                    # update so we can measure how far the NPC has travelled.
+                    # _wave_origin is set lazily (None until NPC first moves).
+                    "_wave_origin": None,
+                    "_waves_fired": set(),  # contains 40 and/or 80 once fired
                 }
             ]
         elif self.room_plan.objective_rule == "avoid_alarm_zones":
@@ -3022,25 +3086,25 @@ class Room:
         ]
 
     def _build_mushroom_grove_configs(self):
-        """Place 3-4 destructible spore mushrooms with staggered pulse phases."""
-        mushroom_count = random.randint(3, 4)
+        """Place 20-30 destructible spore mushrooms, each with a randomised pulse rate."""
+        mushroom_count = random.randint(20, 30)
         positions = self._sample_floor_positions(mushroom_count)
-        cycle_ms = 3000
-        return [
-            {
+        configs = []
+        for pos in positions:
+            cycle_ms = random.randint(1500, 4500)
+            configs.append({
                 "kind": "spore_mushroom",
                 "pos": pos,
                 "max_hp": 3,
                 "current_hp": 3,
                 "pulse_cycle_ms": cycle_ms,
                 "pulse_active_ms": 700,
-                "pulse_offset_ms": (cycle_ms // mushroom_count) * index,
+                "pulse_offset_ms": random.randint(0, cycle_ms - 1),
                 "pulse_radius": 80,
                 "poison_duration_ms": 5000,
                 "destroyed": False,
-            }
-            for index, pos in enumerate(positions)
-        ]
+            })
+        return configs
 
     def _build_cave_in_configs(self):
         """Single collapse emitter centred in the room."""
@@ -3962,10 +4026,77 @@ class Room:
             return
 
         fallback_pos = escort["pos"]
-        if player_position is not None:
+        if player_position is not None and entry_direction is not None:
+            # Spawn directly on the entry-door side of the player — the tile
+            # they just stepped through or the nearest walkable alternative.
+            escort["pos"] = self._escort_spawn_behind_player(
+                player_position, entry_direction, fallback_pos
+            )
+        elif player_position is not None:
             escort["pos"] = self._escort_spawn_near_player(player_position, fallback_pos)
         elif entry_direction is not None:
             escort["pos"] = self._escort_spawn_near_entry_door(entry_direction, fallback_pos)
+
+        # Place the goal marker on the far side of the room (opposite the
+        # entry door) so the escort's target is always across the room.
+        if entry_direction is not None:
+            far_goal = self._escort_goal_on_far_side(entry_direction)
+            if far_goal is not None:
+                escort["goal_pos"] = far_goal
+
+    def _escort_goal_on_far_side(self, entry_direction):
+        """Return a random floor pixel-centre on the far side of the room.
+
+        Picks from the outer third of the room on the axis opposite to
+        *entry_direction*, so the goal is never near the centre and is
+        always on the side the player has yet to reach.
+        """
+        opp = OPPOSITE_DIR.get(entry_direction)
+        if opp is None:
+            return None
+
+        # Outer-third thresholds (exclusive of the 1-tile border).
+        far_col_lo = ROOM_COLS * 2 // 3   # right third start col
+        far_col_hi = ROOM_COLS // 3        # left third end col (exclusive)
+        far_row_lo = ROOM_ROWS * 2 // 3   # bottom third start row
+        far_row_hi = ROOM_ROWS // 3        # top third end row (exclusive)
+
+        if opp == "right":
+            candidates = [
+                (c, r)
+                for r in range(2, ROOM_ROWS - 2)
+                for c in range(far_col_lo, ROOM_COLS - 2)
+                if self.grid[r][c] == FLOOR
+            ]
+        elif opp == "left":
+            candidates = [
+                (c, r)
+                for r in range(2, ROOM_ROWS - 2)
+                for c in range(2, far_col_hi)
+                if self.grid[r][c] == FLOOR
+            ]
+        elif opp == "bottom":
+            candidates = [
+                (c, r)
+                for r in range(far_row_lo, ROOM_ROWS - 2)
+                for c in range(2, ROOM_COLS - 2)
+                if self.grid[r][c] == FLOOR
+            ]
+        elif opp == "top":
+            candidates = [
+                (c, r)
+                for r in range(2, far_row_hi)
+                for c in range(2, ROOM_COLS - 2)
+                if self.grid[r][c] == FLOOR
+            ]
+        else:
+            return None
+
+        if not candidates:
+            return None
+
+        c, r = random.choice(candidates)
+        return (c * TILE_SIZE + TILE_SIZE // 2, r * TILE_SIZE + TILE_SIZE // 2)
 
     def _escort_spawn_near_player(self, player_position, fallback_pos):
         player_col = int(player_position[0]) // TILE_SIZE
@@ -3975,6 +4106,33 @@ class Room:
             player_row,
             fallback_pos,
             preferred_offsets=_DEFAULT_ESCORT_PLAYER_OFFSETS,
+        )
+
+    def _escort_spawn_behind_player(self, player_position, entry_direction, fallback_pos):
+        """Spawn the NPC on the entry-door side of the player.
+
+        Prefers the tile immediately between the player and the door they just
+        came through (directly behind in the player's direction of motion).
+        Falls back to perpendicular neighbours, then to further tiles toward
+        the door, when the immediate behind-tile is a wall or door.
+        """
+        player_col = int(player_position[0]) // TILE_SIZE
+        player_row = int(player_position[1]) // TILE_SIZE
+        # DIR_OFFSETS[entry_direction] points TOWARD the door (opposite to the
+        # direction the player moved when entering).
+        dx, dy = DIR_OFFSETS[entry_direction]
+        preferred_offsets = (
+            (dx, dy),          # 1 tile toward entry door — directly behind
+            (-dy, dx),         # perpendicular (left relative to entry axis)
+            (dy, -dx),         # perpendicular (right relative to entry axis)
+            (dx * 2, dy * 2),  # 2 tiles toward door (at door threshold)
+            (0, 0),            # same tile as player (last resort)
+        )
+        return self._nearest_walkable_position(
+            player_col,
+            player_row,
+            fallback_pos,
+            preferred_offsets=preferred_offsets,
         )
 
     def _escort_spawn_near_entry_door(self, entry_direction, fallback_pos):
@@ -4494,14 +4652,41 @@ class Room:
             lo, hi = ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM
         count = random.randint(lo, hi)
         palette_classes, palette_weights = self._build_enemy_palette()
+
+        # Per-type caps prevent high-threat types from overwhelming the room.
+        # Chaser (high HP, tight cooldown) and Pulsator (unavoidable ring AoE)
+        # become unplayable in large numbers.  Other types are uncapped.
+        # See settings.ENEMY_TYPE_CAP_CHASER / ENEMY_TYPE_CAP_PULSATOR.
+        _TYPE_CAPS = {
+            ChaserEnemy:   ENEMY_TYPE_CAP_CHASER,
+            PulsatorEnemy: ENEMY_TYPE_CAP_PULSATOR,
+        }
+
         configs = []
+        type_counts: dict = {}
         for _ in range(count):
-            if palette_classes and any(w > 0 for w in palette_weights):
-                cls = random.choices(palette_classes, weights=palette_weights, k=1)[0]
-            elif palette_classes:
-                cls = random.choice(palette_classes)
+            # Filter the palette to exclude types that have hit their cap.
+            avail_cls = []
+            avail_wts = []
+            for cls, w in zip(palette_classes, palette_weights):
+                cap = _TYPE_CAPS.get(cls)
+                if cap is not None and type_counts.get(cls, 0) >= cap:
+                    continue
+                avail_cls.append(cls)
+                avail_wts.append(w)
+            # If all types are capped (unlikely), fall back to the full palette.
+            if not avail_cls:
+                avail_cls = list(palette_classes)
+                avail_wts = list(palette_weights)
+
+            if avail_cls and any(w > 0 for w in avail_wts):
+                cls = random.choices(avail_cls, weights=avail_wts, k=1)[0]
+            elif avail_cls:
+                cls = random.choice(avail_cls)
             else:
                 cls = random.choice(ENEMY_CLASSES)
+
+            type_counts[cls] = type_counts.get(cls, 0) + 1
             pos = self._random_floor_pos(margin=4)
             configs.append((cls, pos))
         return configs

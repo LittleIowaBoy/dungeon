@@ -400,9 +400,27 @@ ROOM_MAX_DISTINCT_ENEMY_TYPES = 3
 # Telegraph flash cadence (shared across all enemies).
 ENEMY_TELEGRAPH_FLASH_INTERVAL_MS = 80
 
-# Default enemy counts (overridden per-level via dungeon_config.py)
-ENEMY_MIN_PER_ROOM = 1
-ENEMY_MAX_PER_ROOM = 4
+# Default enemy counts (overridden per-level via dungeon_config.py).
+# Raised from (1, 4) → (2, 6) to make rooms feel populated.  The actual
+# ceiling varies by dungeon profile and difficulty band (see dungeon_config.py
+# and room_selector._scale_enemy_count_for_difficulty_band).
+# NOTE: If enemy stats are tuned (HP, attack damage, attack cooldown, or
+# speed), re-evaluate these caps.  Higher damage or faster cooldowns shrink
+# the comfortable count ceiling; lower damage or slower cooldowns allow more.
+ENEMY_MIN_PER_ROOM = 2
+ENEMY_MAX_PER_ROOM = 6
+
+# Per-type spawn caps used by Room._gen_enemy_configs_for_range.
+# Chaser and Pulsator are the two highest-threat types: Chaser has the
+# highest HP (40) and tightest attack cooldown (900 ms); Pulsator fires
+# ring AoE with only a 250 ms rest.  Packing more than these caps into a
+# single room creates unavoidable damage.  Other types are uncapped because
+# they're individually easier to dodge.
+# NOTE: Revisit if CHASER_ATTACK_COOLDOWN_MS, CHASER_HP, PULSATOR_COOLDOWN_MS,
+# or PULSATOR_RING_DAMAGE are changed — tighter cooldowns / higher damage
+# will require lower caps; looser values can tolerate higher counts.
+ENEMY_TYPE_CAP_CHASER    = 3
+ENEMY_TYPE_CAP_PULSATOR  = 2
 
 # ── Drops ───────────────────────────────────────────────
 DROP_CHANCE = 0.40           # 40 %
@@ -529,7 +547,13 @@ WATER_SUBMERSION_TICK_DAMAGE = 5      # HP per tick
 # Frozen and immobilised enemies are not affected.
 ENEMY_CURRENT_PUSH_FACTOR    = 0.5
 
-# ── THIN_ICE cracking mechanic ────────────────────────────────────────────────
+# ── Escort-NPC follow behaviour ───────────────────────────────────────────────
+# Distance (px) the escort NPC trails behind the player.  The NPC targets a
+# point this many pixels behind the player in the player's direction of motion,
+# so it always visually lags just behind them rather than running alongside.
+ESCORT_FOLLOW_DISTANCE_PX = 44
+
+
 # Walking onto a THIN_ICE tile increments a per-tile step counter stored on
 # the room.  After THIN_ICE_STEPS_TO_CRACK steps on the same tile, that tile
 # collapses to PIT_TILE (lethal).  The cracking is permanent for the room's

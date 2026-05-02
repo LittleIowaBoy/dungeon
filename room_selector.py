@@ -25,8 +25,21 @@ def _scale_enemy_count_for_difficulty_band(base_range, difficulty_band):
     if base_range is None or base_range == (0, 0):
         return base_range
 
+    # Bonus enemies added per difficulty tier so rooms grow harder as the
+    # player goes deeper.  Three steps spread the scaling more evenly than
+    # the old two-step (band≥2 / band≥4) curve:
+    #   band 0        → +0  (opener rooms, full dodge window)
+    #   band 1        → +1  (early mid-run)
+    #   band 2–3      → +2  (mid-run pressure ramp)
+    #   band 4+       → +3  (late / finale rooms)
+    # NOTE: These thresholds assume the base ranges in dungeon_config.py and
+    # the per-type caps in settings.py are the primary difficulty levers.  If
+    # enemy HP, damage, or cooldowns are rebalanced, revisit this curve so the
+    # combined effect stays in the intended challenge window.
     low, high = base_range
     bonus = 0
+    if difficulty_band >= 1:
+        bonus += 1
     if difficulty_band >= 2:
         bonus += 1
     if difficulty_band >= 4:

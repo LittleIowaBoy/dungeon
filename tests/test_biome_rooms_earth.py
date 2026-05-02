@@ -338,14 +338,14 @@ class MushroomGroveTests(unittest.TestCase):
             room_plan=_plan("earth_mushroom_grove", objective_rule="clear_enemies"),
         )
 
-    def test_room_spawns_three_to_four_mushroom_configs(self):
+    def test_room_spawns_twenty_to_thirty_mushroom_configs(self):
         room = self._build_room()
         mushrooms = [
             cfg for cfg in room.objective_entity_configs
             if cfg["kind"] == "spore_mushroom"
         ]
-        self.assertGreaterEqual(len(mushrooms), 3)
-        self.assertLessEqual(len(mushrooms), 4)
+        self.assertGreaterEqual(len(mushrooms), 20)
+        self.assertLessEqual(len(mushrooms), 30)
 
     def test_pulse_inside_radius_applies_poisoned(self):
         cfg = {
@@ -622,7 +622,7 @@ class BoulderRunTests(unittest.TestCase):
         return Room(
             {"top": True, "bottom": False, "left": False, "right": False},
             is_exit=True,
-            room_plan=_plan("earth_boulder_run", objective_rule="clear_enemies"),
+            room_plan=_plan("earth_boulder_run"),
         )
 
     def test_room_spawns_single_boulder_run_spawner(self):

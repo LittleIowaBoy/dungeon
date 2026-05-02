@@ -134,25 +134,38 @@ def load_room_test_entries():
     tuning_entry = _build_tuning_test_entry()
     if tuning_entry is not None:
         entries.append(tuning_entry)
+
+    # Track which room_ids have already been emitted so biome-only rooms
+    # (disabled in BASE_ROOM_TEMPLATES but enabled via a dungeon override)
+    # don't produce a duplicate base entry.
+    base_entry_added = set()
+
     for base_template in BASE_ROOM_TEMPLATES:
         room_id = base_template["room_id"]
-        if room_id not in base_templates:
-            continue
 
-        entries.append(
-            _build_entry(
-                base_templates[room_id],
-                context_label=_BASE_CONTEXT_LABEL,
-                profile_dungeon=default_dungeon,
-                base_display_name=base_template["display_name"],
-                is_biome_variant=False,
-                entry_id=f"base:{room_id}",
+        if room_id in base_templates:
+            entries.append(
+                _build_entry(
+                    base_templates[room_id],
+                    context_label=_BASE_CONTEXT_LABEL,
+                    profile_dungeon=default_dungeon,
+                    base_display_name=base_template["display_name"],
+                    is_biome_variant=False,
+                    entry_id=f"base:{room_id}",
+                )
             )
-        )
+            base_entry_added.add(room_id)
 
         for dungeon in DUNGEONS:
             merged = dungeon_catalogs[dungeon["id"]].get(room_id)
-            if merged is None or not _is_distinct_variant(base_templates[room_id], merged):
+            if merged is None:
+                continue
+            # Only add as a biome variant when it genuinely differs from the
+            # base — unless the base was disabled (not in base_templates), in
+            # which case the dungeon override IS the primary entry and we
+            # always show it.
+            base_is_disabled = room_id not in base_templates
+            if not base_is_disabled and not _is_distinct_variant(base_templates[room_id], merged):
                 continue
             entries.append(
                 _build_entry(

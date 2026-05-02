@@ -60,7 +60,7 @@ def _plan(room_id):
         terrain_type="mud",
         enemy_count_range=(0, 0),
         enemy_type_weights=(50, 35, 15),
-        objective_rule="clear_enemies",
+        objective_rule="immediate",
         terrain_patch_count_range=(4, 6),
         terrain_patch_size_range=(2, 3),
     )

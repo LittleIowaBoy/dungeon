@@ -1283,6 +1283,10 @@ class EscortNPC(pygame.sprite.Sprite):
         self._config = config
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=config["pos"])
+        # False until the first update_behavior tick.  on_enter may update
+        # config["pos"] after the sprite is constructed; snapping here ensures
+        # the NPC appears at the correct near-player position on first frame.
+        self._positioned = False
 
     @property
     def current_hp(self):
@@ -1301,29 +1305,82 @@ class EscortNPC(pygame.sprite.Sprite):
         if self._config.get("destroyed") or self._config.get("reached_exit"):
             return False
 
+        # Snap to config["pos"] on the very first tick.  _position_escort_for_entry
+        # runs during room.on_enter(), which is called after _load_room_sprites
+        # created this sprite.  Without this snap the NPC starts at its
+        # pre-repositioned default offset rather than next to the player.
+        if not self._positioned:
+            self._positioned = True
+            self.rect.center = self._config["pos"]
+
         waiting_for_clearance = self._config.get("requires_safe_path") and not allow_advance
         self._config["waiting_for_clearance"] = bool(waiting_for_clearance)
         if waiting_for_clearance:
             return False
 
-        guide_radius = self._config.get("guide_radius", 96)
-        dx = player.rect.centerx - self.rect.centerx
-        dy = player.rect.centery - self.rect.centery
-        player_distance_sq = dx * dx + dy * dy
-        if player_distance_sq > guide_radius * guide_radius:
-            target_pos = player.rect.center
-        else:
-            target_pos = portal_pos
+        from settings import ESCORT_FOLLOW_DISTANCE_PX
 
-        self._move_toward(target_pos, wall_rects)
+        player_center = player.rect.center
+
+        # ── Track player movement direction ──────────────────────────────────
+        # Each frame we record the player's position so we can derive their
+        # movement vector.  The NPC then targets a point BEHIND the player in
+        # that direction, making it visually trail rather than run alongside.
+        last_player_center = self._config.get("_last_player_center")
+        self._config["_last_player_center"] = player_center
+
+        if last_player_center is not None:
+            move_dx = player_center[0] - last_player_center[0]
+            move_dy = player_center[1] - last_player_center[1]
+            mag_sq = move_dx * move_dx + move_dy * move_dy
+            if mag_sq > 0.0625:   # player moved at least 0.25 px this frame
+                mag = mag_sq ** 0.5
+                self._config["_last_player_dir"] = (move_dx / mag, move_dy / mag)
+
+        # Default direction: player facing downward so NPC starts above them
+        # on first-frame contact before any movement is recorded.
+        player_dir = self._config.get("_last_player_dir", (0.0, 1.0))
+        follow_dist = self._config.get("follow_distance", ESCORT_FOLLOW_DISTANCE_PX)
+
+        # Trail point: a spot behind the player in their direction of motion.
+        trail_x = player_center[0] - player_dir[0] * follow_dist
+        trail_y = player_center[1] - player_dir[1] * follow_dist
+
+        # Use the config's goal_pos as the escort's walk target if one has
+        # been set (e.g. by _position_escort_for_entry).  Fall back to
+        # portal_pos only when no explicit target was placed.
+        goal_pos = self._config.get("goal_pos") or portal_pos
+
+        # ── Choose target ─────────────────────────────────────────────────────
+        # Switch from trailing to goal-seeking only once the *player* is
+        # themselves within guide_radius of the goal.  This ensures the NPC
+        # doesn't break away from the player prematurely.
+        guide_radius = self._config.get("guide_radius", 96)
+        px, py = player_center
+        pdx = goal_pos[0] - px
+        pdy = goal_pos[1] - py
+        player_near_goal = pdx * pdx + pdy * pdy <= guide_radius * guide_radius
+
+        if player_near_goal and allow_advance:
+            target_pos = goal_pos
+        else:
+            target_pos = (trail_x, trail_y)
+
+        # Dead-zone: skip movement when already within 2 px of the trail point
+        # to avoid jitter when the player is stationary.
+        tdx = self.rect.centerx - target_pos[0]
+        tdy = self.rect.centery - target_pos[1]
+        if tdx * tdx + tdy * tdy > 4:
+            self._move_toward(target_pos, wall_rects)
+
         self._config["pos"] = self.rect.center
 
         exit_radius = self._config.get("exit_radius", 24)
-        ex = portal_pos[0] - self.rect.centerx
-        ey = portal_pos[1] - self.rect.centery
+        ex = goal_pos[0] - self.rect.centerx
+        ey = goal_pos[1] - self.rect.centery
         if ex * ex + ey * ey <= exit_radius * exit_radius:
-            self.rect.center = portal_pos
-            self._config["pos"] = portal_pos
+            self.rect.center = goal_pos
+            self._config["pos"] = goal_pos
             self._config["reached_exit"] = True
             return True
         return False

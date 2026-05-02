@@ -53,10 +53,17 @@ def _run_profile(
 # Enemy type weights: [PatrolEnemy, RandomEnemy, ChaserEnemy, PulsatorEnemy, LauncherEnemy]
 # (SentryEnemy is NOT in this list — it spawns only via stealth-room
 # objective configs, not the random palette.)
-
-_MUD_PROFILE   = _run_profile((1, 4), [30, 30, 25, 10, 5],  branch_count_range=(1, 3), branch_length_range=(1, 3), pacing_profile="balanced")
-_ICE_PROFILE   = _run_profile((1, 4), [20, 20, 40, 10, 10], branch_count_range=(1, 3), branch_length_range=(1, 4), pacing_profile="frontloaded")
-_WATER_PROFILE = _run_profile((1, 4), [25, 30, 25, 10, 10], branch_count_range=(2, 3), branch_length_range=(1, 3), pacing_profile="backloaded")
+#
+# Base enemy_count_range raised from (1, 4) → (2, 5) / (2, 6).
+# Water gets a higher ceiling (6) because CURRENT tiles spread enemies
+# across lanes, reducing their simultaneous pressure on the player.
+# Per-type caps for Chaser and Pulsator are enforced in room.py;
+# see settings.ENEMY_TYPE_CAP_CHASER / ENEMY_TYPE_CAP_PULSATOR.
+# NOTE: If enemy stats (HP, damage, cooldowns) are rebalanced, revisit
+# these ranges in tandem with those constants.
+_MUD_PROFILE   = _run_profile((2, 5), [30, 30, 25, 10, 5],  branch_count_range=(1, 3), branch_length_range=(1, 3), pacing_profile="balanced")
+_ICE_PROFILE   = _run_profile((2, 5), [20, 20, 40, 10, 10], branch_count_range=(1, 3), branch_length_range=(1, 4), pacing_profile="frontloaded")
+_WATER_PROFILE = _run_profile((2, 6), [25, 30, 25, 10, 10], branch_count_range=(2, 3), branch_length_range=(1, 3), pacing_profile="backloaded")
 
 
 # ── Dungeon definitions ────────────────────────────────
