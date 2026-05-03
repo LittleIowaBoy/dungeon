@@ -1,6 +1,7 @@
 """Top-Down Dungeon Crawler RPG — entry point."""
 import os
 import sys
+from typing import Optional
 import pygame
 from chest import Chest
 from objective_entities import EscortNPC, Heartstone
@@ -118,9 +119,9 @@ class Game:
         self.progress = load_progress()
 
         # current dungeon run state
-        self.dungeon = None
-        self.player = None
-        self.player_group = None
+        self.dungeon: Optional[Dungeon] = None
+        self.player: Optional[Player] = None
+        self.player_group: Optional[pygame.sprite.GroupSingle] = None
         self._current_dungeon_id = None
         self._show_room_identifier = PLAYTEST_ROOM_IDENTIFIER_ENABLED
         self._room_test_entry = None
@@ -133,6 +134,7 @@ class Game:
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
+        self._records_screen = RecordsScreen(self.progress)
         self._level_complete = None  # created on level complete
         self._pause_screen = PauseScreen(
             room_identifier_enabled=self._show_room_identifier,
@@ -301,28 +303,29 @@ class Game:
         self._show_room_identifier = not self._show_room_identifier
         self._pause_screen.room_identifier_enabled = self._show_room_identifier
 
-    def _apply_room_objective_update(self, update_result):
-        if not update_result:
-            return
-        room = self.dungeon.current_room
-        if update_result.get("kind") in {"spawn_reinforcements", "spawn_enemies"}:
-            is_escort_wave = update_result.get("source") == "escort_wave"
-            if is_escort_wave or not room.enemies_cleared:
-                for cls, (px, py) in update_result.get("enemy_configs", ()):
-                    self.dungeon.enemy_group.add(cls(px, py))
-        elif update_result.get("kind") == "forfeit_chest":
+    def _objective_update_spawn_enemies(self, update_result, room):
+        assert self.dungeon is not None
+        is_escort_wave = update_result.get("source") == "escort_wave"
+        if is_escort_wave or not room.enemies_cleared:
+            for cls, (px, py) in update_result.get("enemy_configs", ()):
+                self.dungeon.enemy_group.add(cls(px, py))
+
+    def _objective_update_chest(self, update_result):
+        assert self.dungeon is not None
+        kind = update_result.get("kind")
+        if kind == "forfeit_chest":
             for chest in self.dungeon.chest_group:
                 chest.mark_looted()
-        elif update_result.get("kind") == "restore_chest":
+        elif kind == "restore_chest":
             for chest in self.dungeon.chest_group:
                 chest.restore_for_reclaim()
-        elif update_result.get("kind") == "upgrade_reward_chest":
+        elif kind == "upgrade_reward_chest":
             reward_tier = update_result.get("reward_tier", "standard")
             reward_kind = update_result.get("reward_kind", "chest_upgrade")
             for chest in self.dungeon.chest_group:
                 chest.set_reward_tier(reward_tier)
                 chest.set_reward_kind(reward_kind)
-        elif update_result.get("kind") == "spawn_reward_chest":
+        elif kind == "spawn_reward_chest":
             x, y = update_result.get("position", (None, None))
             if x is not None and y is not None and not self.dungeon.chest_group:
                 self.dungeon.chest_group.add(
@@ -334,25 +337,91 @@ class Game:
                         reward_kind=update_result.get("reward_kind", "chest_upgrade"),
                     )
                 )
-        elif update_result.get("kind") == "despawn_escort":
-            pos = update_result.get("pos")
-            for objective in list(self.dungeon.objective_group):
-                if isinstance(objective, EscortNPC):
-                    objective.kill()
-            # Drop a coin reward at the escort's vanish point.
-            if pos is not None:
-                import random as _random
-                for _ in range(6):
-                    cx = pos[0] + _random.randint(-14, 14)
-                    cy = pos[1] + _random.randint(-14, 14)
-                    self.dungeon.item_group.add(Coin(cx, cy))
-        elif update_result.get("kind") == "spawn_heartstone":
-            x, y = update_result.get("position", (None, None))
-            if x is not None and y is not None:
-                room = self.dungeon.current_room
-                config = room._heartstone_config
-                if config is not None:
-                    self.dungeon.objective_group.add(Heartstone(config))
+
+    def _objective_update_despawn_escort(self, update_result):
+        assert self.dungeon is not None
+        pos = update_result.get("pos")
+        for objective in self.dungeon.objective_group:
+            if isinstance(objective, EscortNPC):
+                objective.kill()
+        if pos is not None:
+            import random as _random
+            for _ in range(6):
+                cx = pos[0] + _random.randint(-14, 14)
+                cy = pos[1] + _random.randint(-14, 14)
+                self.dungeon.item_group.add(Coin(cx, cy))
+
+    def _objective_update_spawn_heartstone(self, update_result):
+        assert self.dungeon is not None
+        x, y = update_result.get("position", (None, None))
+        if x is not None and y is not None:
+            room = self.dungeon.current_room
+            config = room._heartstone_config
+            if config is not None:
+                self.dungeon.objective_group.add(Heartstone(config))
+
+    def _apply_room_objective_update(self, update_result):
+        assert self.dungeon is not None
+        if not update_result:
+            return
+        room = self.dungeon.current_room
+        kind = update_result.get("kind")
+        if kind in {"spawn_reinforcements", "spawn_enemies"}:
+            self._objective_update_spawn_enemies(update_result, room)
+        elif kind in {"forfeit_chest", "restore_chest", "upgrade_reward_chest", "spawn_reward_chest"}:
+            self._objective_update_chest(update_result)
+        elif kind == "despawn_escort":
+            self._objective_update_despawn_escort(update_result)
+        elif kind == "spawn_heartstone":
+            self._objective_update_spawn_heartstone(update_result)
+
+    def _spawn_ring_of_enemies(self, make_enemy, count, cx, cy, radius):
+        assert self.dungeon is not None
+        import math
+        import random as _random
+        for i in range(count):
+            angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
+            sx = int(cx + radius * math.cos(angle))
+            sy = int(cy + radius * math.sin(angle))
+            self.dungeon.enemy_group.add(make_enemy(sx, sy))
+
+    def _boss_spawn_golem_waves(self, arena_cfg, wave_specs, cx, cy, events):
+        from enemies import GolemShard
+        radius = int(arena_cfg.get("shard_spawn_radius", 0))
+        for threshold in events.new_waves:
+            count = int(wave_specs.get(threshold, 0))
+            if count > 0:
+                self._spawn_ring_of_enemies(GolemShard, count, cx, cy, radius)
+
+    def _boss_spawn_tide_lord_waves(self, arena_cfg, wave_specs, cx, cy, events):
+        from enemies import WaterSpiritEnemy
+        radius = int(arena_cfg.get("wave_spawn_radius", 0))
+        for threshold in events.new_waves:
+            count = int(wave_specs.get(threshold, 0))
+            if count > 0:
+                self._spawn_ring_of_enemies(
+                    lambda x, y: WaterSpiritEnemy(x, y, immortal=False),
+                    count, cx, cy, radius,
+                )
+
+    def _boss_spawn_waves(self, arena_cfg, arena_kind, boss, events):
+        wave_specs = arena_cfg.get("wave_specs", {})
+        cx = boss.rect.centerx if boss is not None else 0
+        cy = boss.rect.centery if boss is not None else 0
+        if arena_kind == "golem_arena_controller":
+            self._boss_spawn_golem_waves(arena_cfg, wave_specs, cx, cy, events)
+        elif arena_kind == "tide_lord_arena_controller":
+            self._boss_spawn_tide_lord_waves(arena_cfg, wave_specs, cx, cy, events)
+
+    def _boss_grant_defeat_loot(self, arena_cfg):
+        assert self.player is not None
+        arena_cfg["loot_granted"] = True
+        drops = armor_rules.roll_boss_loot(self.player.progress)
+        if drops:
+            armor_rules.grant_boss_loot(self.player.progress, drops)
+            for item_id in drops:
+                name = ITEM_DATABASE.get(item_id, {}).get("name", item_id)
+                damage_feedback.report_boss_loot(name)
 
     def _update_boss_controller(self):
         """Drive the active room's BossController and react to its events.
@@ -377,64 +446,21 @@ class Game:
             return
         arena_kind = arena_cfg.get("kind", "golem_arena_controller")
 
-        # Phase 2 unlock.
         if events.phase_advanced and arena_kind == "tide_lord_arena_controller":
             boss = controller.boss
             if boss is not None:
                 boss.phase_2 = True
 
-        # Wave triggers.
         if events.new_waves:
-            import math
-            import random as _random
-            wave_specs = arena_cfg.get("wave_specs", {})
-            boss = controller.boss
-            cx = boss.rect.centerx if boss is not None else 0
-            cy = boss.rect.centery if boss is not None else 0
+            self._boss_spawn_waves(arena_cfg, arena_kind, controller.boss, events)
 
-            if arena_kind == "golem_arena_controller":
-                from enemies import GolemShard
-                radius = int(arena_cfg.get("shard_spawn_radius", 0))
-                for threshold in events.new_waves:
-                    count = int(wave_specs.get(threshold, 0))
-                    if count <= 0:
-                        continue
-                    for i in range(count):
-                        angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
-                        sx = int(cx + radius * math.cos(angle))
-                        sy = int(cy + radius * math.sin(angle))
-                        shard = GolemShard(sx, sy)
-                        self.dungeon.enemy_group.add(shard)
-
-            elif arena_kind == "tide_lord_arena_controller":
-                from enemies import WaterSpiritEnemy
-                radius = int(arena_cfg.get("wave_spawn_radius", 0))
-                for threshold in events.new_waves:
-                    count = int(wave_specs.get(threshold, 0))
-                    if count <= 0:
-                        continue
-                    for i in range(count):
-                        angle = (2 * math.pi * i / count) + _random.uniform(-0.2, 0.2)
-                        sx = int(cx + radius * math.cos(angle))
-                        sy = int(cy + radius * math.sin(angle))
-                        spirit = WaterSpiritEnemy(sx, sy, immortal=False)
-                        self.dungeon.enemy_group.add(spirit)
-
-        # Defeat: roll + grant loot once.
         if events.defeated and not arena_cfg.get("loot_granted"):
-            arena_cfg["loot_granted"] = True
-            drops = armor_rules.roll_boss_loot(self.player.progress)
-            if drops:
-                armor_rules.grant_boss_loot(self.player.progress, drops)
-                # HUD banner per drop so the player sees what dropped.
-                import damage_feedback
-                from item_catalog import ITEM_DATABASE
-                for item_id in drops:
-                    name = ITEM_DATABASE.get(item_id, {}).get("name", item_id)
-                    damage_feedback.report_boss_loot(name)
+            self._boss_grant_defeat_loot(arena_cfg)
 
     def _update_heartstone(self, room, hp_at_frame_start):
         """Pickup / carry-sync / damage-drop / portal-delivery for the Heartstone."""
+        assert self.dungeon is not None
+        assert self.player is not None
         state = room.heartstone_state() if hasattr(room, "heartstone_state") else None
         if state is None or state["delivered"]:
             return
@@ -476,6 +502,7 @@ class Game:
         # Heartstone delivery: the portal cells live in room._portal_cells; check
         # whether the player's center is on any of them even when the tile has
         # been temporarily set to FLOOR (portal inactive while sealed).
+        assert self.player is not None
         cells = getattr(room, "_portal_cells", ())
         if not cells:
             return False
@@ -483,51 +510,52 @@ class Game:
         row = self.player.rect.centery // TILE_SIZE
         return (row, col) in cells
 
+    def _dispatch_state(self, events):
+        if self.state == GameState.MAIN_MENU:
+            self._handle_main_menu(events)
+        elif self.state == GameState.ROOM_TEST_CATEGORY:
+            self._handle_room_test_category(events)
+        elif self.state == GameState.ROOM_TEST_SELECT:
+            self._handle_room_test_select(events)
+        elif self.state == GameState.DUNGEON_SELECT:
+            self._handle_dungeon_select(events)
+        elif self.state == GameState.CHARACTER_CUSTOMIZE:
+            self._handle_character(events)
+        elif self.state == GameState.SHOP:
+            self._handle_shop(events)
+        elif self.state == GameState.RECORDS:
+            self._handle_records(events)
+        elif self.state == GameState.PLAYING:
+            self._handle_playing(events)
+            self._update_playing()
+        elif self.state == GameState.PAUSED:
+            self._handle_paused(events)
+        elif self.state == GameState.PAUSE_ALL_ITEMS:
+            self._handle_pause_all_items(events)
+        elif self.state == GameState.PAUSE_ALL_RUNES:
+            self._handle_pause_all_runes(events)
+        elif self.state == GameState.RUNE_ALTAR_PICK:
+            self._handle_rune_altar_pick(events)
+        elif self.state == GameState.LEVEL_COMPLETE:
+            self._handle_level_complete(events)
+        elif self.state == GameState.GAME_OVER:
+            self._handle_game_over(events)
+        elif self.state == GameState.GAME_WIN:
+            self._handle_game_win(events)
+
     # ── main loop ───────────────────────────────────────
     def run(self):
         while True:
             self.clock.tick(FPS)
             events = pygame.event.get()
 
-            # global quit
             for event in events:
                 if event.type == pygame.QUIT:
                     self._handle_global_quit()
                     pygame.quit()
                     sys.exit()
 
-            if self.state == GameState.MAIN_MENU:
-                self._handle_main_menu(events)
-            elif self.state == GameState.ROOM_TEST_CATEGORY:
-                self._handle_room_test_category(events)
-            elif self.state == GameState.ROOM_TEST_SELECT:
-                self._handle_room_test_select(events)
-            elif self.state == GameState.DUNGEON_SELECT:
-                self._handle_dungeon_select(events)
-            elif self.state == GameState.CHARACTER_CUSTOMIZE:
-                self._handle_character(events)
-            elif self.state == GameState.SHOP:
-                self._handle_shop(events)
-            elif self.state == GameState.RECORDS:
-                self._handle_records(events)
-            elif self.state == GameState.PLAYING:
-                self._handle_playing(events)
-                self._update_playing()
-            elif self.state == GameState.PAUSED:
-                self._handle_paused(events)
-            elif self.state == GameState.PAUSE_ALL_ITEMS:
-                self._handle_pause_all_items(events)
-            elif self.state == GameState.PAUSE_ALL_RUNES:
-                self._handle_pause_all_runes(events)
-            elif self.state == GameState.RUNE_ALTAR_PICK:
-                self._handle_rune_altar_pick(events)
-            elif self.state == GameState.LEVEL_COMPLETE:
-                self._handle_level_complete(events)
-            elif self.state == GameState.GAME_OVER:
-                self._handle_game_over(events)
-            elif self.state == GameState.GAME_WIN:
-                self._handle_game_win(events)
-
+            self._dispatch_state(events)
             self._draw()
 
     # ── menu handlers ───────────────────────────────────
@@ -566,7 +594,7 @@ class Game:
             return
         next_state, entry, spawn_direction = result
         if next_state == GameState.PLAYING and entry is not None:
-            self._start_room_test(entry, spawn_direction)
+            self._start_room_test(entry, spawn_direction or "left")
         else:
             self.state = next_state
 
@@ -597,97 +625,127 @@ class Game:
             save_progress(self.progress)
             self.state = result
 
+    def _handle_playing_attack(self, event):
+        assert self.dungeon is not None
+        assert self.player is not None
+        if event.key == pygame.K_SPACE:
+            result = self.player.attack()
+            if result:
+                if isinstance(result, list):
+                    for hb in result:
+                        self.dungeon.hitbox_group.add(hb)
+                else:
+                    self.dungeon.hitbox_group.add(result)
+
+    def _handle_playing_dodge(self, event):
+        assert self.dungeon is not None
+        assert self.player is not None
+        if event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
+            pre_center = self.player.rect.center
+            if dodge_rules.trigger_dodge(self.player, pygame.time.get_ticks()):
+                if behavior_runes.spawns_afterimage(self.player):
+                    decoy = behavior_runes.make_afterimage_hitbox(pre_center)
+                    self.dungeon.hitbox_group.add(decoy)
+
+    def _handle_playing_consumables(self, event):
+        assert self.dungeon is not None
+        assert self.player is not None
+        if event.key == pygame.K_q:
+            self.player.cycle_potion()
+        elif event.key == pygame.K_4:
+            self.player.use_potion()
+        elif event.key == pygame.K_5:
+            self.player.use_speed_boost()
+        elif event.key == pygame.K_6:
+            self.player.use_attack_boost()
+        elif event.key == pygame.K_7:
+            self.player.use_compass(self.dungeon)
+        elif event.key == pygame.K_8:
+            self.player.use_stat_shard()
+        elif event.key == pygame.K_9:
+            self.player.use_tempo_rune()
+        elif event.key == pygame.K_0:
+            self.player.use_mobility_charge()
+
+    def _handle_playing_chest(self, event):
+        assert self.dungeon is not None
+        assert self.player is not None
+        if event.key == pygame.K_e:
+            now_ticks = pygame.time.get_ticks()
+            for chest in self.dungeon.chest_group:
+                if not self.dungeon.current_room.allows_chest_open(now_ticks):
+                    continue
+                if chest.try_open(self.player.rect, self.dungeon.item_group):
+                    self.dungeon.current_room.notify_chest_opened(now_ticks)
+
+    def _handle_playing_keydown(self, event):
+        assert self.dungeon is not None
+        assert self.player is not None
+        # weapon switching
+        if event.key == pygame.K_1:
+            self.player.switch_weapon(0)
+        elif event.key == pygame.K_2:
+            self.player.switch_weapon(1)
+        self._handle_playing_attack(event)
+        self._handle_playing_dodge(event)
+        if event.key == pygame.K_f:
+            ability_rules.activate_ability(self.player, pygame.time.get_ticks())
+        self._handle_playing_chest(event)
+        self._handle_playing_consumables(event)
+        if event.key == pygame.K_F3:
+            self._toggle_room_identifier()
+        elif event.key == pygame.K_F2:
+            room = self.dungeon.current_room
+            if room is not None and hasattr(room, "toggle_enemy_attacks"):
+                room.toggle_enemy_attacks(self.dungeon.enemy_group)
+        if event.key == pygame.K_ESCAPE:
+            self._pause_screen.selected = 0
+            self.state = GameState.PAUSED
+
     # ── playing handlers ────────────────────────────────
     def _handle_playing(self, events):
         for event in events:
             if event.type != pygame.KEYDOWN:
                 continue
-            # weapon switching
-            if event.key == pygame.K_1:
-                self.player.switch_weapon(0)
-            elif event.key == pygame.K_2:
-                self.player.switch_weapon(1)
+            self._handle_playing_keydown(event)
 
-            # attack
-            if event.key == pygame.K_SPACE:
-                result = self.player.attack()
-                if result:
-                    if isinstance(result, list):
-                        for hb in result:
-                            self.dungeon.hitbox_group.add(hb)
-                    else:
-                        self.dungeon.hitbox_group.add(result)
-
-            # dodge (i-frames + burst of motion)
-            if event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
-                pre_center = self.player.rect.center
-                if dodge_rules.trigger_dodge(self.player, pygame.time.get_ticks()):
-                    if behavior_runes.spawns_afterimage(self.player):
-                        decoy = behavior_runes.make_afterimage_hitbox(pre_center)
-                        self.dungeon.hitbox_group.add(decoy)
-
-            # active ability (rune-supplied)
-            if event.key == pygame.K_f:
-                ability_rules.activate_ability(self.player, pygame.time.get_ticks())
-
-            # chest interaction
-            if event.key == pygame.K_e:
-                now_ticks = pygame.time.get_ticks()
-                for chest in self.dungeon.chest_group:
-                    if not self.dungeon.current_room.allows_chest_open(now_ticks):
-                        continue
-                    if chest.try_open(self.player.rect, self.dungeon.item_group):
-                        self.dungeon.current_room.notify_chest_opened(
-                            now_ticks
-                        )
-
-            # consumables
-            if event.key == pygame.K_q:
-                self.player.cycle_potion()
-            elif event.key == pygame.K_4:
-                self.player.use_potion()
-            elif event.key == pygame.K_5:
-                self.player.use_speed_boost()
-            elif event.key == pygame.K_6:
-                self.player.use_attack_boost()
-            elif event.key == pygame.K_7:
-                self.player.use_compass(self.dungeon)
-            elif event.key == pygame.K_8:
-                self.player.use_stat_shard()
-            elif event.key == pygame.K_9:
-                self.player.use_tempo_rune()
-            elif event.key == pygame.K_0:
-                self.player.use_mobility_charge()
-
-            elif event.key == pygame.K_F3:
-                self._toggle_room_identifier()
-
-            elif event.key == pygame.K_F2:
-                # Test-room utility: toggle whether enemies in the current
-                # room may attack.  Movement (frozen) state is unaffected.
-                room = self.dungeon.current_room
-                if room is not None and hasattr(room, "toggle_enemy_attacks"):
-                    room.toggle_enemy_attacks(self.dungeon.enemy_group)
-
-            # pause menu
-            if event.key == pygame.K_ESCAPE:
-                self._pause_screen.selected = 0
-                self.state = GameState.PAUSED
+    def _apply_on_kill_effects(self, enemy, scaled):
+        assert self.dungeon is not None
+        assert self.player is not None
+        heal = behavior_runes.vampiric_kill_heal_amount(self.player)
+        if heal > 0:
+            self.player.current_hp = min(
+                self.player.max_hp, self.player.current_hp + heal
+            )
+        identity_runes.necromancer_register_kill(self.player)
+        targets = behavior_runes.shrapnel_burst_targets(
+            self.player, enemy.rect, self.dungeon.enemy_group
+        )
+        if targets:
+            blast = behavior_runes.shrapnel_burst_damage(self.player, scaled)
+            for other in targets:
+                if other is enemy:
+                    continue
+                other.take_damage(blast)
+        if behavior_runes.player_in_shrapnel_blast(self.player, enemy.rect):
+            self_dmg = behavior_runes.shrapnel_burst_self_damage(self.player, scaled)
+            if self_dmg > 0:
+                self.player.take_damage(self_dmg)
+        drop = enemy.roll_drop()
+        if drop:
+            self.dungeon.item_group.add(drop)
 
     def _apply_player_hit(self, hitbox, enemy):
         """Apply a single player→enemy hit through all rune pipelines."""
+        assert self.dungeon is not None
+        assert self.player is not None
         scaled = stat_runes.modify_outgoing_damage(
             self.player, enemy, hitbox.damage
         )
-        # Equipment-derived flat outgoing-damage bonus (e.g. Golem Fists).
         scaled = armor_rules.apply_outgoing_damage_multiplier(self.player, scaled)
-        # Equipment-derived crit chance (e.g. Golem Crown).  Applied after
-        # all multiplicative scaling so the crit boosts the final number.
         crit_mult = armor_rules.roll_crit_multiplier(self.player)
-        if crit_mult != 1.0:
+        if crit_mult > 1:
             scaled = max(0, int(round(scaled * crit_mult)))
-        # Crystal Vein room buff: each shattered crystal grants +N% damage
-        # for the rest of the room.  No-op when no buffs are registered.
         room = self.dungeon.current_room if self.dungeon is not None else None
         if room is not None and hasattr(room, "active_room_buff_total"):
             damage_buff = room.active_room_buff_total(
@@ -695,7 +753,6 @@ class Game:
             )
             if damage_buff:
                 scaled = int(round(scaled * (1.0 + damage_buff)))
-        # The Conduit: split damage across primary + nearest other enemy.
         primary_damage, splash_damage = identity_runes.conduit_split_damage(
             self.player, scaled
         )
@@ -710,59 +767,13 @@ class Game:
         stat_runes.on_player_hit_landed(self.player, enemy, primary_damage, killed)
         if not killed:
             return
-        # Vampiric Strike heal
-        heal = behavior_runes.vampiric_kill_heal_amount(self.player)
-        if heal > 0:
-            self.player.current_hp = min(
-                self.player.max_hp, self.player.current_hp + heal
-            )
-        # Necromancer: register the kill (ally spawn handled by caller).
-        identity_runes.necromancer_register_kill(self.player)
-        # Shrapnel Burst AOE
-        targets = behavior_runes.shrapnel_burst_targets(
-            self.player, enemy.rect, self.dungeon.enemy_group
-        )
-        if targets:
-            blast = behavior_runes.shrapnel_burst_damage(self.player, scaled)
-            for other in targets:
-                if other is enemy:
-                    continue
-                other.take_damage(blast)
-        if behavior_runes.player_in_shrapnel_blast(self.player, enemy.rect):
-            self_dmg = behavior_runes.shrapnel_burst_self_damage(self.player, scaled)
-            if self_dmg > 0:
-                self.player.take_damage(self_dmg)
-        # Loot drop
-        drop = enemy.roll_drop()
-        if drop:
-            self.dungeon.item_group.add(drop)
+        self._apply_on_kill_effects(enemy, scaled)
 
-    def _update_playing(self):
-        room = self.dungeon.current_room
-        walls = room.get_wall_rects()
-        now_ticks = pygame.time.get_ticks()
-
-        # ── Pit fall animation ────────────────────────────────────────────────
-        # While the player is falling into a pit the normal game loop is paused
-        # (enemies, portals, items, etc. do not advance).  Only the animation
-        # state machine and the visual update run until the respawn fires.
-        if getattr(self.player, "_pit_fall_phase", None) is not None:
-            terrain_effects.advance_pit_fall_animation(
-                self.player, room, now_ticks
-            )
-            player_visual_rules.update_runtime_visuals(self.player, now_ticks)
-            return
-
-        # Track HP at the start of the frame so we can detect any damage source
-        # (enemy contact, traps, altars, etc.) and drop the heartstone if hit.
-        hp_at_frame_start = self.player.current_hp
-
-        # player movement
+    def _update_player_movement(self, room, walls, now_ticks):
+        assert self.dungeon is not None
+        assert self.player is not None
         prev_center = self.player.rect.center
         self.player.update(walls, room.terrain_at_pixel)
-        # Biome-room hazard tile effects (spike tick, quicksand drown,
-        # current push, pit lethal-on-step).  Runs after movement so the
-        # tile under the player's new position is what triggers the effect.
         terrain_effects.apply_terrain_effects(
             self.player, room, now_ticks, self.clock.get_time(),
         )
@@ -778,7 +789,6 @@ class Game:
         behavior_runes.update_boomerang_returns(
             self.player, self.dungeon.hitbox_group, now_ticks
         )
-        # Identity rune passives + time anchor patience meter
         identity_runes.passive_update(self.player)
         anchor_event = identity_runes.update_time_anchor(
             self.player, self.clock.get_time(), is_moving
@@ -793,20 +803,7 @@ class Game:
                     duration_ms=identity_runes.TIME_ANCHOR_FREEZE_DURATION_MS,
                 )
             identity_runes.consume_time_anchor_freeze(self.player)
-
-        # dodge — clear pass-through once active phase ends
         dodge_rules.update_dodge_state(self.player, now_ticks)
-
-        # status effect ticks (DOT + expiry) for player and enemies
-        status_effects.tick_statuses(
-            self.player, now_ticks,
-            lambda holder, amount: holder.take_damage(amount),
-        )
-        for enemy in list(self.dungeon.enemy_group):
-            status_effects.tick_statuses(
-                enemy, now_ticks,
-                lambda holder, amount: holder.take_damage(amount),
-            )
 
         # door transitions
         direction = self.dungeon.try_transition(self.player.rect)
@@ -821,8 +818,25 @@ class Game:
                     player_position=self.player.rect.center,
                     room_test=self._is_room_test_active(),
                 )
-            return
+            return True
+        return False
 
+    def _update_status_effects(self, now_ticks):
+        assert self.dungeon is not None
+        assert self.player is not None
+        status_effects.tick_statuses(
+            self.player, now_ticks,
+            lambda holder, amount: holder.take_damage(amount),
+        )
+        for enemy in self.dungeon.enemy_group:
+            status_effects.tick_statuses(
+                enemy, now_ticks,
+                lambda holder, amount: holder.take_damage(amount),
+            )
+
+    def _update_objectives(self, room, walls, now_ticks):
+        assert self.dungeon is not None
+        assert self.player is not None
         for objective in self.dungeon.objective_group:
             objective.update(now_ticks)
             if hasattr(objective, "update_behavior"):
@@ -846,70 +860,75 @@ class Game:
                 if target_rect is not None:
                     enemy_focus_rect = target_rect
                     break
+        return enemy_focus_rect
 
-        # enemies AI + movement
+    def _drain_enemy_output(self, enemy):
+        assert self.dungeon is not None
+        if hasattr(enemy, "consume_emitted_rings"):
+            for ring in enemy.consume_emitted_rings():
+                self.dungeon.pulsator_ring_group.add(ring)
+        if hasattr(enemy, "consume_emitted_projectiles"):
+            for proj in enemy.consume_emitted_projectiles():
+                self.dungeon.enemy_projectile_group.add(proj)
+
+    def _apply_ice_crystal_pulse(self, enemy, now_ticks):
+        assert self.player is not None
+        if not hasattr(enemy, "consume_freeze_pulses"):
+            return
+        if not enemy.consume_freeze_pulses():
+            return
+        cx, cy = enemy.rect.centerx, enemy.rect.centery
+        from settings import ICE_CRYSTAL_PULSE_RADIUS
+        dx = self.player.rect.centerx - cx
+        dy = self.player.rect.centery - cy
+        if dx * dx + dy * dy <= ICE_CRYSTAL_PULSE_RADIUS * ICE_CRYSTAL_PULSE_RADIUS:
+            status_effects.apply_status(
+                self.player, status_effects.FROZEN,
+                now_ticks, duration_ms=ICE_CRYSTAL_FREEZE_DURATION_MS,
+            )
+
+    def _update_single_enemy(self, enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale):
+        if hasattr(enemy, "update_attack_state"):
+            enemy.update_attack_state(enemy_focus_rect, now_ticks)
+        if hasattr(enemy, "update_anchor_cycle"):
+            enemy.update_anchor_cycle(now_ticks)
+        if getattr(enemy, "is_frozen", False):
+            self._drain_enemy_output(enemy)
+            return
+        if status_effects.is_immobilized(enemy, now_ticks):
+            return
+        # Always use player_rect for movement so proximity-triggered enemies
+        # (chasers, launchers) activate on player approach, not on escort NPC
+        # approach.  attack_state already has the correct target via
+        # enemy_focus_rect above.
+        movement_target = player_rect
+        if time_scale != 1:
+            original_speed = enemy.speed
+            enemy.speed = original_speed * time_scale
+            try:
+                enemy.update_movement(movement_target, walls)
+            finally:
+                enemy.speed = original_speed
+        else:
+            enemy.update_movement(movement_target, walls)
+        self._drain_enemy_output(enemy)
+        self._apply_ice_crystal_pulse(enemy, now_ticks)
+
+    def _update_enemy_ai(self, walls, now_ticks, enemy_focus_rect, room):
+        assert self.dungeon is not None
+        assert self.player is not None
+        player_rect = self.player.rect
         time_scale = time_rules.get_time_scale(self.player)
         for enemy in self.dungeon.enemy_group:
-            # Drive telegraphed-attack state machine first so movement-blocked
-            # enemies (TELEGRAPH/STRIKE) properly halt this tick.  Frozen
-            # enemies still tick their attack machine when ``attacks_disabled``
-            # is False — this is what powers the test-room attack toggle.
-            if hasattr(enemy, "update_attack_state"):
-                enemy.update_attack_state(enemy_focus_rect, now_ticks)
-            # W3: advance anchor cycle for spirits that have one.
-            if hasattr(enemy, "update_anchor_cycle"):
-                enemy.update_anchor_cycle(now_ticks)
-            if getattr(enemy, "is_frozen", False):
-                # Drain any rings/projectiles emitted while frozen attacks fire,
-                # but skip movement entirely.
-                if hasattr(enemy, "consume_emitted_rings"):
-                    for ring in enemy.consume_emitted_rings():
-                        self.dungeon.pulsator_ring_group.add(ring)
-                if hasattr(enemy, "consume_emitted_projectiles"):
-                    for proj in enemy.consume_emitted_projectiles():
-                        self.dungeon.enemy_projectile_group.add(proj)
-                continue
-            if status_effects.is_immobilized(enemy, now_ticks):
-                continue
-            if time_scale != 1.0:
-                original_speed = enemy.speed
-                enemy.speed = original_speed * time_scale
-                try:
-                    enemy.update_movement(enemy_focus_rect, walls)
-                finally:
-                    enemy.speed = original_speed
-            else:
-                enemy.update_movement(enemy_focus_rect, walls)
-            # Drain any rings/projectiles emitted by this enemy's strike.
-            if hasattr(enemy, "consume_emitted_rings"):
-                for ring in enemy.consume_emitted_rings():
-                    self.dungeon.pulsator_ring_group.add(ring)
-            if hasattr(enemy, "consume_emitted_projectiles"):
-                for proj in enemy.consume_emitted_projectiles():
-                    self.dungeon.enemy_projectile_group.add(proj)
-            # I2: drain freeze pulses from crystal pillars.
-            if hasattr(enemy, "consume_freeze_pulses"):
-                if enemy.consume_freeze_pulses():
-                    cx, cy = enemy.rect.centerx, enemy.rect.centery
-                    from settings import ICE_CRYSTAL_PULSE_RADIUS
-                    dx = self.player.rect.centerx - cx
-                    dy = self.player.rect.centery - cy
-                    if dx * dx + dy * dy <= ICE_CRYSTAL_PULSE_RADIUS * ICE_CRYSTAL_PULSE_RADIUS:
-                        status_effects.apply_status(
-                            self.player, status_effects.FROZEN,
-                            now_ticks, duration_ms=ICE_CRYSTAL_FREEZE_DURATION_MS,
-                        )
+            self._update_single_enemy(enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale)
 
-        # Necromancer: spawn a SkeletonAlly when a kill milestone is pending.
         if identity_runes.necromancer_consume_pending(self.player):
             allies.spawn_skeleton_near(
                 self.player, self.dungeon.ally_group, now_ticks,
             )
-        # W2: push enemies that are standing on CURRENT tiles downstream.
         terrain_effects.apply_current_to_enemies(
             self.dungeon.enemy_group, room, now_ticks,
         )
-        # Allies: chase nearest enemy and melee.
         allies.update_allies(
             self.dungeon.ally_group,
             self.dungeon.enemy_group,
@@ -917,50 +936,54 @@ class Game:
             walls,
             now_ticks,
         )
-
-        # enemy-vs-enemy collisions (Pacifist rune)
         enemy_collision_rules.apply_enemy_collisions(
             self.dungeon.enemy_group,
             enemy_collision_rules.enemy_vs_enemy_multiplier(self.player),
             now_ticks,
         )
 
-        # attack hitboxes
-        self.dungeon.hitbox_group.update()
-        for hitbox in self.dungeon.hitbox_group:
-            hits = pygame.sprite.spritecollide(hitbox, self.dungeon.enemy_group, False)
-            for enemy in hits:
-                if hitbox.try_hit(enemy):
-                    self._apply_player_hit(hitbox, enemy)
-            # Ricochet: pick a second target near the first primary hit
-            if hits:
-                ricochet_target = behavior_runes.find_ricochet_target(
-                    self.player, hitbox, hits[0], self.dungeon.enemy_group
-                )
-                if ricochet_target is not None and hitbox.try_hit(ricochet_target):
-                    self._apply_player_hit(hitbox, ricochet_target)
+    def _apply_player_hitbox(self, hitbox):
+        assert self.dungeon is not None
+        assert self.player is not None
+        hits = pygame.sprite.spritecollide(hitbox, self.dungeon.enemy_group, False)
+        for enemy in hits:
+            if hitbox.try_hit(enemy):
+                self._apply_player_hit(hitbox, enemy)
+        if hits:
+            ricochet_target = behavior_runes.find_ricochet_target(
+                self.player, hitbox, hits[0], self.dungeon.enemy_group
+            )
+            if ricochet_target is not None and hitbox.try_hit(ricochet_target):
+                self._apply_player_hit(hitbox, ricochet_target)
 
+    def _apply_objective_hitboxes(self):
+        assert self.dungeon is not None
         for hitbox in self.dungeon.hitbox_group:
             hits = pygame.sprite.spritecollide(hitbox, self.dungeon.objective_group, False)
             for objective in hits:
-                if hitbox.try_hit(objective):
+                if hitbox.try_hit(objective) and hasattr(objective, "take_damage"):
                     objective.take_damage(hitbox.damage)
 
-        # enemy → player/ally damage via telegraphed attacks (no contact damage)
+    def _update_attacks_and_hits(self, walls, now_ticks):
+        assert self.dungeon is not None
+        assert self.player is not None
+        self.dungeon.hitbox_group.update()
+        for hitbox in self.dungeon.hitbox_group:
+            self._apply_player_hitbox(hitbox)
+        self._apply_objective_hitboxes()
+
         enemy_attack_rules.apply_enemy_attacks(
             self.dungeon.enemy_group,
             self.player,
             self.dungeon.ally_group,
             now_ticks,
         )
-        # Pulsator rings expand and tick once per target.
         self.dungeon.pulsator_ring_group.update()
         enemy_attack_rules.apply_pulsator_rings(
             self.dungeon.pulsator_ring_group,
             self.player,
             self.dungeon.ally_group,
         )
-        # Launcher projectiles travel, hit, or despawn on walls.
         self.dungeon.enemy_projectile_group.update()
         enemy_attack_rules.apply_launcher_projectiles(
             self.dungeon.enemy_projectile_group,
@@ -973,70 +996,44 @@ class Game:
             if hasattr(objective, "apply_enemy_contact"):
                 objective.apply_enemy_contact(self.dungeon.enemy_group, now_ticks)
 
-        # item pickup
-        for item in list(self.dungeon.item_group):
-            if self.player.rect.colliderect(item.rect):
-                if isinstance(item, LootDrop):
-                    # Check max before collecting
-                    inv = self.player.progress.inventory
-                    current = inv.get(item.item_id, 0)
-                    if current >= item.max_owned:
-                        continue  # leave on ground
-                item.collect(self.player)
-                # Pacifist rune: destroyed when a weapon item is picked up.
-                if isinstance(item, LootDrop):
-                    item_data = ITEM_DATABASE.get(item.item_id, {})
-                    if item_data.get("category") == "weapon":
-                        identity_runes.destroy_pacifist_on_weapon_pickup(
-                            self.player, self.player.progress,
-                        )
-                item.kill()
+    def _pickup_items(self):
+        assert self.dungeon is not None
+        assert self.player is not None
+        for item in self.dungeon.item_group:
+            if not self.player.rect.colliderect(item.rect):
+                continue
+            if isinstance(item, LootDrop):
+                progress = self.player.progress
+                assert progress is not None
+                inv = progress.inventory
+                if inv.get(item.item_id, 0) >= item.max_owned:
+                    continue
+            item.collect(self.player)
+            if isinstance(item, LootDrop):
+                item_data = ITEM_DATABASE.get(item.item_id, {})
+                if item_data.get("category") == "weapon":
+                    identity_runes.destroy_pacifist_on_weapon_pickup(
+                        self.player, self.player.progress,
+                    )
+            item.kill()
 
-        # Heartstone Claim: pickup, carry-sync, drop on damage, deliver on portal.
-        self._update_heartstone(room, hp_at_frame_start)
-
-        # portal check
-        objective_update = room.update_objective(
-            now_ticks, self.dungeon.enemy_group
-        )
-        self._apply_room_objective_update(objective_update)
-        # Boss orchestration: drive the per-room BossController and react
-        # to the events it emits (wave triggers, defeat loot drop).  No-op
-        # when the current room has no boss.
-        self._update_boss_controller()
-        # Test rooms with respawn enabled re-spawn slain configured enemies
-        # after their per-room delay so designers can keep testing damage.
-        if room.respawn_enemies_after_ms is not None:
-            frozen = bool(getattr(room, "frozen_enemies", False))
-            attacks_enabled = bool(getattr(room, "enemy_attacks_enabled", True))
-            for cls, (px, py) in room.update_enemy_respawns(
-                now_ticks, self.dungeon.enemy_group
-            ):
-                enemy = cls(px, py, is_frozen=frozen)
-                enemy.attacks_disabled = not attacks_enabled
-                self.dungeon.enemy_group.add(enemy)
+    def _check_end_conditions(self, room):
+        assert self.dungeon is not None
+        assert self.player is not None
         col = self.player.rect.centerx // TILE_SIZE
         row = self.player.rect.centery // TILE_SIZE
         if room.tile_at(col, row) == PORTAL:
             self._on_level_complete()
-            return
-
-        # rune altar pickup prompt
+            return True
         altar_config = room.pending_rune_altar(self.player)
         if altar_config is not None:
             self._pending_rune_altar = altar_config
             self._rune_altar_pick.open(altar_config["offered_rune_ids"])
             self.state = GameState.RUNE_ALTAR_PICK
-            return
-
-        # death check
+            return True
         if not self.player.alive:
             self._on_death()
-            return
-
-        # mark room cleared when all *mortal* enemies are gone.
-        # Immortal enemies (WaterSpiritEnemy pool guardians) remain in the
-        # group indefinitely but must not block objective completion.
+            return True
         room = self.dungeon.current_room
         _mortal_alive = any(
             not getattr(e, "immortal", False) for e in self.dungeon.enemy_group
@@ -1051,6 +1048,56 @@ class Game:
             and room.respawn_enemies_after_ms is None
         ):
             room.enemies_cleared = True
+        return False
+
+    def _update_items_objectives_and_endstate(self, room, hp_at_frame_start, now_ticks):
+        assert self.dungeon is not None
+        assert self.player is not None
+        self._pickup_items()
+        self._update_heartstone(room, hp_at_frame_start)
+
+        objective_update = room.update_objective(
+            now_ticks, self.dungeon.enemy_group
+        )
+        self._apply_room_objective_update(objective_update)
+        self._update_boss_controller()
+
+        if room.respawn_enemies_after_ms is not None:
+            frozen = bool(getattr(room, "frozen_enemies", False))
+            attacks_enabled = bool(getattr(room, "enemy_attacks_enabled", True))
+            for cls, (px, py) in room.update_enemy_respawns(
+                now_ticks, self.dungeon.enemy_group
+            ):
+                enemy = cls(px, py, is_frozen=frozen)
+                enemy.attacks_disabled = not attacks_enabled
+                self.dungeon.enemy_group.add(enemy)
+
+        return self._check_end_conditions(room)
+
+    def _update_playing(self):
+        assert self.dungeon is not None
+        assert self.player is not None
+        room = self.dungeon.current_room
+        walls = room.get_wall_rects()
+        now_ticks = pygame.time.get_ticks()
+
+        if getattr(self.player, "_pit_fall_phase", None) is not None:
+            terrain_effects.advance_pit_fall_animation(
+                self.player, room, now_ticks
+            )
+            player_visual_rules.update_runtime_visuals(self.player, now_ticks)
+            return
+
+        hp_at_frame_start = self.player.current_hp
+
+        if self._update_player_movement(room, walls, now_ticks):
+            return
+
+        self._update_status_effects(now_ticks)
+        enemy_focus_rect = self._update_objectives(room, walls, now_ticks)
+        self._update_enemy_ai(walls, now_ticks, enemy_focus_rect, room)
+        self._update_attacks_and_hits(walls, now_ticks)
+        self._update_items_objectives_and_endstate(room, hp_at_frame_start, now_ticks)
 
     def _on_level_complete(self):
         """Player reached the portal — dungeon complete."""
@@ -1059,6 +1106,8 @@ class Game:
             return
 
         config = get_dungeon(self._current_dungeon_id)
+        if config is None:
+            config = {"name": "Unknown"}
         detail_lines = ()
 
         if self.dungeon is not None and self.player is not None:
@@ -1095,6 +1144,8 @@ class Game:
 
     # ── level complete handler ──────────────────────────
     def _handle_level_complete(self, events):
+        if self._level_complete is None:
+            return
         choice = self._level_complete.handle_events(events)
         if choice == "Play Again":
             self._start_dungeon(self._current_dungeon_id)
@@ -1112,9 +1163,7 @@ class Game:
                 self._return_to_menu()
 
     def _handle_game_win(self, events):
-        for event in events:
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                self._return_to_menu()
+        self._handle_game_over(events)
 
     # ── pause handler ───────────────────────────────────
     def _handle_paused(self, events):
@@ -1152,6 +1201,7 @@ class Game:
 
     # ── rune altar pick handler ─────────────────────────
     def _handle_rune_altar_pick(self, events):
+        assert self.dungeon is not None
         result = self._rune_altar_pick.handle_events(events)
         if result is None:
             return
@@ -1202,100 +1252,101 @@ class Game:
         save_progress(self.progress)
 
     # ── draw ────────────────────────────────────────────
+    def _draw_gameplay_overlay(self):
+        """Draw the in-gameplay state overlays (pause/win/over/altar/etc.)."""
+        if self.state == GameState.PAUSED:
+            self._pause_screen.draw(self.screen, build_pause_screen_view(self._pause_screen))
+        elif self.state == GameState.PAUSE_ALL_ITEMS:
+            if self._all_items_screen is not None:
+                self._all_items_screen.draw(self.screen)
+        elif self.state == GameState.PAUSE_ALL_RUNES:
+            if self._all_runes_screen is not None:
+                self._all_runes_screen.draw(self.screen)
+        elif self.state == GameState.GAME_OVER:
+            self.hud.draw_game_over(self.screen, build_game_over_overlay_view())
+        elif self.state == GameState.GAME_WIN:
+            if self.player is not None:
+                self.hud.draw_victory(
+                    self.screen,
+                    build_victory_overlay_view(self.player.coins),
+                )
+        elif self.state == GameState.LEVEL_COMPLETE:
+            if self._level_complete is not None:
+                self._level_complete.draw(
+                    self.screen,
+                    build_level_complete_screen_view(self._level_complete),
+                )
+        elif self.state == GameState.RUNE_ALTAR_PICK:
+            self._rune_altar_pick.draw(
+                self.screen,
+                build_rune_altar_pick_view(self._rune_altar_pick, self.progress),
+            )
+
+    def _draw_gameplay_layer(self):
+        if self.dungeon and self.player:
+            self.camera.draw(
+                self.screen,
+                self.dungeon.current_room,
+                [
+                    self.dungeon.enemy_group,
+                    self.dungeon.ally_group,
+                    self.dungeon.item_group,
+                    self.dungeon.chest_group,
+                    self.dungeon.objective_group,
+                    self.dungeon.pulsator_ring_group,
+                    self.dungeon.enemy_projectile_group,
+                    self.player_group,
+                    self.dungeon.hitbox_group,
+                ],
+                self.dungeon,
+                player=self.player,
+            )
+            hud_view = build_hud_view(
+                self.player,
+                self.dungeon,
+                show_room_identifier=self._show_room_identifier,
+            )
+            self.hud.draw(self.screen, hud_view)
+
+        self._draw_gameplay_overlay()
+
     def _draw(self):
         self.screen.fill(COLOR_BLACK)
 
         if self.state == GameState.MAIN_MENU:
             self._main_menu.draw(self.screen, build_main_menu_view(self._main_menu))
-
         elif self.state == GameState.ROOM_TEST_CATEGORY:
             self._room_test_category.draw(
                 self.screen,
                 build_room_test_category_view(self._room_test_category),
             )
-
         elif self.state == GameState.ROOM_TEST_SELECT:
             self._room_test_select.draw(
                 self.screen,
                 build_room_test_select_view(self._room_test_select),
             )
-
         elif self.state == GameState.DUNGEON_SELECT:
             self._dungeon_select.draw(
                 self.screen,
                 build_dungeon_select_view(self._dungeon_select),
             )
-
         elif self.state == GameState.CHARACTER_CUSTOMIZE:
             self._character_screen.draw(
                 self.screen,
                 build_character_customize_view(self._character_screen),
             )
-
         elif self.state == GameState.SHOP:
             self._shop_screen.draw(self.screen, build_shop_view(self._shop_screen))
-
         elif self.state == GameState.RECORDS:
             self._records_screen.draw(
                 self.screen, build_records_view(self._records_screen)
             )
-
         elif self.state in (GameState.PLAYING, GameState.PAUSED,
                             GameState.PAUSE_ALL_ITEMS, GameState.PAUSE_ALL_RUNES,
                             GameState.LEVEL_COMPLETE,
                             GameState.GAME_OVER, GameState.GAME_WIN,
                             GameState.RUNE_ALTAR_PICK):
-            # draw the gameplay underneath overlays
-            if self.dungeon and self.player:
-                self.camera.draw(
-                    self.screen,
-                    self.dungeon.current_room,
-                    [
-                        self.dungeon.enemy_group,
-                        self.dungeon.ally_group,
-                        self.dungeon.item_group,
-                        self.dungeon.chest_group,
-                        self.dungeon.objective_group,
-                        self.dungeon.pulsator_ring_group,
-                        self.dungeon.enemy_projectile_group,
-                        self.player_group,
-                        self.dungeon.hitbox_group,
-                    ],
-                    self.dungeon,
-                    player=self.player,
-                )
-                hud_view = build_hud_view(
-                    self.player,
-                    self.dungeon,
-                    show_room_identifier=self._show_room_identifier,
-                )
-                self.hud.draw(self.screen, hud_view)
-
-            if self.state == GameState.PAUSED:
-                self._pause_screen.draw(self.screen, build_pause_screen_view(self._pause_screen))
-            elif self.state == GameState.PAUSE_ALL_ITEMS:
-                if self._all_items_screen is not None:
-                    self._all_items_screen.draw(self.screen)
-            elif self.state == GameState.PAUSE_ALL_RUNES:
-                if self._all_runes_screen is not None:
-                    self._all_runes_screen.draw(self.screen)
-            elif self.state == GameState.GAME_OVER:
-                self.hud.draw_game_over(self.screen, build_game_over_overlay_view())
-            elif self.state == GameState.GAME_WIN:
-                self.hud.draw_victory(
-                    self.screen,
-                    build_victory_overlay_view(self.player.coins),
-                )
-            elif self.state == GameState.LEVEL_COMPLETE:
-                self._level_complete.draw(
-                    self.screen,
-                    build_level_complete_screen_view(self._level_complete),
-                )
-            elif self.state == GameState.RUNE_ALTAR_PICK:
-                self._rune_altar_pick.draw(
-                    self.screen,
-                    build_rune_altar_pick_view(self._rune_altar_pick, self.progress),
-                )
+            self._draw_gameplay_layer()
 
         pygame.display.flip()
 

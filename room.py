@@ -594,6 +594,7 @@ class Room:
         if direction == "right":
             return ((ROOM_COLS - 1) * TILE_SIZE + TILE_SIZE // 2,
                     mid_row * TILE_SIZE + TILE_SIZE // 2)
+        raise ValueError(f"Unknown door direction: {direction!r}")
 
     # ── private builders ────────────────────────────────
     def _place_walls(self):
