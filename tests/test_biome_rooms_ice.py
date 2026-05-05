@@ -297,7 +297,7 @@ class _FakePlayer(pygame.sprite.Sprite):
     def is_invincible(self):
         return False
 
-    def take_damage(self, amount):
+    def take_damage(self, amount, damage_type=None):
         self.current_hp = max(0, self.current_hp - amount)
 
     def is_dead(self):

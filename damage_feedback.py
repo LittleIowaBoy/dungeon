@@ -16,6 +16,16 @@ and :func:`build_damage_number_views` to project render data.
 """
 
 import pygame
+from settings import DAMAGE_TYPE_COLORS
+
+# Default color for untyped (terrain, status DoT) damage numbers.
+_DEFAULT_DAMAGE_COLOR = (255, 255, 255)  # white
+
+
+def _color_for_type(damage_type):
+    if damage_type is None:
+        return _DEFAULT_DAMAGE_COLOR
+    return DAMAGE_TYPE_COLORS.get(damage_type, _DEFAULT_DAMAGE_COLOR)
 
 
 # ── tunables ────────────────────────────────────────────
@@ -55,13 +65,14 @@ class HealthBarTracker:
 
 
 class _ActiveNumber:
-    __slots__ = ("entity_id", "amount", "spawn_ticks", "world_pos")
+    __slots__ = ("entity_id", "amount", "spawn_ticks", "world_pos", "color")
 
-    def __init__(self, entity_id, amount, spawn_ticks, world_pos):
+    def __init__(self, entity_id, amount, spawn_ticks, world_pos, color=None):
         self.entity_id = entity_id
         self.amount = amount
         self.spawn_ticks = spawn_ticks
         self.world_pos = world_pos
+        self.color = color if color is not None else _DEFAULT_DAMAGE_COLOR
 
 
 class DamageNumberTracker:
@@ -70,9 +81,10 @@ class DamageNumberTracker:
     def __init__(self):
         self._numbers = []
 
-    def report(self, entity, amount, world_pos, now_ticks):
+    def report(self, entity, amount, world_pos, now_ticks, damage_type=None):
         if amount <= 0:
             return
+        color = _color_for_type(damage_type)
         entity_id = id(entity)
         for existing in self._numbers:
             if existing.entity_id != entity_id:
@@ -82,13 +94,15 @@ class DamageNumberTracker:
                 existing.amount += amount
                 existing.spawn_ticks = now_ticks
                 existing.world_pos = world_pos
+                # Keep the most recent hit's color when coalescing.
+                existing.color = color
                 return
         self._numbers.append(
-            _ActiveNumber(entity_id, amount, now_ticks, world_pos)
+            _ActiveNumber(entity_id, amount, now_ticks, world_pos, color)
         )
 
     def active(self, now_ticks):
-        """Yield (text, world_pos, age_fraction) tuples for live numbers.
+        """Yield (text, world_pos, age_fraction, color) tuples for live numbers.
 
         ``age_fraction`` is in ``[0.0, 1.0)`` and grows as the number ages.
         Expired numbers are dropped from the tracker.
@@ -101,7 +115,7 @@ class DamageNumberTracker:
                 continue
             kept.append(number)
             out.append(
-                (str(number.amount), number.world_pos, age / DAMAGE_NUMBER_LIFETIME_MS)
+                (str(number.amount), number.world_pos, age / DAMAGE_NUMBER_LIFETIME_MS, number.color)
             )
         self._numbers = kept
         return out
@@ -344,12 +358,13 @@ def reset_all():
 
 
 # ── public API ─────────────────────────────────────────
-def report_damage(entity, amount, world_pos=None, now_ticks=None):
+def report_damage(entity, amount, world_pos=None, now_ticks=None, damage_type=None):
     """Record that *entity* lost *amount* HP/armor this frame.
 
     Marks the entity as "has been damaged" for health-bar visibility and
     pushes a floating damage number anchored at *world_pos* (defaults to
-    ``entity.rect.center``).
+    ``entity.rect.center``).  *damage_type* tints the floating number by
+    the type's color from ``DAMAGE_TYPE_COLORS``.
     """
     if amount is None or amount <= 0:
         return
@@ -362,7 +377,7 @@ def report_damage(entity, amount, world_pos=None, now_ticks=None):
         now_ticks = pygame.time.get_ticks()
     if _entity_has_health(entity):
         _health_bar_tracker.mark_damaged(entity)
-    _damage_number_tracker.report(entity, int(amount), tuple(world_pos), now_ticks)
+    _damage_number_tracker.report(entity, int(amount), tuple(world_pos), now_ticks, damage_type)
 
 
 def _entity_has_health(entity):
@@ -403,7 +418,7 @@ def build_entity_health_bar_views(entity_groups, exclude=()):
 
 
 def build_damage_number_views(now_ticks=None):
-    """Project active damage numbers as ``(text, world_pos, age_fraction)``."""
+    """Project active damage numbers as ``(text, world_pos, age_fraction, color)``."""
     if now_ticks is None:
         now_ticks = pygame.time.get_ticks()
     return tuple(_damage_number_tracker.active(now_ticks))

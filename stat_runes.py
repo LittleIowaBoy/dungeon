@@ -199,6 +199,13 @@ def dodge_cooldown_ms(player, base_cooldown_ms):
         cd = 2000
     if _has(player, "featherweight"):
         cd = max(1, cd // 2)
+    # Apply armor dodge_cooldown_mult (negative fraction = shorter cooldown).
+    import armor_rules
+    mult = armor_rules.aggregate_equipped_stats(
+        getattr(player, "progress", None)
+    ).get("dodge_cooldown_mult", 0.0)
+    if mult != 0.0:
+        cd = max(1, int(round(cd * (1.0 + mult))))
     return cd
 
 

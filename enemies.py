@@ -119,6 +119,7 @@ class Enemy(pygame.sprite.Sprite):
     attack_windup_ms = 0
     attack_strike_ms = 0
     attack_cooldown_ms = 0
+    attack_damage_type = "blunt"  # F2: base default; subclasses override per archetype
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__()
@@ -155,9 +156,11 @@ class Enemy(pygame.sprite.Sprite):
         if self.current_hp <= 0:
             self.kill()
 
-    def roll_drop(self):
+    def roll_drop(self, progress=None):
         """Return an Item instance (or None) at this enemy's position."""
-        if random.random() > DROP_CHANCE:
+        import armor_rules
+        drop_chance = armor_rules.apply_magic_find(DROP_CHANCE, progress)
+        if random.random() > drop_chance:
             return None
         if random.random() < 0.5:
             return Coin(self.rect.centerx, self.rect.centery)
@@ -262,6 +265,7 @@ class PatrolEnemy(Enemy):
     attack_windup_ms = PATROL_ATTACK_WINDUP_MS
     attack_strike_ms = PATROL_ATTACK_STRIKE_MS
     attack_cooldown_ms = PATROL_ATTACK_COOLDOWN_MS
+    attack_damage_type = "slash"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -315,6 +319,7 @@ class RandomEnemy(Enemy):
     attack_windup_ms = RANDOM_ATTACK_WINDUP_MS
     attack_strike_ms = RANDOM_ATTACK_STRIKE_MS
     attack_cooldown_ms = RANDOM_ATTACK_COOLDOWN_MS
+    attack_damage_type = "pierce"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -416,6 +421,7 @@ class ChaserEnemy(Enemy):
     attack_windup_ms = CHASER_ATTACK_WINDUP_MS
     attack_strike_ms = CHASER_ATTACK_STRIKE_MS
     attack_cooldown_ms = CHASER_ATTACK_COOLDOWN_MS
+    attack_damage_type = "slash"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -540,6 +546,7 @@ class PulsatorEnemy(Enemy):
     attack_windup_ms = PULSATOR_WINDUP_MS
     attack_strike_ms = 60                  # ring "born" frame
     attack_cooldown_ms = PULSATOR_COOLDOWN_MS
+    attack_damage_type = "lightning"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -607,6 +614,7 @@ class LauncherProjectile(pygame.sprite.Sprite):
 
     SIZE = LAUNCHER_PROJECTILE_SIZE
     damage = LAUNCHER_PROJECTILE_DAMAGE
+    damage_type = "pierce"
 
     def __init__(self, x, y, vx, vy):
         super().__init__()
@@ -642,6 +650,7 @@ class LauncherEnemy(Enemy):
     attack_windup_ms = LAUNCHER_ATTACK_WINDUP_MS
     attack_strike_ms = LAUNCHER_ATTACK_STRIKE_MS
     attack_cooldown_ms = LAUNCHER_ATTACK_COOLDOWN_MS
+    attack_damage_type = "pierce"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -713,6 +722,7 @@ class SentryEnemy(Enemy):
     attack_windup_ms = SENTRY_ARM_MS
     attack_strike_ms = 80
     attack_cooldown_ms = 0
+    attack_damage_type = "blunt"
 
     def __init__(self, x, y, *, is_frozen=False, patrol_points=None, alarm_config=None):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -829,6 +839,7 @@ class GolemBoulderProjectile(pygame.sprite.Sprite):
 
     SIZE = GOLEM_BOULDER_SIZE
     damage = GOLEM_BOULDER_DAMAGE
+    damage_type = "blunt"
 
     def __init__(self, x, y, vx, vy):
         super().__init__()
@@ -883,6 +894,7 @@ class Golem(Enemy):
     attack_windup_ms  = GOLEM_SLAM_WINDUP_MS
     attack_strike_ms  = GOLEM_SLAM_STRIKE_MS
     attack_cooldown_ms = GOLEM_SLAM_COOLDOWN_MS
+    attack_damage_type = "blunt"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -1042,6 +1054,7 @@ class GolemShard(Enemy):
     attack_windup_ms = GOLEM_SHARD_ATTACK_WINDUP_MS
     attack_strike_ms = GOLEM_SHARD_ATTACK_STRIKE_MS
     attack_cooldown_ms = GOLEM_SHARD_ATTACK_COOLDOWN_MS
+    attack_damage_type = "slash"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -1103,6 +1116,7 @@ class WaterSpiritProjectile(pygame.sprite.Sprite):
 
     SIZE = WATER_SPIRIT_PROJECTILE_SIZE
     damage = WATER_SPIRIT_PROJECTILE_DAMAGE
+    damage_type = "poison"
 
     def __init__(self, x, y, vx, vy):
         super().__init__()
@@ -1150,6 +1164,7 @@ class WaterSpiritEnemy(Enemy):
     attack_windup_ms = WATER_SPIRIT_ATTACK_WINDUP_MS
     attack_strike_ms = WATER_SPIRIT_ATTACK_STRIKE_MS
     attack_cooldown_ms = WATER_SPIRIT_ATTACK_COOLDOWN_MS
+    attack_damage_type = "poison"
 
     def __init__(self, x, y, *, is_frozen=False, immortal=True):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -1266,6 +1281,7 @@ class IceCrystalEnemy(Enemy):
     attack_windup_ms = ICE_CRYSTAL_PULSE_WINDUP_MS
     attack_strike_ms = ICE_CRYSTAL_PULSE_STRIKE_MS
     attack_cooldown_ms = ICE_CRYSTAL_PULSE_COOLDOWN_MS
+    attack_damage_type = "ice"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)
@@ -1337,6 +1353,7 @@ class TideLordProjectile(pygame.sprite.Sprite):
 
     SIZE = TIDE_LORD_PROJECTILE_SIZE
     damage = TIDE_LORD_PROJECTILE_DAMAGE
+    damage_type = "ice"
 
     def __init__(self, x, y, vx, vy):
         super().__init__()
@@ -1384,6 +1401,7 @@ class TideLord(Enemy):
     attack_windup_ms  = TIDE_LORD_CRASH_WINDUP_MS
     attack_strike_ms  = TIDE_LORD_CRASH_STRIKE_MS
     attack_cooldown_ms = TIDE_LORD_CRASH_COOLDOWN_MS
+    attack_damage_type = "ice"
 
     def __init__(self, x, y, *, is_frozen=False):
         super().__init__(x, y, is_frozen=is_frozen)

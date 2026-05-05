@@ -331,6 +331,8 @@ class MenuViewProjectionTests(unittest.TestCase):
         progress = PlayerProgress()
         progress.coins = 0
         screen = ShopScreen(progress)
+        # Use Armor tab — many equipment pieces so scroll is possible.
+        screen.active_tab = "Armor"
         screen.selected = 1
         screen.scroll_offset = 1
 
@@ -342,7 +344,9 @@ class MenuViewProjectionTests(unittest.TestCase):
         self.assertGreater(len(view.items), 0)
         self.assertTrue(view.items[0].line_text.startswith("> "))
         self.assertIn("not enough coins", view.items[0].line_text)
-        self.assertEqual(view.footer_hint, "Press ESC to return")
+        # With tabs enabled the footer shows navigation hints.
+        self.assertIn("ESC", view.footer_hint)
+        self.assertIn("Q/E", view.footer_hint)
         # No trophies owned → no summary or exchange hint shown.
         self.assertEqual(view.trophy_summary_text, "")
         self.assertEqual(view.trophy_exchange_hint, "")
@@ -354,6 +358,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         progress.inventory["stat_shard"] = BIOME_TROPHY_EXCHANGE_RATIO
         progress.inventory["mobility_charge"] = 1
         screen = ShopScreen(progress)
+        screen.active_tab = "Trophies"  # trophy info only shown on Trophies tab
 
         view = build_shop_view(screen)
 
@@ -368,6 +373,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         progress = PlayerProgress()
         progress.inventory["stat_shard"] = 1  # below ratio
         screen = ShopScreen(progress)
+        screen.active_tab = "Trophies"
 
         view = build_shop_view(screen)
 
@@ -383,6 +389,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         for trophy_id in BIOME_TROPHY_IDS:
             progress.inventory[trophy_id] = 1
         screen = ShopScreen(progress)
+        screen.active_tab = "Trophies"
 
         view = build_shop_view(screen)
 
@@ -404,6 +411,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         # Surplus on one trophy → exchange hint should still appear.
         progress.inventory["stat_shard"] = BIOME_TROPHY_EXCHANGE_RATIO
         screen = ShopScreen(progress)
+        screen.active_tab = "Trophies"
 
         view = build_shop_view(screen)
 

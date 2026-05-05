@@ -18,6 +18,7 @@ DODGE_COOLDOWN_MS = 1500
 DODGE_SPEED_MULTIPLIER = 2.4
 
 import stat_runes  # noqa: E402  (placed after constants for readability)
+from settings import SPARK_CHARGE_COOLDOWN_MULT
 
 
 def reset_runtime_dodge(player):
@@ -26,6 +27,15 @@ def reset_runtime_dodge(player):
     player.dodge_cooldown_until = 0
     player.dodge_pass_through = False
     player.dodge_facing = (0.0, 0.0)
+
+
+def reset_bonus_dodges(player):
+    """Refill bonus_dodges_remaining from oathbinder on room enter."""
+    import armor_rules
+    bonus = armor_rules.aggregate_equipped_stats(
+        getattr(player, "progress", None)
+    ).get("bonus_dodges_per_room", 0)
+    player.bonus_dodges_remaining = int(bonus)
 
 
 def is_dodging(player, now_ticks):
@@ -62,11 +72,19 @@ def trigger_dodge(
 ):
     """Begin a dodge if eligible.  Returns True when the dodge starts.
 
+    If the player has bonus_dodges_remaining > 0 (e.g. from Oathbinder),
+    the dodge fires without consuming the normal cooldown.  Otherwise the
+    standard cooldown applies.
+
     The dodge direction is captured from the player's current facing.
     If facing is zero (no key held) the dodge is rejected so the player
     cannot waste a cooldown standing still.
     """
-    if not can_dodge(player, now_ticks):
+    bonus_remaining = getattr(player, "bonus_dodges_remaining", 0)
+    # If using a bonus dodge, skip the cooldown gate; otherwise require no cooldown.
+    if bonus_remaining <= 0 and is_on_cooldown(player, now_ticks):
+        return False
+    if is_dodging(player, now_ticks):
         return False
     if not stat_runes.can_dodge(player):
         return False
@@ -79,12 +97,18 @@ def trigger_dodge(
         return False
 
     cooldown_ms = stat_runes.dodge_cooldown_ms(player, cooldown_ms)
+    if now_ticks < getattr(player, "spark_until", 0):
+        cooldown_ms = int(cooldown_ms * SPARK_CHARGE_COOLDOWN_MULT)
     if stat_runes.dodge_grants_pass_through(player):
         pass_through = True
 
     player.dodge_facing = facing
     player.dodge_until = now_ticks + duration_ms
-    player.dodge_cooldown_until = now_ticks + duration_ms + cooldown_ms
+    if bonus_remaining > 0:
+        # Consume a bonus dodge — don't set cooldown_until.
+        player.bonus_dodges_remaining = bonus_remaining - 1
+    else:
+        player.dodge_cooldown_until = now_ticks + duration_ms + cooldown_ms
     player.dodge_pass_through = bool(pass_through)
     return True
 
@@ -108,6 +132,11 @@ def dodge_velocity(player, now_ticks, base_speed):
     if dx == 0.0 and dy == 0.0:
         return None
     import behavior_runes  # local import to avoid circular dep
+    import armor_rules
+    dist_mult = 1.0 + armor_rules.aggregate_equipped_stats(
+        getattr(player, "progress", None)
+    ).get("dodge_distance_mult", 0.0)
     speed = base_speed * DODGE_SPEED_MULTIPLIER * stat_runes.dodge_speed_multiplier_bonus(player)
     speed *= behavior_runes.afterimage_dodge_distance_multiplier(player)
+    speed *= dist_mult
     return (dx * speed, dy * speed)

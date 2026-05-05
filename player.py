@@ -61,6 +61,7 @@ class Player(pygame.sprite.Sprite):
         self.selected_potion_size = "small"  # cycles: small → medium → large
         self.speed_boost_until = 0   # ticks timestamp; 0 = inactive
         self.attack_boost_until = 0  # ticks timestamp; 0 = inactive
+        self.spark_until = 0         # ticks timestamp; 0 = inactive
 
         # compass
         self.compass_uses = 0
@@ -126,8 +127,8 @@ class Player(pygame.sprite.Sprite):
         return self.weapon_upgrade_tiers.get(weapon_id, 0)
 
     # ── damage ──────────────────────────────────────────
-    def take_damage(self, amount):
-        combat_rules.take_damage(self, amount, pygame.time.get_ticks())
+    def take_damage(self, amount, damage_type=None):
+        combat_rules.take_damage(self, amount, pygame.time.get_ticks(), damage_type=damage_type)
 
     # ── weapon switching ────────────────────────────────
     def switch_weapon(self, index):
@@ -258,6 +259,10 @@ class Player(pygame.sprite.Sprite):
     def use_mobility_charge(self):
         """Spend a Tide Mobility Charge for a short, sharp speed burst."""
         return consumable_rules.use_mobility_charge(self, pygame.time.get_ticks())
+
+    def use_spark_charge(self):
+        """Activate a Spark Charge to reduce dodge cooldown for 12s."""
+        return consumable_rules.use_spark_charge(self, pygame.time.get_ticks())
 
     def use_compass(self, dungeon):
         """Use the compass to find the portal direction. Returns True on success."""

@@ -2,7 +2,7 @@
 import pygame
 from sprites import make_rect_surface
 from item_catalog import ITEM_DATABASE
-from settings import COLOR_COIN
+from settings import COLOR_COIN, RARITY_COMMON, RARITY_COLORS
 
 
 class Item(pygame.sprite.Sprite):
@@ -39,6 +39,12 @@ class LootDrop(Item):
         self.color = data["icon_color"]
         self.max_owned = data["max_owned"]
         super().__init__(x, y)
+        # Draw a 2px rarity border ring on non-common drops so rarity is
+        # telegraphed at a glance on the ground.
+        rarity = data.get("rarity", RARITY_COMMON)
+        if rarity != RARITY_COMMON:
+            border_color = RARITY_COLORS[rarity]
+            pygame.draw.rect(self.image, border_color, self.image.get_rect(), 2)
 
     def collect(self, player):
         """Add to inventory if not at max.  Returns silently if full."""

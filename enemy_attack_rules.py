@@ -36,7 +36,8 @@ def apply_enemy_attacks(enemy_group, player, ally_group, now_ticks):
             if any(player.rect.colliderect(h) for h in hitboxes):
                 if enemy.try_register_hit(player, now_ticks):
                     pre_hp = player.current_hp
-                    player.take_damage(damage)
+                    dtype = getattr(enemy, "attack_damage_type", None)
+                    player.take_damage(damage, damage_type=dtype)
                     taken = pre_hp - player.current_hp
                     reflect = stat_runes.compute_reflect(player, taken)
                     if reflect > 0:
@@ -74,7 +75,8 @@ def apply_pulsator_rings(ring_group, player, ally_group):
         for target in struck:
             if hasattr(target, "take_damage"):
                 pre_hp = getattr(target, "current_hp", None)
-                target.take_damage(PULSATOR_RING_DAMAGE)
+                dtype = getattr(getattr(ring, "_source", None), "attack_damage_type", None)
+                target.take_damage(PULSATOR_RING_DAMAGE, damage_type=dtype)
                 if target is player and pre_hp is not None:
                     taken = pre_hp - target.current_hp
                     reflect = stat_runes.compute_reflect(player, taken)
@@ -101,7 +103,8 @@ def apply_launcher_projectiles(projectile_group, player, ally_group, wall_rects)
         if player is not None and not getattr(player, "is_invincible", False):
             if proj.rect.colliderect(player.rect):
                 pre_hp = player.current_hp
-                player.take_damage(damage)
+                dtype = getattr(proj, "damage_type", None)
+                player.take_damage(damage, damage_type=dtype)
                 taken = pre_hp - player.current_hp
                 reflect = stat_runes.compute_reflect(player, taken)
                 events.append((proj, player, damage))

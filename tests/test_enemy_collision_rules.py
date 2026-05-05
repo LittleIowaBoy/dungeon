@@ -14,7 +14,7 @@ class _FakeEnemy:
         self._alive = True
         ecr.reset_collision_state(self)
 
-    def take_damage(self, amount):
+    def take_damage(self, amount, damage_type=None):
         self.current_hp -= amount
         if self.current_hp <= 0:
             self._alive = False

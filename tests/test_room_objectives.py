@@ -993,7 +993,7 @@ class RoomObjectiveTests(unittest.TestCase):
             def __init__(self, rect):
                 self.rect = rect
 
-            def take_damage(self, amount):
+            def take_damage(self, amount, damage_type=None):
                 damage_log.append(amount)
 
         on_plate = _StubPlayer(plate_one.rect.copy())
@@ -1059,7 +1059,7 @@ class RoomObjectiveTests(unittest.TestCase):
             def __init__(self, rect):
                 self.rect = rect
 
-            def take_damage(self, amount):
+            def take_damage(self, amount, damage_type=None):
                 damage_log.append(amount)
 
         plate_one.update(5000)

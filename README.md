@@ -77,6 +77,7 @@ python -m unittest tests.test_player tests.test_runtime_rules tests.test_rpg_run
 - `8`: use Boulder Stat Shard (permanent +max HP, biome reward)
 - `9`: use Frost Tempo Rune (extended attack-boost window, biome reward)
 - `0`: use Tide Mobility Charge (short, sharp speed burst, biome reward)
+- `3`: use Spark Charge (reduces dodge cooldown by 60% for 12s)
 - `Esc`: pause menu
 - `F3`: toggle the play-test room identifier overlay during a run
 
@@ -105,6 +106,92 @@ The current room families now expose more of their mechanics directly in runtime
 - timed extraction rooms can escalate with pursuit waves, temporarily seal the exit during collapse phases, preserve a clean-clear payout bonus, roll into overtime cleanup pressure, and explain the clean-vs-overtime result on the level-complete screen; while the clean-clear bonus is still earnable the HUD shows a `+N BONUS` badge next to the objective label
 - escort rooms have higher escort durability, spawn the escort next to the player on entry, and highlight the exit destination in-room; once the escort reaches the exit the NPC despawns instead of lingering in the room
 - objective rooms share a primary/secondary fallback model: when a primary objective fails (escort dies, alarm triggers a lockdown, the rival claims the relic) the room falls back to a "clear remaining enemies" secondary so the run can still progress
+
+## Items & Equipment
+
+Items are defined in `item_catalog.py` as a single `ITEM_DATABASE` dict and consumed by the shop, loot tables, and chest drops. Each entry carries category, rarity, cost, drop weights, and a `can_purchase` flag.
+
+### Rarity
+
+All items have a fixed rarity tier that gates stat magnitudes and affix generation:
+
+`COMMON → UNCOMMON → RARE → EPIC → LEGENDARY`
+
+Rarity affects color coding in the HUD and shop, and determines which affix pool an item draws from.
+
+### Damage Types & Resistances
+
+Combat recognises five damage types: `physical`, `fire`, `ice`, `lightning`, and `poison`. Armor pieces and accessories can carry per-type resistance values that reduce incoming damage multiplicatively. Enemy attacks specify a damage type so resistances interact with all combat sources.
+
+### Armor
+
+Beyond the base `armor` slot the game includes four named equipment sets:
+
+| Set | Pieces |
+|-----|--------|
+| Iron | iron_chestplate, iron_helmet, iron_greaves, iron_gauntlets |
+| Golem | golem_core, golem_helm, golem_treads, golem_fists |
+| Wayfarer | wayfarer_vest, wayfarer_hood, wayfarer_boots, wayfarer_gloves |
+| Spellweave | spellweave_robe, spellweave_cowl, spellweave_leggings, spellweave_bracers |
+
+Each piece has a distinct resistance profile and stat spread to encourage build variety.
+
+### Rings (Accessory)
+
+Twelve rings across four progressive upgrade slots (`ring_slot_1` – `ring_slot_4`). Equipping all four **Oathbinder** rings grants a bonus dodge charge. Sanguine rings carry lifesteal.
+
+| Ring | Effect |
+|------|--------|
+| iron_band, copper_ring, jade_ring | baseline defense/attack/speed |
+| signet_ring, hunters_band | damage bonuses and resistance |
+| lifesteal_ring, vampiric_band | lifesteal on hit |
+| oathbinder_ring ×4 (one per slot) | set bonus: +1 dodge charge when all equipped |
+| shadow_loop | dodge-cooldown reduction |
+
+### Pendants (Accessory)
+
+Eight pendants in a single `pendant_slot`. Damage-resistance pendants reduce a specific type; **serpent_charm** additionally cleanses poison stacks on equip.
+
+| Pendant | Primary effect |
+|---------|----------------|
+| amulet_of_vigor | +max HP |
+| pendant_of_swiftness | +move speed |
+| ember_pendant | fire resistance |
+| frost_pendant | ice resistance |
+| storm_pendant | lightning resistance |
+| venom_ward | poison resistance |
+| serpent_charm | poison resistance + cleanse |
+| void_locket | +all resistances (small) |
+
+### Belts (Accessory)
+
+Five belts in a `belt_slot`, each with a unique theme-keyed per-piece bonus:
+
+| Belt | Bonus |
+|------|-------|
+| leather_belt | flat HP and defense |
+| hunters_belt | +arrow damage |
+| mages_sash | +spell damage |
+| champions_girdle | +all damage |
+| shadowweave_belt | +dodge distance |
+
+### Consumables
+
+| Item | Hotkey | Effect |
+|------|--------|--------|
+| Potion (small/medium/large) | `4` | restore HP |
+| Speed Boost | `5` | +move speed for 8s |
+| Attack Boost | `6` | +attack damage for 8s |
+| Compass | `7` | reveal minimap |
+| Spark Charge | `3` | −60% dodge cooldown for 12s; stacks up to 2 and retroactively shortens any in-flight cooldown |
+
+### Shop Tabs
+
+The in-run shop organises its stock into five tabs navigable with `Q` / `E` or `←` / `→`:
+
+`Consumables → Armor → Accessories → Weapons → Trophies`
+
+The **Trophies** tab shows owned biome rewards and exposes the trophy-exchange (`1`–`3`) and keystone-craft (`4`) hotkeys. The remaining tabs filter items by category so each visit shows only the relevant stock.
 
 ## Rune System
 
@@ -164,6 +251,17 @@ Breadth-first roadmap work completed so far:
 - runtime hardening for core rules and game-loop helper seams
 - biome-specific room and progression expansion across mud, ice, and water dungeons
 - README and project documentation refresh
+
+**Item expansion (F1–F8) — completed May 2026:**
+
+- **F1 — Rarity foundation**: `RARITY_COMMON` through `RARITY_LEGENDARY` tier constants; per-rarity affix lists wired into `item_catalog.py`; 912 tests
+- **F2 — Damage types & resistances**: five damage types (`physical`, `fire`, `ice`, `lightning`, `poison`); per-type resistance fields on armor and accessories; enemy attacks carry type tags; 948 tests (+36)
+- **F3 — Armor deepening**: 16 named armor pieces across four sets (Iron, Golem, Wayfarer, Spellweave); distinct resistance profiles and stat spreads; 990 tests (+42)
+- **F4 — Rings**: 12 rings across four progressive accessory slots; Oathbinder set bonus (extra dodge charge); lifesteal on Sanguine rings; shadow_loop dodge-cooldown ring; 1026 tests (+36)
+- **F5 — Pendants**: 8 pendants in a single pendant slot; per-type damage resistance pendants; `serpent_charm` cleanses poison on equip; 1051 tests (+25)
+- **F6 — Belts**: 5 belts in a belt slot with theme-keyed per-piece bonuses (HP, arrow damage, spell damage, all damage, dodge distance); 1079 tests (+28)
+- **F7 — Spark Charge consumable**: reduces dodge cooldown by 60% for 12s; stacks up to 2; retroactively shortens any in-flight cooldown; HUD quickbar slot and active-effect indicator; hotkey `3`; 1109 tests (+30)
+- **F8 — Shop UI tabs**: five-tab shop (`Consumables`, `Armor`, `Accessories`, `Weapons`, `Trophies`) navigable with `Q`/`E` or `←`/`→`; Trophies tab gates exchange and keystone-craft hotkeys; `build_shop_view` projects tab state into `ShopView`; 1142 tests (+33)
 
 Deferred follow-up after the initial breadth-first roadmap sweep:
 

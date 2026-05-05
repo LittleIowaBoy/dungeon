@@ -163,6 +163,7 @@ class Game:
         self._current_dungeon_id = dungeon_id
         config = get_dungeon(dungeon_id)
         self._pre_level_progress_snapshot = self.progress.begin_dungeon_run(dungeon_id)
+        armor_rules.refill_armor_hp(self.progress)
 
         difficulty = self.progress.difficulty_preference
         damage_feedback.reset_all()
@@ -292,6 +293,7 @@ class Game:
             player_position = None
             if self.player is not None:
                 player_position = self.player.rect.center
+                dodge_rules.reset_bonus_dodges(self.player)
             self.dungeon.current_room.on_enter(
                 pygame.time.get_ticks(),
                 entry_direction=entry_direction,
@@ -666,6 +668,8 @@ class Game:
             self.player.use_tempo_rune()
         elif event.key == pygame.K_0:
             self.player.use_mobility_charge()
+        elif event.key == pygame.K_3:
+            self.player.use_spark_charge()
 
     def _handle_playing_chest(self, event):
         assert self.dungeon is not None
@@ -717,6 +721,14 @@ class Game:
             self.player.current_hp = min(
                 self.player.max_hp, self.player.current_hp + heal
             )
+        # Lifesteal from rings (e.g. bloodstone_ring).
+        lifesteal = armor_rules.aggregate_equipped_stats(self.progress).get(
+            "lifesteal_on_kill", 0
+        )
+        if lifesteal > 0:
+            self.player.current_hp = min(
+                self.player.max_hp, self.player.current_hp + int(lifesteal)
+            )
         identity_runes.necromancer_register_kill(self.player)
         targets = behavior_runes.shrapnel_burst_targets(
             self.player, enemy.rect, self.dungeon.enemy_group
@@ -731,7 +743,7 @@ class Game:
             self_dmg = behavior_runes.shrapnel_burst_self_damage(self.player, scaled)
             if self_dmg > 0:
                 self.player.take_damage(self_dmg)
-        drop = enemy.roll_drop()
+        drop = enemy.roll_drop(self.progress)
         if drop:
             self.dungeon.item_group.add(drop)
 

@@ -46,7 +46,7 @@ class _Enemy:
         self.max_hp = hp
         self.statuses = {}
 
-    def take_damage(self, amount):
+    def take_damage(self, amount, damage_type=None):
         self.current_hp -= amount
 
 

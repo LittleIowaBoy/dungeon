@@ -28,7 +28,7 @@ def is_alive(player):
     return player.current_hp > 0
 
 
-def take_damage(player, amount, now_ticks):
+def take_damage(player, amount, now_ticks, damage_type=None):
     if is_invincible(player, now_ticks):
         return
 
@@ -41,7 +41,7 @@ def take_damage(player, amount, now_ticks):
         return
 
     amount = stat_runes.modify_incoming_damage(player, amount)
-    amount = armor_rules.apply_incoming_damage_multiplier(player, amount)
+    amount = armor_rules.apply_incoming_damage_multiplier(player, amount, damage_type)
     if amount <= 0:
         player._invincible_until = now_ticks + INVINCIBILITY_MS
         return
@@ -57,4 +57,4 @@ def take_damage(player, amount, now_ticks):
     stat_runes.on_player_damage_taken(player, amount)
     total_taken = pre_total - (player.armor_hp + player.current_hp)
     if total_taken > 0:
-        damage_feedback.report_damage(player, total_taken)
+        damage_feedback.report_damage(player, total_taken, damage_type=damage_type)

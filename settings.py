@@ -160,6 +160,11 @@ STAT_SHARD_MAX_HP_BONUS      = 10        # permanent +max_hp per shard spent
 TEMPO_RUNE_DURATION_MS       = 30_000    # extended attack-boost window (30 s)
 MOBILITY_CHARGE_DURATION_MS  = 6_000     # short, sharper speed burst (6 s)
 
+# Spark Charge (dodge-cooldown-reduction consumable)
+SPARK_CHARGE_DURATION_MS    = 12_000   # 12 seconds of reduced dodge cooldown
+SPARK_CHARGE_COOLDOWN_MULT  = 0.4      # dodge cooldown × 40% while active
+SPARK_CHARGE_MAX            = 2
+
 # Shop conversion rules for surplus biome trophies. Players can spend
 # `BIOME_TROPHY_EXCHANGE_RATIO` of any one biome trophy to receive 1 of a
 # different biome trophy at the post-run shop. The ratio is intentionally
@@ -222,6 +227,65 @@ COLOR_SPEED_GLOW   = (40, 220, 220)     # cyan
 COLOR_ATTACK_GLOW  = (255, 50, 50, 160) # red, semi-transparent
 COLOR_COMPASS      = (220, 200, 60)     # gold
 
+# ── Item Rarity ─────────────────────────────────────────
+RARITY_COMMON    = "common"
+RARITY_UNCOMMON  = "uncommon"
+RARITY_RARE      = "rare"
+RARITY_SUPERIOR  = "superior"
+RARITY_EXQUISITE = "exquisite"
+RARITY_EXOTIC    = "exotic"
+RARITY_LEGENDARY = "legendary"
+
+RARITY_TIERS = (
+    RARITY_COMMON,
+    RARITY_UNCOMMON,
+    RARITY_RARE,
+    RARITY_SUPERIOR,
+    RARITY_EXQUISITE,
+    RARITY_EXOTIC,
+    RARITY_LEGENDARY,
+)
+
+RARITY_COLORS = {
+    RARITY_COMMON:    (200, 200, 200),
+    RARITY_UNCOMMON:  (110, 220, 110),
+    RARITY_RARE:      (90,  160, 240),
+    RARITY_SUPERIOR:  (180, 120, 240),
+    RARITY_EXQUISITE: (240, 165,  80),
+    RARITY_EXOTIC:    (240, 100, 100),
+    RARITY_LEGENDARY: (255, 220, 100),
+}
+
+# ── Damage types ────────────────────────────────────────
+DAMAGE_TYPES = ("slash", "pierce", "blunt", "fire", "ice", "poison", "lightning", "arcane")
+
+# Visual color for floating damage-number tinting by type (used in damage_feedback).
+DAMAGE_TYPE_COLORS = {
+    "slash":     (255, 255, 255),  # white — neutral physical
+    "pierce":    (255, 230, 160),  # pale gold
+    "blunt":     (200, 160, 110),  # tan
+    "fire":      (255, 140,  40),  # orange
+    "ice":       ( 90, 220, 255),  # cyan
+    "poison":    (120, 230,  80),  # acid green
+    "lightning": (255, 255,  80),  # yellow
+    "arcane":    (200, 130, 255),  # violet
+}
+
+# ── Armor theme tags ────────────────────────────────────
+ARMOR_THEME_TAGS = ("heavy", "light", "arcane")
+
+# Armor HP contributed per equipped piece, keyed by rarity then slot.
+# These values fill the runtime armor_hp pool refilled each dungeon floor.
+ARMOR_HP_BY_RARITY_BY_SLOT = {
+    "common":    {"helmet":  8, "chest": 18, "arms":  6, "legs":  8},
+    "uncommon":  {"helmet": 12, "chest": 25, "arms": 10, "legs": 12},
+    "rare":      {"helmet": 16, "chest": 32, "arms": 14, "legs": 16},
+    "superior":  {"helmet": 20, "chest": 40, "arms": 18, "legs": 22},
+    "exquisite": {"helmet": 25, "chest": 50, "arms": 22, "legs": 27},
+    "exotic":    {"helmet": 25, "chest": 50, "arms": 22, "legs": 27},
+    "legendary": {"helmet": 25, "chest": 50, "arms": 22, "legs": 27},
+}
+
 # ── Loot drop weights (database-driven) ────────────────
 # weights for inventory loot drops from enemies
 LOOT_WEIGHT_POTION_SMALL  = 20
@@ -236,6 +300,8 @@ CHEST_LOOT_WEIGHT_POTION_MEDIUM = 10
 CHEST_LOOT_WEIGHT_POTION_LARGE  = 5
 CHEST_LOOT_WEIGHT_SPEED_BOOST   = 12
 CHEST_LOOT_WEIGHT_ATTACK_BOOST  = 8
+LOOT_WEIGHT_SPARK_CHARGE        = 15
+CHEST_LOOT_WEIGHT_SPARK_CHARGE  = 10
 
 # ── Weapon stats  (damage, range_tiles, cooldown_ms) ────
 SWORD_DAMAGE   = 30

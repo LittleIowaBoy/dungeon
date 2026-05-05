@@ -1,9 +1,11 @@
 """Loadout and equipment rules for PlayerProgress."""
 
+import status_effects
 from item_catalog import (
     DEFAULT_EQUIPPED_SLOTS,
     EQUIPMENT_SLOTS,
     ITEM_DATABASE,
+    RING_EQUIPMENT_SLOTS,
     STARTER_WEAPON_IDS,
     UPGRADEABLE_WEAPON_IDS,
     WEAPON_EQUIPMENT_SLOTS,
@@ -14,6 +16,25 @@ def ensure_loadout_state(progress):
     normalize_equipped_slots(progress)
     normalize_weapon_upgrades(progress)
     ensure_starter_weapons_owned(progress)
+
+
+# ── Ring slot unlock helpers ────────────────────────────────────────────────
+def unlocked_ring_slot_count(progress) -> int:
+    """Return the number of ring slots currently available (1-4).
+
+    One slot is always unlocked; each meta_keystone owned unlocks one more,
+    up to a maximum of 4.
+    """
+    keystones = getattr(progress, "meta_keystones", 0)
+    return 1 + min(keystones, 3)
+
+
+def is_ring_slot_unlocked(progress, slot: str) -> bool:
+    """Return True if *slot* is a ring slot that is currently unlocked."""
+    if slot not in RING_EQUIPMENT_SLOTS:
+        return True  # non-ring slots are always "unlocked"
+    slot_index = RING_EQUIPMENT_SLOTS.index(slot)  # 0-based
+    return slot_index < unlocked_ring_slot_count(progress)
 
 
 def normalize_equipped_slots(progress):
@@ -115,10 +136,17 @@ def can_equip(progress, slot, item_id):
         other_slot = "weapon_2" if slot == "weapon_1" else "weapon_1"
         if progress.equipped_slots.get(other_slot) == item_id:
             return False
+    # Ring-slot rules: locked slot + no duplicate ring ids.
+    if slot in RING_EQUIPMENT_SLOTS:
+        if not is_ring_slot_unlocked(progress, slot):
+            return False
+        for ring_slot in RING_EQUIPMENT_SLOTS:
+            if ring_slot != slot and progress.equipped_slots.get(ring_slot) == item_id:
+                return False
     return progress.equipment_storage.get(item_id, 0) > 0
 
 
-def equip_item(progress, slot, item_id):
+def equip_item(progress, slot, item_id, *, player=None):
     if not can_equip(progress, slot, item_id):
         return False
     current_item = progress.equipped_slots.get(slot)
@@ -128,6 +156,9 @@ def equip_item(progress, slot, item_id):
         progress.add_to_equipment_storage(current_item)
     progress.remove_from_equipment_storage(item_id)
     progress.equipped_slots[slot] = item_id
+    # On-equip hooks.
+    if item_id == "serpent_charm" and player is not None:
+        status_effects.remove_status(player, status_effects.POISONED)
     return True
 
 

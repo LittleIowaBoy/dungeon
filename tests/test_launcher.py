@@ -23,7 +23,7 @@ class _Player:
         self.current_hp = hp
         self.is_invincible = False
 
-    def take_damage(self, amount):
+    def take_damage(self, amount, damage_type=None):
         self.current_hp -= amount
 
 

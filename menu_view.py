@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from dungeon_config import DUNGEONS
 from rune_catalog import RUNE_DATABASE, RUNE_SLOT_CAPACITY
+from item_catalog import rarity_color as _item_rarity_color
 from settings import (
     BIOME_ATTUNEMENT_MAX_PER_BIOME,
     BIOME_TROPHY_IDS,
@@ -11,6 +12,7 @@ from settings import (
     BIOME_TROPHY_KEYSTONE_ID,
     KEYSTONE_MAX_OWNED,
     TERRAIN_TROPHY_IDS,
+    RARITY_COLORS,
 )
 
 
@@ -84,6 +86,7 @@ class CharacterSlotView:
 class CharacterItemView:
     label: str
     quantity: int
+    rarity_color: tuple = (160, 160, 160)
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,8 @@ class ShopView:
     footer_hint: str
     trophy_summary_text: str = ""
     trophy_exchange_hint: str = ""
+    tab_labels: tuple = ()
+    active_tab: str = ""
 
 
 @dataclass(frozen=True)
@@ -332,6 +337,7 @@ def build_character_customize_view(screen):
             CharacterItemView(
                 label=label,
                 quantity=screen.progress.equipment_storage.get(item_id, 0),
+                rarity_color=_item_rarity_color(item_id),
             )
         )
 
@@ -379,8 +385,25 @@ def build_character_customize_view(screen):
 
 
 def build_shop_view(screen):
-    items = screen.shop.items
+    tab_labels = tuple(getattr(screen, 'tab_names', ()))
+    active_tab = getattr(screen, 'active_tab', '')
+    # Use tab-filtered items if the screen supports tabs, else fall back to all items.
+    if hasattr(screen, '_tab_items'):
+        items = screen._tab_items()
+    else:
+        items = screen.shop.items
     trophy_summary, trophy_hint = _build_trophy_strings(screen.progress)
+    # Trophy summary/hint only shown on the Trophies tab (or when no tabs).
+    if tab_labels and active_tab != "Trophies":
+        trophy_summary = ""
+        trophy_hint = ""
+    # Footer hint: tab cycle on non-trophies; exchange hint on trophies.
+    if active_tab == "Trophies":
+        footer_hint = "ESC: Back  |  Q/E: Tabs  |  1-3: Exchange  |  4: Craft Keystone"
+    elif tab_labels:
+        footer_hint = "ESC: Back  |  Q/E: Tabs  |  ↑↓: Select  |  Enter: Buy"
+    else:
+        footer_hint = "Press ESC to return"
     if not items:
         return ShopView(
             title="Shop",
@@ -389,9 +412,11 @@ def build_shop_view(screen):
             empty_message="No items available",
             show_more_above=False,
             show_more_below=False,
-            footer_hint="Press ESC to return",
+            footer_hint=footer_hint,
             trophy_summary_text=trophy_summary,
             trophy_exchange_hint=trophy_hint,
+            tab_labels=tab_labels,
+            active_tab=active_tab,
         )
 
     screen._ensure_selection_visible(items)
@@ -411,7 +436,7 @@ def build_shop_view(screen):
         elif index == screen.selected:
             line_color = (255, 255, 255)
         else:
-            line_color = (160, 160, 160)
+            line_color = _item_rarity_color(item.id)
 
         prefix = "> " if index == screen.selected else "  "
         if item.max_owned > 0:
@@ -442,9 +467,11 @@ def build_shop_view(screen):
         empty_message="No items available",
         show_more_above=start_index > 0,
         show_more_below=end_index < len(items),
-        footer_hint="Press ESC to return",
+        footer_hint=footer_hint,
         trophy_summary_text=trophy_summary,
         trophy_exchange_hint=trophy_hint,
+        tab_labels=tab_labels,
+        active_tab=active_tab,
     )
 
 

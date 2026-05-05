@@ -27,7 +27,7 @@ class _Enemy(pygame.sprite.Sprite):
         self.max_hp = hp
         self.took = []
 
-    def take_damage(self, amount):
+    def take_damage(self, amount, damage_type=None):
         self.took.append(amount)
         self.current_hp -= amount
 

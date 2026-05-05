@@ -9,6 +9,8 @@ from settings import (
     STAT_SHARD_MAX_HP_BONUS,
     TEMPO_RUNE_DURATION_MS,
     MOBILITY_CHARGE_DURATION_MS,
+    SPARK_CHARGE_DURATION_MS,
+    SPARK_CHARGE_COOLDOWN_MULT,
 )
 
 
@@ -29,6 +31,7 @@ POTION_HEAL = {
 def reset_runtime_consumables(player):
     player.speed_boost_until = 0
     player.attack_boost_until = 0
+    player.spark_until = 0
     player.selected_potion_size = DEFAULT_POTION_SIZE
 
 
@@ -125,6 +128,23 @@ def use_mobility_charge(player, now_ticks):
     )
     import damage_feedback  # local import to avoid circular dep
     damage_feedback.report_biome_reward_flash(player, "mobility_charge", now_ticks)
+    return True
+
+
+def use_spark_charge(player, now_ticks):
+    if player.progress is None:
+        return False
+    if not consume_inventory_item(player.progress, "spark_charge"):
+        return False
+    player.spark_until = max(
+        getattr(player, "spark_until", 0),
+        now_ticks + SPARK_CHARGE_DURATION_MS,
+    )
+    # Retroactively shorten any in-flight dodge cooldown
+    cooldown_until = getattr(player, "dodge_cooldown_until", 0)
+    if cooldown_until > now_ticks:
+        remaining = cooldown_until - now_ticks
+        player.dodge_cooldown_until = now_ticks + int(remaining * SPARK_CHARGE_COOLDOWN_MULT)
     return True
 
 

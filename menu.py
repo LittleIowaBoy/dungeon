@@ -710,7 +710,7 @@ class CharacterCustomizeScreen:
             for index, item in enumerate(view.items):
                 item_y = panel_y + 56 + index * 38
                 is_selected = view.item_panel_focused and index == view.selected_item_index
-                line_color = COLOR_WHITE if is_selected else COLOR_GRAY
+                line_color = COLOR_WHITE if is_selected else item.rarity_color
                 prefix = "> " if is_selected else "  "
                 text = self._font.render(
                     f"{prefix}{item.label} x{item.quantity}",
@@ -743,6 +743,18 @@ _TROPHY_EXCHANGE_KEYS = {
     pygame.K_3: "mobility_charge",
 }
 
+# Tab strip for the shop.  Each tab shows items whose category is in the
+# matching set.  Keys cycle tabs (Q = left, E = right); trophy exchange
+# hotkeys (1/2/3/4) are only active while on the "Trophies" tab.
+SHOP_TABS = ("Consumables", "Armor", "Accessories", "Weapons", "Trophies")
+_TAB_CATEGORIES = {
+    "Consumables": {"potion", "boost", "tool"},
+    "Armor":       {"equipment"},
+    "Accessories": {"accessory"},
+    "Weapons":     {"weapon", "weapon_upgrade"},
+    "Trophies":    {"biome_reward"},
+}
+
 
 class ShopScreen:
     def __init__(self, player_progress, shop=None):
@@ -750,9 +762,24 @@ class ShopScreen:
         self.shop = shop or Shop()
         self.selected = 0
         self.scroll_offset = 0
+        self.active_tab = SHOP_TABS[0]
         self._font = None
         self._title_font = None
         self._small_font = None
+
+    @property
+    def tab_names(self):
+        return SHOP_TABS
+
+    def _tab_items(self):
+        cats = _TAB_CATEGORIES.get(self.active_tab, set())
+        return [item for item in self.shop.items if item.category in cats]
+
+    def _cycle_tab(self, direction):
+        idx = list(SHOP_TABS).index(self.active_tab)
+        self.active_tab = SHOP_TABS[(idx + direction) % len(SHOP_TABS)]
+        self.selected = 0
+        self.scroll_offset = 0
 
     def _ensure_fonts(self):
         if self._font is None:
@@ -791,36 +818,38 @@ class ShopScreen:
         self.scroll_offset = max(0, min(self.scroll_offset, max_offset))
 
     def handle_events(self, events):
-        items = self.shop.items
+        items = self._tab_items()
         for event in events:
             if event.type != pygame.KEYDOWN:
                 continue
             if event.key == pygame.K_ESCAPE:
                 return GameState.MAIN_MENU
-            # Biome trophy exchange (1/2/3 → stat_shard / tempo_rune /
-            # mobility_charge respectively).  Auto-picks the surplus trophy
-            # with the largest exchangeable stack as the source.
-            if event.key in _TROPHY_EXCHANGE_KEYS:
-                target_id = _TROPHY_EXCHANGE_KEYS[event.key]
-                source_id = self.shop.best_trophy_source_for(target_id, self.progress)
-                if source_id is not None:
-                    self.shop.exchange_trophy(source_id, target_id, self.progress)
+            # Tab cycling (Q = left, E = right).
+            if event.key in (pygame.K_q, pygame.K_LEFT):
+                self._cycle_tab(-1)
+                items = self._tab_items()
                 continue
-            # Prismatic keystone craft (K_4): consumes 1 of each biome trophy.
-            if event.key == pygame.K_4:
-                if self.shop.can_craft_keystone(self.progress):
-                    if self.shop.craft_keystone(self.progress):
-                        # Toast surfaces on the in-dungeon HUD next run, but
-                        # also queue it now so a player who immediately leaves
-                        # the shop sees the confirmation if anything renders
-                        # the keystone banner.  The next run-start banner
-                        # will replace it via the shared single-slot tracker.
-                        damage_feedback.report_keystone_craft_toast(
-                            self.progress.meta_keystones,
-                            KEYSTONE_MAX_OWNED,
-                            self.progress.keystone_starting_coin_bonus(),
-                        )
+            if event.key in (pygame.K_e, pygame.K_RIGHT):
+                self._cycle_tab(1)
+                items = self._tab_items()
                 continue
+            # Biome trophy exchange and keystone craft only on the Trophies tab.
+            if self.active_tab == "Trophies":
+                if event.key in _TROPHY_EXCHANGE_KEYS:
+                    target_id = _TROPHY_EXCHANGE_KEYS[event.key]
+                    source_id = self.shop.best_trophy_source_for(target_id, self.progress)
+                    if source_id is not None:
+                        self.shop.exchange_trophy(source_id, target_id, self.progress)
+                    continue
+                if event.key == pygame.K_4:
+                    if self.shop.can_craft_keystone(self.progress):
+                        if self.shop.craft_keystone(self.progress):
+                            damage_feedback.report_keystone_craft_toast(
+                                self.progress.meta_keystones,
+                                KEYSTONE_MAX_OWNED,
+                                self.progress.keystone_starting_coin_bonus(),
+                            )
+                    continue
             if not items:
                 continue
             if event.key in (pygame.K_UP, pygame.K_w):
@@ -839,11 +868,25 @@ class ShopScreen:
         self._ensure_fonts()
         surface.fill(COLOR_BLACK)
         title = self._title_font.render(view.title, True, COLOR_WHITE)
-        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 50)))
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 30)))
 
         # coin balance
         coins = self._font.render(view.coins_text, True, COLOR_COIN)
         surface.blit(coins, (SCREEN_WIDTH - coins.get_width() - 20, 20))
+
+        # Tab strip (below title)
+        if view.tab_labels:
+            tab_x = 60
+            tab_y = 68
+            for label in view.tab_labels:
+                active = label == view.active_tab
+                color = COLOR_WHITE if active else COLOR_GRAY
+                tab_txt = self._font.render(label, True, color)
+                surface.blit(tab_txt, (tab_x, tab_y))
+                if active:
+                    underline_rect = pygame.Rect(tab_x, tab_y + 24, tab_txt.get_width(), 2)
+                    surface.fill(COLOR_WHITE, underline_rect)
+                tab_x += tab_txt.get_width() + 30
 
         if not view.items:
             msg = self._font.render(view.empty_message, True, COLOR_GRAY)

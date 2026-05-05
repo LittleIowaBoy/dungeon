@@ -4,9 +4,9 @@ Items are filtered from ITEM_DATABASE where can_purchase is True.
 Purchase limits are enforced via max_owned per item.
 """
 from dataclasses import dataclass
-from item_catalog import ITEM_DATABASE
+from item_catalog import ITEM_DATABASE, tier_index
+import armor_rules
 from settings import (
-    ARMOR_HP,
     COMPASS_USES,
     BIOME_TROPHY_IDS,
     BIOME_TROPHY_EXCHANGE_RATIO,
@@ -26,7 +26,7 @@ class ShopItem:
     icon_color: tuple = (200, 200, 200)
 
 
-# Build shop catalogue from item database
+# Build shop catalogue from item database, sorted by rarity tier then name.
 SHOP_ITEMS: list[ShopItem] = [
     ShopItem(
         id=item_id,
@@ -40,20 +40,7 @@ SHOP_ITEMS: list[ShopItem] = [
     for item_id, data in ITEM_DATABASE.items()
     if data["can_purchase"]
 ]
-
-_helmet_index = next(
-    (i for i, item in enumerate(SHOP_ITEMS) if item.id == "iron_helmet"),
-    None,
-)
-_armor_index = next(
-    (i for i, item in enumerate(SHOP_ITEMS) if item.id == "armor"),
-    None,
-)
-if _helmet_index is not None and _armor_index is not None and _armor_index != _helmet_index + 1:
-    armor_item = SHOP_ITEMS.pop(_armor_index)
-    if _armor_index < _helmet_index:
-        _helmet_index -= 1
-    SHOP_ITEMS.insert(_helmet_index + 1, armor_item)
+SHOP_ITEMS.sort(key=lambda item: (tier_index(item.id), item.name))
 
 
 class Shop:
@@ -116,7 +103,7 @@ class Shop:
         # Armor special case: re-buying restores armor HP, doesn't add count
         if item_id == "armor" and owned >= 1:
             player_progress.coins -= item.cost
-            player_progress.armor_hp = ARMOR_HP
+            armor_rules.refill_armor_hp(player_progress)
             return True
 
         # Compass special case: re-buying restores uses
@@ -139,7 +126,7 @@ class Shop:
 
         # Initialize armor HP on first purchase
         if item_id == "armor":
-            player_progress.armor_hp = ARMOR_HP
+            armor_rules.refill_armor_hp(player_progress)
 
         # Initialize compass uses on first purchase
         if item_id == "compass":

@@ -47,6 +47,7 @@ class QuickBarHUDView:
     stat_shard_count: int = 0
     tempo_rune_count: int = 0
     mobility_charge_count: int = 0
+    spark_charge_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ class DamageNumberHUDView:
     text: str
     world_pos: tuple[int, int]
     age_fraction: float
+    color: tuple = (255, 255, 255)
 
 
 @dataclass(frozen=True)
@@ -213,8 +215,8 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         for rect, current_hp, max_hp in entity_bar_data
     )
     damage_numbers = tuple(
-        DamageNumberHUDView(text=text, world_pos=tuple(world_pos), age_fraction=age)
-        for text, world_pos, age in damage_feedback.build_damage_number_views(now_ticks)
+        DamageNumberHUDView(text=text, world_pos=tuple(world_pos), age_fraction=age, color=color)
+        for text, world_pos, age, color in damage_feedback.build_damage_number_views(now_ticks)
     )
     biome_reward_flashes = tuple(
         BiomeRewardFlashHUDView(kind=kind, world_pos=tuple(world_pos), age_fraction=age)
@@ -345,6 +347,7 @@ def _build_quick_bar_view(player):
         stat_shard_count=inventory.get("stat_shard", 0),
         tempo_rune_count=inventory.get("tempo_rune", 0),
         mobility_charge_count=inventory.get("mobility_charge", 0),
+        spark_charge_count=inventory.get("spark_charge", 0),
     )
 
 
@@ -364,6 +367,14 @@ def _build_active_effects(player, now_ticks):
                 name="Attack Boost",
                 seconds_remaining=max(0, player.attack_boost_until - now_ticks) / 1000,
                 kind="attack",
+            )
+        )
+    if now_ticks < getattr(player, "spark_until", 0):
+        effects.append(
+            ActiveEffectHUDView(
+                name="Spark Charge",
+                seconds_remaining=max(0, player.spark_until - now_ticks) / 1000,
+                kind="spark",
             )
         )
     return tuple(effects)

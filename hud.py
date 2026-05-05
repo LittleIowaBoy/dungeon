@@ -93,7 +93,7 @@ class HUD:
             oy = cy - oh // 2
             for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 surface.blit(outline, (ox + dx, oy + dy))
-            fill = font.render(text, True, COLOR_WHITE)
+            fill = font.render(text, True, number.color)
             surface.blit(fill, (ox, oy))
 
     # ── biome reward spend flashes ──────────────────────
@@ -398,6 +398,11 @@ class HUD:
         txt = self._small_font.render(charge_label, True, (90, 230, 200))
         surface.blit(txt, (x + 830, y))
 
+        # Spark Charge on second quick-bar row
+        spark_label = f"[3] Spark x{quick_bar_view.spark_charge_count}"
+        txt = self._small_font.render(spark_label, True, (80, 200, 255))
+        surface.blit(txt, (x, y - 16))
+
     # ── active effect timers ────────────────────────────
     def _draw_active_effects(self, surface, view):
         """Show remaining time for active boosts."""
@@ -406,7 +411,12 @@ class HUD:
             y = 50  # shift down if armor bar is showing
 
         for effect in view.active_effects:
-            color = COLOR_SPEED_GLOW if effect.kind == "speed" else (255, 80, 80)
+            if effect.kind == "speed":
+                color = COLOR_SPEED_GLOW
+            elif effect.kind == "spark":
+                color = (80, 200, 255)
+            else:
+                color = (255, 80, 80)
             txt = self._small_font.render(
                 f"{effect.name}: {effect.seconds_remaining:.1f}s", True, color)
             surface.blit(txt, (10, y))

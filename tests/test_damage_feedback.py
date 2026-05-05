@@ -50,7 +50,7 @@ class DamageNumberTrackerTests(unittest.TestCase):
         damage_feedback.report_damage(ent, 7, now_ticks=100)
         active = damage_feedback.build_damage_number_views(now_ticks=120)
         self.assertEqual(len(active), 1)
-        text, world_pos, age = active[0]
+        text, world_pos, age, color = active[0]
         self.assertEqual(text, "7")
         self.assertEqual(world_pos, (40, 60))
         self.assertGreater(age, 0)
@@ -62,7 +62,7 @@ class DamageNumberTrackerTests(unittest.TestCase):
         damage_feedback.report_damage(ent, 5, now_ticks=200)  # within window
         active = damage_feedback.build_damage_number_views(now_ticks=210)
         self.assertEqual(len(active), 1)
-        text, _world_pos, age = active[0]
+        text, _world_pos, age, _color = active[0]
         self.assertEqual(text, "12")
         # Age fraction reflects time since the LATEST hit (200), not the first.
         expected_age = (210 - 200) / damage_feedback.DAMAGE_NUMBER_LIFETIME_MS
@@ -81,7 +81,7 @@ class DamageNumberTrackerTests(unittest.TestCase):
         active = damage_feedback.build_damage_number_views(
             now_ticks=100 + damage_feedback.DAMAGE_NUMBER_COALESCE_WINDOW_MS + 110,
         )
-        amounts = sorted(int(t) for (t, _, _) in active)
+        amounts = sorted(int(t) for (t, _, _, _) in active)
         self.assertEqual(amounts, [4, 6])
 
     def test_expired_numbers_are_pruned(self):
@@ -98,7 +98,7 @@ class DamageNumberTrackerTests(unittest.TestCase):
         damage_feedback.report_damage(a, 3, now_ticks=100)
         damage_feedback.report_damage(b, 4, now_ticks=110)
         active = damage_feedback.build_damage_number_views(now_ticks=120)
-        amounts = sorted(int(t) for (t, _, _) in active)
+        amounts = sorted(int(t) for (t, _, _, _) in active)
         self.assertEqual(amounts, [3, 4])
 
 
