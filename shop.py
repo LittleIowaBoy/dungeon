@@ -63,9 +63,12 @@ class Shop:
         item_data = ITEM_DATABASE[item_id]
 
         if item_data.get("category") == "weapon_upgrade":
-            owned = player_progress.weapon_upgrade_tier(
-                item_data["upgrade_weapon_id"]
-            )
+            upgrade_id = item_data.get("upgrade_weapon_id")
+            if upgrade_id is not None:
+                owned = player_progress.weapon_upgrade_tier(upgrade_id)
+                return owned >= item.max_owned
+            # Legacy weapon-plus (no upgrade_weapon_id): use inventory count.
+            owned = player_progress.inventory.get(item_id, 0)
             return owned >= item.max_owned
 
         if item_data.get("storage_bucket") == "equipment":
@@ -91,14 +94,17 @@ class Shop:
             owned = player_progress.inventory.get(item_id, 0)
 
         if item_data.get("category") == "weapon_upgrade":
-            if player_progress.weapon_upgrade_tier(item_data["upgrade_weapon_id"]) >= item.max_owned:
-                return False
-            player_progress.coins -= item.cost
-            player_progress.set_weapon_upgrade(
-                item_data["upgrade_weapon_id"],
-                item_data.get("upgrade_tier", 1),
-            )
-            return True
+            upgrade_id = item_data.get("upgrade_weapon_id")
+            if upgrade_id is not None:
+                if player_progress.weapon_upgrade_tier(upgrade_id) >= item.max_owned:
+                    return False
+                player_progress.coins -= item.cost
+                player_progress.set_weapon_upgrade(
+                    upgrade_id,
+                    item_data.get("upgrade_tier", 1),
+                )
+                return True
+            # Legacy weapon-plus: fall through to inventory purchase logic.
 
         # Armor special case: re-buying restores armor HP, doesn't add count
         if item_id == "armor" and owned >= 1:

@@ -266,11 +266,10 @@ def build_room_test_select_view(screen):
     for index in range(start_index, end_index):
         entry = entries[index]
         selected = index == screen.selected
-        line_color = (255, 255, 255) if selected else (160, 160, 160)
-        prefix = "> " if selected else "  "
+        line_color = (200, 200, 200)
         row_views.append(
             RoomTestRowView(
-                line_text=f"{prefix}{entry.display_name}",
+                line_text=entry.display_name,
                 detail_text=f"{entry.context_label} | {entry.objective_kind.replace('_', ' ').title()}",
                 selected=selected,
                 line_color=line_color,
@@ -433,12 +432,9 @@ def build_shop_view(screen):
 
         if maxed and item.id not in ("armor", "compass"):
             line_color = (60, 60, 60)
-        elif index == screen.selected:
-            line_color = (255, 255, 255)
         else:
             line_color = _item_rarity_color(item.id)
 
-        prefix = "> " if index == screen.selected else "  "
         if item.max_owned > 0:
             badge = f"  [{owned}/{item.max_owned}]"
         else:
@@ -453,7 +449,7 @@ def build_shop_view(screen):
 
         item_views.append(
             ShopItemView(
-                line_text=f"{prefix}{item.name} - {item.cost} coins{badge}{suffix}",
+                line_text=f"{item.name} - {item.cost} coins{badge}{suffix}",
                 description=item.description,
                 selected=index == screen.selected,
                 line_color=line_color,

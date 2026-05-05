@@ -263,6 +263,12 @@ Breadth-first roadmap work completed so far:
 - **F7 — Spark Charge consumable**: reduces dodge cooldown by 60% for 12s; stacks up to 2; retroactively shortens any in-flight cooldown; HUD quickbar slot and active-effect indicator; hotkey `3`; 1109 tests (+30)
 - **F8 — Shop UI tabs**: five-tab shop (`Consumables`, `Armor`, `Accessories`, `Weapons`, `Trophies`) navigable with `Q`/`E` or `←`/`→`; Trophies tab gates exchange and keystone-craft hotkeys; `build_shop_view` projects tab state into `ShopView`; 1142 tests (+33)
 
+**UI polish — May 2026:**
+
+- **Menu highlighting**: all menus replace color-change cursor with an underline. The selected item keeps its natural color (rarity color for items, white for plain lists) and gains a 2px underline. Applies to the main menu, dungeon select, room test selector, room test category screen, shop, pause screens, character loadout panel, and all rune/item test-room sub-screens.
+- **Shop Weapons tab**: `sword_plus`, `spear_plus`, and `axe_plus` re-categorised from `"equipment"` to `"weapon_upgrade"` so they appear in the Weapons tab rather than being silently hidden. `shop.py` and `menu.py` guard for the legacy pattern where `weapon_upgrade` items may lack an `upgrade_weapon_id`.
+- **All Items test-room screen**: item names now use rarity colors. A description panel to the right of the item list shows the selected item's name, rarity tier, word-wrapped description, slot(s), and theme tag when the items panel is focused.
+
 Deferred follow-up after the initial breadth-first roadmap sweep:
 
 1. Stealth Passage S4: broader biome-specific failure gimmicks and stealth-only twists beyond the current escape and seal-release variants

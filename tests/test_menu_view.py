@@ -64,7 +64,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.title, "Room Tests")
         self.assertEqual(len(view.rows), 4)
         self.assertTrue(view.rows[2].selected)
-        self.assertTrue(view.rows[2].line_text.startswith("> Frost Obelisk Break"))
+        self.assertEqual(view.rows[2].line_text, "Frost Obelisk Break")
         self.assertEqual(view.rows[2].detail_text, "Frozen Depths | Ritual")
         self.assertEqual(view.selected_label, "Frost Obelisk Break")
         self.assertEqual(
@@ -342,7 +342,7 @@ class MenuViewProjectionTests(unittest.TestCase):
         self.assertEqual(view.coins_text, "Coins: 0")
         self.assertTrue(view.show_more_above)
         self.assertGreater(len(view.items), 0)
-        self.assertTrue(view.items[0].line_text.startswith("> "))
+        self.assertTrue(view.items[0].selected)
         self.assertIn("not enough coins", view.items[0].line_text)
         # With tabs enabled the footer shows navigation hints.
         self.assertIn("ESC", view.footer_hint)

@@ -159,7 +159,7 @@ ITEM_DATABASE = {
         "can_purchase": True,
         "can_loot": False,
         "drop_weight": 0,
-        "category": "equipment",
+        "category": "weapon_upgrade",
         "rarity": RARITY_UNCOMMON,
     },
     "spear_plus": {
@@ -171,7 +171,7 @@ ITEM_DATABASE = {
         "can_purchase": True,
         "can_loot": False,
         "drop_weight": 0,
-        "category": "equipment",
+        "category": "weapon_upgrade",
         "rarity": RARITY_UNCOMMON,
     },
     "axe_plus": {
@@ -183,7 +183,7 @@ ITEM_DATABASE = {
         "can_purchase": True,
         "can_loot": False,
         "drop_weight": 0,
-        "category": "equipment",
+        "category": "weapon_upgrade",
         "rarity": RARITY_UNCOMMON,
     },
     "compass": {

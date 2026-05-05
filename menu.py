@@ -24,12 +24,14 @@ _TERRAIN_CARD_COLORS = {
 
 # ── Helper: draw selectable list items ──────────────────
 def _draw_options(surface, font, options, selected, x, y, spacing=40):
-    """Draw a vertical list of text options, highlighting *selected*."""
+    """Draw a vertical list of text options; underline the selected entry."""
     for i, label in enumerate(options):
-        color = COLOR_WHITE if i == selected else COLOR_GRAY
-        prefix = "> " if i == selected else "  "
-        txt = font.render(prefix + label, True, color)
+        txt = font.render(label, True, COLOR_WHITE)
         surface.blit(txt, (x, y + i * spacing))
+        if i == selected:
+            pygame.draw.rect(surface, COLOR_WHITE,
+                             (x, y + i * spacing + txt.get_height() - 2,
+                              txt.get_width(), 2))
 
 
 # ═════════════════════════════════════════════════════════
@@ -201,6 +203,10 @@ class RoomTestSelectScreen:
                 row_y = y + draw_index * row_height
                 line = self._font.render(row.line_text, True, row.line_color)
                 surface.blit(line, (60, row_y))
+                if row.selected:
+                    pygame.draw.rect(surface, row.line_color,
+                                     (60, row_y + line.get_height() - 2,
+                                      line.get_width(), 2))
 
                 detail = self._small_font.render(row.detail_text, True, COLOR_GRAY)
                 surface.blit(detail, (88, row_y + 24))
@@ -294,12 +300,15 @@ class RoomTestCategoryScreen:
 
         # Index 0: tuning test room shortcut
         tuning_selected = (view.selected_index == 0)
-        tuning_color = COLOR_WHITE if tuning_selected else COLOR_GRAY
-        tuning_prefix = "> " if tuning_selected else "  "
         tuning_line = self._font.render(
-            tuning_prefix + view.tuning_shortcut_label + "  [launch]", True, tuning_color
+            view.tuning_shortcut_label + "  [launch]", True, COLOR_WHITE
         )
         surface.blit(tuning_line, (SCREEN_WIDTH // 2 - 200, start_y))
+        if tuning_selected:
+            pygame.draw.rect(surface, COLOR_WHITE,
+                             (SCREEN_WIDTH // 2 - 200,
+                              start_y + tuning_line.get_height() - 2,
+                              tuning_line.get_width(), 2))
 
         # Separator between shortcut and category list
         sep_y = start_y + spacing - 12
@@ -313,11 +322,14 @@ class RoomTestCategoryScreen:
         for i, category in enumerate(view.categories):
             actual_index = i + 1
             selected = (actual_index == view.selected_index)
-            color = COLOR_WHITE if selected else COLOR_GRAY
-            prefix = "> " if selected else "  "
             count_str = f"  ({view.entry_counts[i]} tests)" if view.entry_counts else ""
-            line = self._font.render(prefix + category + count_str, True, color)
+            line = self._font.render(category + count_str, True, COLOR_WHITE)
             surface.blit(line, (SCREEN_WIDTH // 2 - 200, start_y + actual_index * spacing))
+            if selected:
+                pygame.draw.rect(surface, COLOR_WHITE,
+                                 (SCREEN_WIDTH // 2 - 200,
+                                  start_y + actual_index * spacing + line.get_height() - 2,
+                                  line.get_width(), 2))
 
         hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
@@ -439,10 +451,12 @@ class DungeonSelectScreen:
         # "Back" option
         back_y = y + card_h + 40
         back_selected = view.selected_index == len(view.cards)
-        back_label = "> Back" if back_selected else f"  {view.back_label}"
-        back_color = COLOR_WHITE if back_selected else COLOR_GRAY
-        txt = self._font.render(back_label, True, back_color)
-        surface.blit(txt, txt.get_rect(center=(SCREEN_WIDTH // 2, back_y)))
+        txt = self._font.render(view.back_label, True, COLOR_WHITE)
+        back_rect = txt.get_rect(center=(SCREEN_WIDTH // 2, back_y))
+        surface.blit(txt, back_rect)
+        if back_selected:
+            pygame.draw.rect(surface, COLOR_WHITE,
+                             (back_rect.x, back_rect.bottom - 2, back_rect.width, 2))
 
         hint = self._small_font.render(
             "Up/Down: select dungeon  Left/Right: change difficulty  Enter: launch",
@@ -710,14 +724,16 @@ class CharacterCustomizeScreen:
             for index, item in enumerate(view.items):
                 item_y = panel_y + 56 + index * 38
                 is_selected = view.item_panel_focused and index == view.selected_item_index
-                line_color = COLOR_WHITE if is_selected else item.rarity_color
-                prefix = "> " if is_selected else "  "
                 text = self._font.render(
-                    f"{prefix}{item.label} x{item.quantity}",
+                    f"{item.label} x{item.quantity}",
                     True,
-                    line_color,
+                    item.rarity_color,
                 )
                 surface.blit(text, (panel_x + 14, item_y))
+                if is_selected:
+                    pygame.draw.rect(surface, item.rarity_color,
+                                     (panel_x + 14, item_y + text.get_height() - 2,
+                                      text.get_width(), 2))
         else:
             empty = self._font.render(view.empty_message, True, COLOR_GRAY)
             surface.blit(empty, (panel_x + 14, panel_y + 64))
@@ -800,7 +816,9 @@ class ShopScreen:
     def _owned_count(self, item):
         data = ITEM_DATABASE[item.id]
         if data.get("category") == "weapon_upgrade":
-            return self.progress.weapon_upgrade_tier(data["upgrade_weapon_id"])
+            upgrade_id = data.get("upgrade_weapon_id")
+            if upgrade_id is not None:
+                return self.progress.weapon_upgrade_tier(upgrade_id)
         if data.get("storage_bucket") == "equipment":
             return self.progress.total_owned(item.id)
         return self.progress.inventory.get(item.id, 0)
@@ -900,6 +918,10 @@ class ShopScreen:
 
                 txt = self._font.render(item_view.line_text, True, item_view.line_color)
                 surface.blit(txt, (60, row_y))
+                if item_view.selected:
+                    pygame.draw.rect(surface, item_view.line_color,
+                                     (60, row_y + txt.get_height() - 2,
+                                      txt.get_width(), 2))
 
                 desc = self._small_font.render(item_view.description, True, COLOR_GRAY)
                 surface.blit(desc, (88, row_y + 24))
@@ -1118,7 +1140,7 @@ class AllItemsPauseScreen:
             surface.blit(header, (slot_x + 12, y + 6))
             surface.blit(value, (slot_x + 12, y + 24))
 
-        panel_x, panel_y, panel_w, panel_h = 380, 110, 380, 420
+        panel_x, panel_y, panel_w, panel_h = 360, 110, 220, 420
         panel_border = COLOR_WHITE if self.focus == "items" else COLOR_GRAY
         pygame.draw.rect(surface, COLOR_DARK_GRAY, (panel_x, panel_y, panel_w, panel_h))
         pygame.draw.rect(surface, panel_border, (panel_x, panel_y, panel_w, panel_h), 2)
@@ -1126,6 +1148,7 @@ class AllItemsPauseScreen:
         header = self._font.render(f"Items for {slot_label}", True, COLOR_WHITE)
         surface.blit(header, (panel_x + 12, panel_y + 12))
 
+        from item_catalog import rarity_color as _rc
         items = self._items_for_current_slot()
         if items:
             visible_rows = min(len(items), 9)
@@ -1137,14 +1160,63 @@ class AllItemsPauseScreen:
                 item_id = items[index]
                 item_y = panel_y + 56 + offset * 38
                 is_selected = self.focus == "items" and index == self.selected_item
-                color = COLOR_WHITE if is_selected else COLOR_GRAY
-                prefix = "> " if is_selected else "  "
                 name = ITEM_DATABASE[item_id].get("name", item_id)
-                txt = self._font.render(f"{prefix}{name}", True, color)
+                color = _rc(item_id)
+                txt = self._font.render(name, True, color)
                 surface.blit(txt, (panel_x + 14, item_y))
+                if is_selected:
+                    pygame.draw.rect(surface, color,
+                                     (panel_x + 14, item_y + txt.get_height() - 2,
+                                      txt.get_width(), 2))
         else:
             empty = self._font.render("(no compatible items)", True, COLOR_GRAY)
             surface.blit(empty, (panel_x + 14, panel_y + 64))
+
+        # ── Description panel (right of item list) ─────────────────
+        desc_x = panel_x + panel_w + 16
+        desc_y = panel_y
+        desc_w = SCREEN_WIDTH - desc_x - 20
+        desc_h = panel_h
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (desc_x, desc_y, desc_w, desc_h))
+        pygame.draw.rect(surface, COLOR_GRAY, (desc_x, desc_y, desc_w, desc_h), 1)
+
+        if items and self.focus == "items":
+            sel_id = items[min(self.selected_item, len(items) - 1)]
+            sel_data = ITEM_DATABASE[sel_id]
+            sel_color = _rc(sel_id)
+            name_surf = self._font.render(sel_data.get("name", sel_id), True, sel_color)
+            surface.blit(name_surf, (desc_x + 12, desc_y + 12))
+            rarity = sel_data.get("rarity", "common")
+            rarity_surf = self._small_font.render(rarity.capitalize(), True, sel_color)
+            surface.blit(rarity_surf, (desc_x + 12, desc_y + 38))
+            # Word-wrapped description
+            words = sel_data.get("description", "").split()
+            line, iy = "", desc_y + 62
+            for word in words:
+                trial = (line + " " + word).strip()
+                if self._small_font.size(trial)[0] <= desc_w - 24:
+                    line = trial
+                else:
+                    if line:
+                        surface.blit(self._small_font.render(line, True, COLOR_WHITE), (desc_x + 12, iy))
+                        iy += 18
+                    line = word
+            if line:
+                surface.blit(self._small_font.render(line, True, COLOR_WHITE), (desc_x + 12, iy))
+                iy += 18
+            # Slot and theme tags
+            slots = sel_data.get("equipment_slots", [])
+            if slots:
+                sl = self._small_font.render("Slots: " + ", ".join(slots), True, COLOR_GRAY)
+                surface.blit(sl, (desc_x + 12, iy + 6))
+                iy += 22
+            theme = sel_data.get("theme_tag", "")
+            if theme:
+                th = self._small_font.render("Theme: " + theme, True, COLOR_GRAY)
+                surface.blit(th, (desc_x + 12, iy + 6))
+        else:
+            ph = self._small_font.render("← Select an item", True, COLOR_GRAY)
+            surface.blit(ph, ph.get_rect(center=(desc_x + desc_w // 2, desc_y + desc_h // 2)))
 
         hint = self._small_font.render(
             "Tab: switch panel  Enter: equip  Backspace: unequip  Esc: back to pause",
@@ -1257,12 +1329,14 @@ class AllRunesPauseScreen:
                 continue
             is_selected = index == self.selected
             equipped = self._is_equipped(rune_id)
-            color = COLOR_WHITE if is_selected else COLOR_GRAY
-            prefix = "> " if is_selected else "  "
             tag = "[EQUIPPED] " if equipped else ""
-            text = f"{prefix}{tag}{rune.category[:3].upper()}  {rune.name}"
-            line = self._font.render(text, True, color)
+            text = f"{tag}{rune.category[:3].upper()}  {rune.name}"
+            line = self._font.render(text, True, COLOR_WHITE)
             surface.blit(line, (list_x, list_y + offset * 28))
+            if is_selected:
+                pygame.draw.rect(surface, COLOR_WHITE,
+                                 (list_x, list_y + offset * 28 + line.get_height() - 2,
+                                  line.get_width(), 2))
 
         hint = self._small_font.render(
             "Enter: toggle equip (drops oldest if full)  Backspace: unequip  Esc: back to pause",
