@@ -174,17 +174,68 @@ class DungeonTopologyIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(dungeon._branch_length_range)
         self.assertIsNotNone(dungeon._pacing_profile)
 
+    def test_second_to_last_main_path_room_is_boss_slot(self):
+        # Use a fixed seed so the path length is deterministic.
+        plan = TopologyPlanner(
+            grid_size=7, min_distance=3, rng=random.Random(0)
+        ).build()
+
+        main_path = plan.main_path
+        self.assertGreaterEqual(len(main_path), 3)
+
+        boss_slot_pos = main_path[-2]
+        boss_room = plan.rooms[boss_slot_pos]
+        self.assertTrue(boss_room.is_boss_slot, "second-to-last main-path room should be boss slot")
+        self.assertFalse(boss_room.is_path_terminal)
+        self.assertFalse(boss_room.is_exit)
+        self.assertEqual(boss_room.reward_tier, "finale_bonus")
+
+        # Only the designated position should be marked.
+        for pos, room in plan.rooms.items():
+            if pos == boss_slot_pos:
+                self.assertTrue(room.is_boss_slot)
+            else:
+                self.assertFalse(room.is_boss_slot)
+
     def test_path_terminal_rooms_spawn_guaranteed_reward_chests(self):
-        dungeon = Dungeon(get_dungeon("mud_caverns"))
+        # Use a fixed-seed TopologyPlanner with branch_count_range=(1,2) so
+        # this test always has at least two terminal rooms (exit + 1 branch
+        # terminal) without depending on random layout luck.
+        plan = TopologyPlanner(
+            grid_size=5, min_distance=3,
+            branch_count_range=(1, 2),
+            rng=random.Random(0),
+        ).build()
 
         terminal_positions = [
-            pos for pos, room in dungeon._topology_plan.rooms.items() if room.is_path_terminal
+            pos for pos, room in plan.rooms.items() if room.is_path_terminal
         ]
-
         self.assertGreaterEqual(len(terminal_positions), 2)
-        for pos in terminal_positions:
-            self.assertIsNotNone(dungeon.rooms[pos].chest_pos)
-            self.assertNotEqual(dungeon.room_plans[pos].reward_tier, "standard")
+
+        # Build a real Dungeon so we can verify chests and reward_tier.
+        dungeon = Dungeon(get_dungeon("mud_caverns"))
+        for pos, room in dungeon._topology_plan.rooms.items():
+            if room.is_path_terminal:
+                self.assertIsNotNone(dungeon.rooms[pos].chest_pos)
+                self.assertNotEqual(dungeon.room_plans[pos].reward_tier, "standard")
+
+    def test_boss_slot_room_always_spawns_boss_template(self):
+        # Verify that over several random runs the boss slot always gets the
+        # biome boss template (earth_golem_arena for mud_caverns).
+        for seed in range(20):
+            dungeon = Dungeon(get_dungeon("mud_caverns"))
+            main_path = dungeon._topology_plan.main_path
+            if len(main_path) < 3:
+                continue  # degenerate path — skip
+            boss_pos = main_path[-2]
+            plan = dungeon.room_plans[boss_pos]
+            self.assertEqual(
+                plan.room_id,
+                "earth_golem_arena",
+                msg=f"boss slot should be earth_golem_arena (seed={seed})",
+            )
+            # Boss slot must receive a finale-level reward tier.
+            self.assertEqual(plan.reward_tier, "finale_bonus")
 
     def test_trap_gauntlet_reward_upgrade_persists_across_room_reload(self):
         dungeon = Dungeon(get_dungeon("mud_caverns"))

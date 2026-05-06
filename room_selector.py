@@ -173,6 +173,70 @@ class RoomSelector:
             reward_tier=reward_tier,
         )
 
+    def build_boss_room_plan(
+        self,
+        pos,
+        depth,
+        path_kind,
+        *,
+        path_id=None,
+        path_index=None,
+        path_length=None,
+        path_progress=None,
+        difficulty_band=None,
+    ):
+        """Select a boss-slot room for the second-to-last main-path position.
+
+        Picks randomly from enabled templates with ``topology_role == "boss"``.
+        If no such templates exist the call falls back to a normal
+        ``build_room_plan`` call so generation never hard-fails.
+
+        The boss slot always receives ``reward_tier="finale_bonus"`` and
+        ``is_path_terminal=False`` (the exit room is still the terminal).
+        """
+        boss_templates = [
+            t for t in self._templates
+            if t.enabled and t.topology_role == "boss"
+        ]
+        if not boss_templates:
+            return self.build_room_plan(
+                pos, depth, path_kind,
+                is_exit=False,
+                path_id=path_id,
+                path_index=path_index,
+                path_length=path_length,
+                path_progress=path_progress,
+                difficulty_band=difficulty_band,
+                is_path_terminal=False,
+            )
+
+        template = self._rng.choice(boss_templates)
+        if path_id is None:
+            path_id = "main"
+        if path_index is None:
+            path_index = 0
+        if path_length is None:
+            path_length = 1
+        if path_progress is None:
+            path_progress = 0.0
+        if difficulty_band is None:
+            difficulty_band = depth
+
+        return self._build_plan_from_template(
+            template,
+            pos=pos,
+            depth=depth,
+            path_kind=path_kind,
+            is_exit=False,
+            path_id=path_id,
+            path_index=path_index,
+            path_length=path_length,
+            path_progress=path_progress,
+            difficulty_band=difficulty_band,
+            is_path_terminal=False,
+            reward_tier="finale_bonus",
+        )
+
     def build_room_plan(
         self,
         pos,

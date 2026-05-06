@@ -838,17 +838,18 @@ BASE_ROOM_TEMPLATES = (
         "notes": "Stand on the shrine glyph to weaken enemies; step off and they regain power.",
     },
     # ── Earth biome mini-boss arena ────────────────────
-    # Finale-eligible Golem encounter, gated to mud_caverns at depth >= 2
-    # (level 3+).  Stays disabled until the boss controller, Golem enemy,
-    # and armor-drop loop land in subsequent slices; at that point the
-    # mud_caverns override flips it on.
+    # Boss-slot encounter for mud_caverns.  topology_role="boss" reserves
+    # this template exclusively for the guaranteed second-to-last main-path
+    # room; it is never chosen by the normal weighted selection pool.
+    # Stays disabled=0 globally so it never leaks into other dungeons;
+    # the mud_caverns override below flips it on and sets generation_weight.
     {
         "room_id": "earth_golem_arena",
         "display_name": "Stone Golem Arena",
         "objective_kind": "combat",
         "combat_pressure": "high",
         "decision_complexity": "mid",
-        "topology_role": "finale",
+        "topology_role": "boss",
         "min_depth": 2,
         "max_depth": None,
         "branch_preference": "either",

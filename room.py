@@ -3624,7 +3624,7 @@ class Room:
             "loot_granted": False,
         }]
 
-
+    def _build_shrine_circle_configs(self):
         """Lay a 3x3 GLYPH_TILE shrine in the room centre + place the glyph entity.
 
         The entity tracks the glyph tile coords; while the player stands

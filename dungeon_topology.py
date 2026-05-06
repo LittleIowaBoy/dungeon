@@ -50,6 +50,7 @@ class TopologyRoom:
     doors: dict[str, bool]
     distance_from_start: int
     distance_to_exit: int
+    is_boss_slot: bool = False  # True for main_path[-2]; always receives a boss template
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,11 +116,24 @@ class TopologyPlanner:
         room_entries: dict[tuple, TopologyRoom] = {}
         main_path_length = len(main_path)
 
+        # The second-to-last main-path room is the fixed boss slot.  It only
+        # exists when the path has at least three rooms (start, boss, exit).
+        boss_slot_depth = main_path_length - 2 if main_path_length >= 3 else -1
+
         for depth, pos in enumerate(main_path):
             path_progress = self._path_progress(depth, main_path_length)
             is_path_terminal = (depth == main_path_length - 1)
+            is_boss_slot = (depth == boss_slot_depth)
             d_s = dist_start.get(pos, 0)
             d_e = dist_exit.get(pos, 0)
+            # Boss slot gets a finale_bonus reward_tier so the dungeon
+            # selector builds a high-quality chest regardless of its
+            # non-terminal status.  All other positions use the standard
+            # terminal rule.
+            if is_boss_slot:
+                reward_tier = "finale_bonus"
+            else:
+                reward_tier = self._reward_tier("main_path", is_path_terminal)
             room_entries[pos] = TopologyRoom(
                 position=pos,
                 depth=depth,
@@ -130,11 +144,12 @@ class TopologyPlanner:
                 path_progress=path_progress,
                 difficulty_band=self._difficulty_band(d_s, max_dist),
                 is_path_terminal=is_path_terminal,
-                reward_tier=self._reward_tier("main_path", is_path_terminal),
+                reward_tier=reward_tier,
                 is_exit=(pos == portal_pos),
                 doors=self._door_map(pos, connections),
                 distance_from_start=d_s,
                 distance_to_exit=d_e,
+                is_boss_slot=is_boss_slot,
             )
 
         for branch_index, branch_path in enumerate(branch_paths, start=1):
@@ -252,9 +267,22 @@ class TopologyPlanner:
             return []
         visited = set(main_path)
         branch_paths = []
-        for anchor_index in self._branch_anchor_indices_for_profile(
+
+        profiled_indices = list(self._branch_anchor_indices_for_profile(
             len(main_path), branch_count, self._pacing_profile,
-        ):
+        ))
+        # Fallback: any interior main-path position not already profiled,
+        # shuffled so retries don't follow a predictable spatial bias.
+        # These are only reached if the profiled anchors could not produce
+        # the requested branch count (e.g. when the main path winds through
+        # most of the grid leaving no free neighbours at profiled positions).
+        profiled_set = set(profiled_indices)
+        fallback = [i for i in range(1, len(main_path) - 1) if i not in profiled_set]
+        self._rng.shuffle(fallback)
+
+        for anchor_index in profiled_indices + fallback:
+            if len(branch_paths) >= branch_count:
+                break
             anchor_pos = main_path[anchor_index]
             candidate_dirs = []
             for direction in _ALL_DIRS:

@@ -360,19 +360,39 @@ class Dungeon:
         else:
             doors = self._random_doors(pos, forced_doors)
         topology_room = self._topology_plan.rooms.get(pos)
-        room_plan = self._room_selector.build_room_plan(
-            pos,
-            depth,
-            path_kind,
-            is_exit=is_exit,
-            path_id=topology_room.path_id if topology_room is not None else None,
-            path_index=topology_room.path_index if topology_room is not None else None,
-            path_length=topology_room.path_length if topology_room is not None else None,
-            path_progress=topology_room.path_progress if topology_room is not None else None,
-            difficulty_band=topology_room.difficulty_band if topology_room is not None else None,
-            is_path_terminal=topology_room.is_path_terminal if topology_room is not None else False,
-            reward_tier=topology_room.reward_tier if topology_room is not None else "standard",
-        )
+        if (
+            topology_room is not None
+            and topology_room.is_boss_slot
+            and self._room_selector is not None
+        ):
+            # Second-to-last main-path position: always use a boss template.
+            # build_boss_room_plan picks randomly from all enabled "boss"
+            # topology-role templates so future bosses can be added without
+            # changing this wiring.
+            room_plan = self._room_selector.build_boss_room_plan(
+                pos,
+                depth,
+                path_kind,
+                path_id=topology_room.path_id,
+                path_index=topology_room.path_index,
+                path_length=topology_room.path_length,
+                path_progress=topology_room.path_progress,
+                difficulty_band=topology_room.difficulty_band,
+            )
+        else:
+            room_plan = self._room_selector.build_room_plan(
+                pos,
+                depth,
+                path_kind,
+                is_exit=is_exit,
+                path_id=topology_room.path_id if topology_room is not None else None,
+                path_index=topology_room.path_index if topology_room is not None else None,
+                path_length=topology_room.path_length if topology_room is not None else None,
+                path_progress=topology_room.path_progress if topology_room is not None else None,
+                difficulty_band=topology_room.difficulty_band if topology_room is not None else None,
+                is_path_terminal=topology_room.is_path_terminal if topology_room is not None else False,
+                reward_tier=topology_room.reward_tier if topology_room is not None else "standard",
+            )
         room = Room(
             doors,
             is_exit=is_exit,

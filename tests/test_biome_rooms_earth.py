@@ -808,7 +808,10 @@ class GolemArenaTemplateTests(unittest.TestCase):
             if t["room_id"] == "earth_golem_arena"
         )
         self.assertEqual(tmpl["min_depth"], 2)
-        self.assertEqual(tmpl["topology_role"], "finale")
+        # topology_role="boss" reserves this template exclusively for the
+        # guaranteed boss slot (main_path[-2]); it is never entered into
+        # the normal weighted-selection pool.
+        self.assertEqual(tmpl["topology_role"], "boss")
         self.assertEqual(tmpl["terminal_preference"], "prefer")
         # Base template defaults stay disabled; the mud_caverns override
         # flips it on (verified separately via DUNGEON_ROOM_TEMPLATE_OVERRIDES).
