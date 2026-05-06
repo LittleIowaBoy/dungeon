@@ -360,5 +360,256 @@ class ThinIceCrackingTests(unittest.TestCase):
         self.assertEqual(room.grid[row][col], THIN_ICE)
 
 
+# ── Phase C: ice bespoke room payoff bonuses ─────────────────────────────
+
+class ThinIceIntactFloorBonusTests(unittest.TestCase):
+    """C1 — ice_thin_ice_field bonus chest for low pit-crack count."""
+
+    def _build_room(self):
+        return _build_room("ice_thin_ice_field")
+
+    # helper: mark a room as having all enemies cleared
+    @staticmethod
+    def _clear(room):
+        room.enemies_cleared = True
+
+    def test_bonus_chest_spawns_when_pits_at_threshold(self):
+        from settings import THIN_ICE_CRACK_BONUS_MAX_PITS
+        import pygame
+        room = self._build_room()
+        self._clear(room)
+        # pits at exactly the threshold
+        room._thin_ice_pits_created = THIN_ICE_CRACK_BONUS_MAX_PITS
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "spawn_reward_chest")
+
+    def test_no_bonus_when_pits_exceed_threshold(self):
+        from settings import THIN_ICE_CRACK_BONUS_MAX_PITS
+        import pygame
+        room = self._build_room()
+        self._clear(room)
+        room._thin_ice_pits_created = THIN_ICE_CRACK_BONUS_MAX_PITS + 1
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_no_bonus_before_enemies_cleared(self):
+        import pygame
+        room = self._build_room()
+        room._thin_ice_pits_created = 0   # zero pits — would qualify
+        # enemies NOT cleared yet
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_bonus_fires_only_once(self):
+        import pygame
+        room = self._build_room()
+        self._clear(room)
+        room._thin_ice_pits_created = 0
+        result1 = room.update_objective(1000, pygame.sprite.Group())
+        result2 = room.update_objective(2000, pygame.sprite.Group())
+        self.assertIsNotNone(result1)
+        self.assertIsNone(result2)
+
+    def test_pit_counter_incremented_by_terrain_effects(self):
+        """terrain_effects should bump _thin_ice_pits_created on crack."""
+        room = _StubRoom(THIN_ICE)
+        col, row = 4, 4
+        player = _FakePlayer(col, row)
+        player.rect.x = col * TILE_SIZE + TILE_SIZE // 4
+        player.rect.y = row * TILE_SIZE + TILE_SIZE // 4
+        for i in range(THIN_ICE_STEPS_TO_CRACK - 1):
+            room._previous_player_tile = (col + 1, row)
+            terrain_effects.apply_terrain_effects(player, room, i * 100, 16)
+        # final step — tile collapses
+        room._previous_player_tile = (col + 1, row)
+        terrain_effects.apply_terrain_effects(
+            player, room, THIN_ICE_STEPS_TO_CRACK * 100, 16
+        )
+        self.assertEqual(getattr(room, "_thin_ice_pits_created", 0), 1)
+
+
+class AvalanchePillarGuardianBonusTests(unittest.TestCase):
+    """C2 — ice_avalanche_run bonus chest when an IcePillar survives."""
+
+    def _build_room(self):
+        return _build_room("ice_avalanche_run")
+
+    @staticmethod
+    def _clear(room):
+        room.enemies_cleared = True
+
+    def test_bonus_when_pillar_alive(self):
+        import pygame
+        room = self._build_room()
+        self._clear(room)
+        room._pillar_count_alive = 1    # at least one pillar survived
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "spawn_reward_chest")
+
+    def test_no_bonus_when_all_pillars_destroyed(self):
+        import pygame
+        room = self._build_room()
+        self._clear(room)
+        room._pillar_count_alive = 0    # all pillars gone
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_no_bonus_before_enemies_cleared(self):
+        import pygame
+        room = self._build_room()
+        room._pillar_count_alive = 2    # pillars still up, but room not clear
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_bonus_fires_only_once(self):
+        import pygame
+        room = self._build_room()
+        self._clear(room)
+        room._pillar_count_alive = 1
+        result1 = room.update_objective(1000, pygame.sprite.Group())
+        result2 = room.update_objective(2000, pygame.sprite.Group())
+        self.assertIsNotNone(result1)
+        self.assertIsNone(result2)
+
+
+# ── Phase D: ice bespoke room payoff bonuses (crystal / aura / spirit) ────
+
+class CrystalRoomUnshakenBonusTests(unittest.TestCase):
+    """D1 — ice_crystal_room bonus chest when player was never FROZEN."""
+
+    def _build_room(self):
+        return _build_room("ice_crystal_room")
+
+    @staticmethod
+    def _clear(room):
+        room.enemies_cleared = True
+
+    def test_bonus_when_never_frozen(self):
+        room = self._build_room()
+        self._clear(room)
+        # _player_froze never set → should award bonus
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "spawn_reward_chest")
+
+    def test_no_bonus_when_frozen(self):
+        room = self._build_room()
+        self._clear(room)
+        room._player_froze = True        # player was frozen during combat
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_no_bonus_before_enemies_cleared(self):
+        room = self._build_room()
+        # enemies NOT cleared, player was never frozen — still no bonus yet
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_bonus_fires_only_once(self):
+        room = self._build_room()
+        self._clear(room)
+        result1 = room.update_objective(1000, pygame.sprite.Group())
+        result2 = room.update_objective(2000, pygame.sprite.Group())
+        self.assertIsNotNone(result1)
+        self.assertIsNone(result2)
+
+
+class FreezeAuraRoomUnattunedBonusTests(unittest.TestCase):
+    """D2 — ice_freeze_aura_room bonus chest when player was never FROZEN."""
+
+    def _build_room(self):
+        return _build_room("ice_freeze_aura_room")
+
+    @staticmethod
+    def _clear(room):
+        room.enemies_cleared = True
+
+    def test_bonus_when_never_frozen(self):
+        room = self._build_room()
+        self._clear(room)
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "spawn_reward_chest")
+
+    def test_no_bonus_when_frozen(self):
+        room = self._build_room()
+        self._clear(room)
+        room._player_froze = True
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_no_bonus_before_enemies_cleared(self):
+        room = self._build_room()
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_bonus_fires_only_once(self):
+        room = self._build_room()
+        self._clear(room)
+        result1 = room.update_objective(1000, pygame.sprite.Group())
+        result2 = room.update_objective(2000, pygame.sprite.Group())
+        self.assertIsNotNone(result1)
+        self.assertIsNone(result2)
+
+
+class SpiritSwarmCleanFloorBonusTests(unittest.TestCase):
+    """D3 — ice_spirit_swarm_room bonus chest for low trail-pit count."""
+
+    def _build_room(self):
+        return _build_room("ice_spirit_swarm_room")
+
+    @staticmethod
+    def _clear(room):
+        room.enemies_cleared = True
+
+    def test_bonus_when_pits_at_threshold(self):
+        from settings import SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX
+        room = self._build_room()
+        self._clear(room)
+        room._trail_freeze_pits_created = SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "spawn_reward_chest")
+
+    def test_no_bonus_when_pits_exceed_threshold(self):
+        from settings import SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX
+        room = self._build_room()
+        self._clear(room)
+        room._trail_freeze_pits_created = SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX + 1
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_no_bonus_before_enemies_cleared(self):
+        room = self._build_room()
+        room._trail_freeze_pits_created = 0
+        result = room.update_objective(1000, pygame.sprite.Group())
+        self.assertIsNone(result)
+
+    def test_bonus_fires_only_once(self):
+        room = self._build_room()
+        self._clear(room)
+        room._trail_freeze_pits_created = 0
+        result1 = room.update_objective(1000, pygame.sprite.Group())
+        result2 = room.update_objective(2000, pygame.sprite.Group())
+        self.assertIsNotNone(result1)
+        self.assertIsNone(result2)
+
+    def test_trail_freeze_pits_tracked_by_terrain_effects(self):
+        """advance_trail_freeze_tiles should bump _trail_freeze_pits_created."""
+        from room import TRAIL_FREEZE
+        from settings import TRAIL_FREEZE_DURATION_MS
+        stub = _StubRoom(FLOOR)
+        # Place a TRAIL_FREEZE tile and register it as already expired.
+        col, row = 5, 5
+        stub.grid[row][col] = TRAIL_FREEZE
+        stub._trail_freeze_tiles = {(col, row): 0}
+        # now_ticks well past expiry
+        terrain_effects.advance_trail_freeze_tiles(stub, TRAIL_FREEZE_DURATION_MS + 1)
+        self.assertEqual(stub.grid[row][col], PIT_TILE)
+        self.assertEqual(getattr(stub, "_trail_freeze_pits_created", 0), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

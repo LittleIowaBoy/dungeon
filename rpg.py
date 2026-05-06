@@ -352,6 +352,20 @@ class Game:
                 cx = pos[0] + _random.randint(-14, 14)
                 cy = pos[1] + _random.randint(-14, 14)
                 self.dungeon.item_group.add(Coin(cx, cy))
+        # E2: preservation bonus — upgrade existing chest or spawn a new one.
+        bonus_tier = update_result.get("preservation_bonus_tier")
+        if bonus_tier is not None:
+            if self.dungeon.chest_group:
+                self._objective_update_chest({
+                    "kind": "upgrade_reward_chest",
+                    "reward_tier": bonus_tier,
+                    "reward_kind": "chest_upgrade",
+                })
+            else:
+                bx, by = update_result.get("preservation_bonus_pos") or (pos or (0, 0))
+                self.dungeon.chest_group.add(
+                    Chest(bx, by, looted=False, reward_tier=bonus_tier, reward_kind="chest_upgrade")
+                )
 
     def _objective_update_spawn_heartstone(self, update_result):
         assert self.dungeon is not None
@@ -406,6 +420,14 @@ class Game:
                     count, cx, cy, radius,
                 )
 
+    def _boss_spawn_frost_witch_waves(self, arena_cfg, wave_specs, cx, cy, events):
+        from enemies import IceSpirit
+        radius = int(arena_cfg.get("wave_spawn_radius", 0))
+        for threshold in events.new_waves:
+            count = int(wave_specs.get(threshold, 0))
+            if count > 0:
+                self._spawn_ring_of_enemies(IceSpirit, count, cx, cy, radius)
+
     def _boss_spawn_waves(self, arena_cfg, arena_kind, boss, events):
         wave_specs = arena_cfg.get("wave_specs", {})
         cx = boss.rect.centerx if boss is not None else 0
@@ -414,6 +436,8 @@ class Game:
             self._boss_spawn_golem_waves(arena_cfg, wave_specs, cx, cy, events)
         elif arena_kind == "tide_lord_arena_controller":
             self._boss_spawn_tide_lord_waves(arena_cfg, wave_specs, cx, cy, events)
+        elif arena_kind == "frost_witch_arena_controller":
+            self._boss_spawn_frost_witch_waves(arena_cfg, wave_specs, cx, cy, events)
 
     def _boss_grant_defeat_loot(self, arena_cfg):
         assert self.player is not None
@@ -449,6 +473,11 @@ class Game:
         arena_kind = arena_cfg.get("kind", "golem_arena_controller")
 
         if events.phase_advanced and arena_kind == "tide_lord_arena_controller":
+            boss = controller.boss
+            if boss is not None:
+                boss.phase_2 = True
+
+        if events.phase_advanced and arena_kind == "frost_witch_arena_controller":
             boss = controller.boss
             if boss is not None:
                 boss.phase_2 = True
@@ -791,6 +820,8 @@ class Game:
         )
         room.prune_expired_room_buffs(now_ticks)
         terrain_effects.advance_thin_ice_respawn(room, now_ticks)
+        terrain_effects.advance_trail_freeze_tiles(room, now_ticks)
+        status_effects.decay_chill(self.player, self.clock.get_time() / 1000.0)
         is_moving = self.player.rect.center != prev_center
         stat_runes.update_movement_state(
             self.player, now_ticks, self.clock.get_time(), is_moving
@@ -899,6 +930,69 @@ class Game:
                 now_ticks, duration_ms=ICE_CRYSTAL_FREEZE_DURATION_MS,
             )
 
+    def _apply_freeze_aura_chill(self, enemy, now_ticks, dt_sec):
+        assert self.player is not None
+        if not getattr(enemy, "is_aura_active", lambda: False)():
+            return
+        cx, cy = enemy.rect.centerx, enemy.rect.centery
+        dx = self.player.rect.centerx - cx
+        dy = self.player.rect.centery - cy
+        if (dx * dx + dy * dy) ** 0.5 <= enemy.aura_radius():
+            from settings import FREEZE_AURA_CHILL_RATE
+            status_effects.apply_chill_rate(self.player, FREEZE_AURA_CHILL_RATE, dt_sec, now_ticks)
+
+    def _apply_ice_spirit_hooks(self, enemy, room, now_ticks):
+        assert self.player is not None
+        if not hasattr(enemy, "emit_trail"):
+            return
+        enemy.emit_trail(room, now_ticks)
+        # Contact chill when the spirit touches the player
+        if hasattr(enemy, "apply_contact_chill") and enemy.rect.colliderect(self.player.rect):
+            enemy.apply_contact_chill(self.player, now_ticks)
+
+    def _apply_frost_witch_nova_chill(self, enemy, now_ticks):
+        """Deliver chill to the player on the frame a Frost Nova STRIKE lands."""
+        assert self.player is not None
+        from enemies import FrostWitch
+        if not isinstance(enemy, FrostWitch):
+            return
+        if getattr(enemy, "_committed_attack", None) != "nova":
+            return
+        if getattr(enemy, "_attack_state", None) != "strike":
+            return
+        nova_r = getattr(enemy, "FROST_WITCH_NOVA_RADIUS", 0)
+        dx = self.player.rect.centerx - enemy.rect.centerx
+        dy = self.player.rect.centery - enemy.rect.centery
+        if (dx * dx + dy * dy) ** 0.5 <= nova_r:
+            status_effects.add_chill(self.player, enemy.nova_chill, now_ticks)
+
+    def _spawn_avalanche_boulders(self, room, walls):
+        """Tick IceAvalancheBoulderSpawner instances and emit boulder sprites."""
+        assert self.dungeon is not None
+        from enemies import IceAvalancheBoulderSpawner, _IceAvalancheBoulder
+        from settings import ROOM_COLS, ROOM_ROWS, TILE_SIZE
+        for spawner in self.dungeon.enemy_group:
+            if not isinstance(spawner, IceAvalancheBoulderSpawner):
+                continue
+            spawner.update()
+            for _cls, speed in spawner.consume_pending_boulders():
+                # Determine which boulder lanes exist in the room layout.
+                # The avalanche band starts at ROOM_ROWS//2 - 2; boulder lanes
+                # are at offsets 1 and 3 within the band.
+                run_rows_start = ROOM_ROWS // 2 - 2
+                boulder_rows = [run_rows_start + 1, run_rows_start + 3]
+                for lane_idx, br in enumerate(boulder_rows):
+                    by = br * TILE_SIZE + TILE_SIZE // 2
+                    # Alternate direction: even lanes → left-to-right, odd → right-to-left
+                    if lane_idx % 2 == 0:
+                        bx = TILE_SIZE
+                        vx = speed
+                    else:
+                        bx = (ROOM_COLS - 2) * TILE_SIZE
+                        vx = -speed
+                    boulder = _IceAvalancheBoulder(bx, by, vx=vx)
+                    self.dungeon.enemy_projectile_group.add(boulder)
+
     def _update_single_enemy(self, enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale):
         if hasattr(enemy, "update_attack_state"):
             enemy.update_attack_state(enemy_focus_rect, now_ticks)
@@ -931,8 +1025,23 @@ class Game:
         assert self.player is not None
         player_rect = self.player.rect
         time_scale = time_rules.get_time_scale(self.player)
+        dt_sec = self.clock.get_time() / 1000.0
+        # Build blocker rect list once per frame for SentryEnemy LOS.
+        from objective_entities import SentryBlocker
+        from enemies import SentryEnemy
+        _sentry_blocker_rects = [
+            obj.rect for obj in self.dungeon.objective_group
+            if isinstance(obj, SentryBlocker)
+        ]
         for enemy in self.dungeon.enemy_group:
+            if isinstance(enemy, SentryEnemy):
+                enemy._blocker_rects = _sentry_blocker_rects
             self._update_single_enemy(enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale)
+            self._apply_freeze_aura_chill(enemy, now_ticks, dt_sec)
+            self._apply_ice_spirit_hooks(enemy, room, now_ticks)
+            self._apply_frost_witch_nova_chill(enemy, now_ticks)
+
+        self._spawn_avalanche_boulders(room, walls)
 
         if identity_runes.necromancer_consume_pending(self.player):
             allies.spawn_skeleton_near(
@@ -1003,6 +1112,22 @@ class Game:
             self.dungeon.ally_group,
             walls,
         )
+        # Kill ice projectiles that hit walls / pillars.
+        # When an IceAvalancheBoulder hits a live IcePillar, damage the pillar.
+        from enemies import _IceAvalancheBoulder, FrostWitchShard
+        from objective_entities import IcePillar
+        for proj in list(self.dungeon.enemy_projectile_group):
+            if isinstance(proj, (_IceAvalancheBoulder, FrostWitchShard)):
+                if isinstance(proj, _IceAvalancheBoulder):
+                    for obj in self.dungeon.objective_group:
+                        if isinstance(obj, IcePillar) and obj.alive and proj.rect.colliderect(obj.rect):
+                            obj.take_damage(proj.damage)
+                            proj.kill()
+                            break
+                    else:
+                        proj.collide_walls(walls)
+                else:
+                    proj.collide_walls(walls)
 
         for objective in self.dungeon.objective_group:
             if hasattr(objective, "apply_enemy_contact"):
@@ -1068,6 +1193,32 @@ class Game:
         self._pickup_items()
         self._update_heartstone(room, hp_at_frame_start)
 
+        # Sync live pillar count into the room so update_objective can check
+        # it for the ice_avalanche_run Pillar Guardian bonus without needing
+        # access to the objective_group directly.
+        if (
+            room.room_plan is not None
+            and room.room_plan.room_id == "ice_avalanche_run"
+        ):
+            from objective_entities import IcePillar
+            room._pillar_count_alive = sum(
+                1 for o in self.dungeon.objective_group
+                if isinstance(o, IcePillar) and o.alive
+            )
+
+        # Track whether the player ever received FROZEN status during active
+        # combat in ice_crystal_room (Unshaken bonus) or ice_freeze_aura_room
+        # (Unattuned bonus).  We only record it while enemies are still alive
+        # so a freeze that happens after the last enemy dies doesn't cancel
+        # the reward.
+        if (
+            room.room_plan is not None
+            and room.room_plan.room_id in ("ice_crystal_room", "ice_freeze_aura_room")
+            and not room.enemies_cleared
+        ):
+            if status_effects.has_status(self.player, status_effects.FROZEN, now_ticks):
+                room._player_froze = True
+
         objective_update = room.update_objective(
             now_ticks, self.dungeon.enemy_group
         )
@@ -1091,6 +1242,14 @@ class Game:
         assert self.player is not None
         room = self.dungeon.current_room
         walls = room.get_wall_rects()
+        # IcePillar instances act as dynamic walls while alive
+        from objective_entities import IcePillar
+        pillar_rects = [
+            obj.rect for obj in self.dungeon.objective_group
+            if isinstance(obj, IcePillar) and obj.alive
+        ]
+        if pillar_rects:
+            walls = walls + pillar_rects
         now_ticks = pygame.time.get_ticks()
 
         if getattr(self.player, "_pit_fall_phase", None) is not None:

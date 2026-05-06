@@ -463,6 +463,10 @@ class Dungeon:
                     patrol_points=config.get("patrol_points"),
                     alarm_config=config,
                 ))
+            elif config["kind"] == "sentry_blocker":
+                from objective_entities import SentryBlocker
+                pos = config["pos"]
+                self.objective_group.add(SentryBlocker(pos[0], pos[1]))
             elif config["kind"] == "escort_npc" and not config["destroyed"]:
                 self.objective_group.add(EscortNPC(config))
             elif config["kind"] == "trap_lane_switch":
@@ -499,6 +503,9 @@ class Dungeon:
                 self.objective_group.add(spawner)
             elif config["kind"] == "shrine_glyph":
                 self.objective_group.add(ShrineGlyph(config))
+            elif config["kind"] == "ice_pillar":
+                from objective_entities import IcePillar
+                self.objective_group.add(IcePillar(config["x"], config["y"]))
             elif config["kind"] == "golem_arena_controller":
                 # Locate the Golem we just spawned via enemy_configs and
                 # wrap it in a BossController.  Wave thresholds default
@@ -534,6 +541,21 @@ class Dungeon:
                 if boss is not None:
                     self.boss_controller = BossController(
                         boss, name="Tide Lord",
+                    )
+                    self.boss_controller.arena_config = config
+                    if hasattr(self.current_room, "_set_portal_active"):
+                        self.current_room._set_portal_active(False)
+                    import damage_feedback
+                    damage_feedback.report_boss_intro(self.boss_controller.name)
+            elif config["kind"] == "frost_witch_arena_controller":
+                from enemies import FrostWitch
+                boss = next(
+                    (e for e in self.enemy_group if isinstance(e, FrostWitch)),
+                    None,
+                )
+                if boss is not None:
+                    self.boss_controller = BossController(
+                        boss, name="Frost Witch",
                     )
                     self.boss_controller.arena_config = config
                     if hasattr(self.current_room, "_set_portal_active"):

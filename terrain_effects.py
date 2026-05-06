@@ -60,6 +60,7 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
     # this imports from settings; player.py would create the cycle).
     from room import (
         QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT, WATER, THIN_ICE,
+        SLIDE, TRAIL_FREEZE,
     )
 
     tile = room.terrain_at_pixel(player.rect.centerx, player.rect.centery)
@@ -86,6 +87,36 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
     if tile != WATER:
         room._water_entry_ticks = None
 
+    # ── SLIDE: direction-commitment tile ──────────────────────────────────
+    # When the player first steps ONTO a SLIDE tile their current velocity
+    # direction is recorded.  movement_rules.py reads ``player._slide_committed``
+    # to override input until the player leaves the tile or dodges.
+    # Clearing the committed flag here (when no longer on SLIDE) ensures
+    # movement rules resume normally on the first non-slide frame.
+    if tile == SLIDE:
+        if not getattr(player, "_on_slide", False):
+            # Just stepped onto a slide tile — record committed direction from
+            # current velocity; movement_rules will lock to this direction.
+            vx = getattr(player, "velocity_x", 0.0)
+            vy = getattr(player, "velocity_y", 0.0)
+            mag = (vx * vx + vy * vy) ** 0.5
+            if mag > 0:
+                player._slide_dir = (vx / mag, vy / mag)
+            else:
+                player._slide_dir = None   # no velocity — no lock
+            player._on_slide = True
+    else:
+        # Left slide — clear committed state.
+        player._on_slide = False
+        player._slide_dir = None
+
+    # ── TRAIL_FREEZE: walkable until expiry ───────────────────────────────
+    # TRAIL_FREEZE tiles are ordinary floor while fresh.  advance_trail_freeze_tiles
+    # (called from the game loop) converts them to PIT_TILE when their timer
+    # expires; the pit-fall animation then fires normally on the next frame.
+    # No per-frame effect here; only clear the "on slide" state if somehow
+    # the player is on TRAIL_FREEZE (already handled above since tile != SLIDE).
+
     # ── THIN_ICE: cracking tile mechanic ─────────────────────────────────
     # Each time the player steps ONTO a new THIN_ICE tile, a per-tile
     # step counter on the room is incremented.  Once the counter for a
@@ -103,6 +134,8 @@ def apply_terrain_effects(player, room, now_ticks, dt_ms):
             col, row = cur_tile_coord
             room.grid[row][col] = PIT_TILE
             diag["thin_ice_cracked"] = True
+            # Track total pit collapses for the Intact Floor bonus.
+            room._thin_ice_pits_created = getattr(room, "_thin_ice_pits_created", 0) + 1
             # Record when this tile cracked so it can respawn later.
             crack_times = getattr(room, "_thin_ice_crack_times", None)
             if crack_times is None:
@@ -459,3 +492,53 @@ def thin_ice_crack_stage(room, col, row):
     if counts is None:
         return 0
     return counts.get((col, row), 0)
+
+
+def advance_trail_freeze_tiles(room, now_ticks):
+    """Collapse expired TRAIL_FREEZE tiles to PIT_TILE.
+
+    IceSpirit enemies write ``room._trail_freeze_tiles[(col, row)] = spawn_ticks``
+    when they drop a trail tile.  Each frame this function checks whether any
+    trail tile has exceeded ``TRAIL_FREEZE_DURATION_MS`` and, if so, converts it
+    to a PIT_TILE so the normal pit-fall animation triggers.
+
+    Tiles already overwritten (e.g. the player stepped on them and the tile
+    was manually converted to PIT_TILE by cracking logic) are removed from
+    the registry without any further grid mutation.
+    """
+    from settings import TRAIL_FREEZE_DURATION_MS
+    from room import TRAIL_FREEZE, PIT_TILE
+
+    tile_map = getattr(room, "_trail_freeze_tiles", None)
+    if not tile_map:
+        return
+
+    expired = [
+        coord for coord, spawn_t in tile_map.items()
+        if now_ticks - spawn_t >= TRAIL_FREEZE_DURATION_MS
+    ]
+    for coord in expired:
+        col, row = coord
+        if room.tile_at(col, row) == TRAIL_FREEZE:
+            room.grid[row][col] = PIT_TILE
+            # Track collapses for the Spirit Swarm "Clean Floor" bonus.
+            room._trail_freeze_pits_created = getattr(room, "_trail_freeze_pits_created", 0) + 1
+        del tile_map[coord]
+
+
+def emit_trail_freeze_tile(room, col, row, now_ticks):
+    """Place a TRAIL_FREEZE tile at ``(col, row)`` and register its expiry.
+
+    Called by IceSpirit enemies at their configured emit interval.  No-ops
+    if the target cell is already a hazard tile or is out of bounds.
+    """
+    from room import FLOOR, ICE, TRAIL_FREEZE
+
+    if room.tile_at(col, row) not in (FLOOR, ICE):
+        return
+    room.grid[row][col] = TRAIL_FREEZE
+    tile_map = getattr(room, "_trail_freeze_tiles", None)
+    if tile_map is None:
+        room._trail_freeze_tiles = {}
+        tile_map = room._trail_freeze_tiles
+    tile_map[(col, row)] = now_ticks

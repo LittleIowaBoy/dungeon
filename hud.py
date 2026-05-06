@@ -13,6 +13,10 @@ from settings import (
     ARMOR_HP,
     SPEED_BOOST_DURATION_MS, ATTACK_BOOST_DURATION_MS,
 )
+import settings as _settings
+_STATUS_METER_H = getattr(_settings, "STATUS_METER_HEIGHT", 8)
+_STATUS_METER_W = getattr(_settings, "STATUS_METER_WIDTH", 80)
+_STATUS_METER_GAP = getattr(_settings, "STATUS_METER_GAP", 4)
 
 
 class HUD:
@@ -54,6 +58,7 @@ class HUD:
         self._draw_keystone_bonus_banner(surface, view.keystone_bonus_banner)
         self._draw_boss_health_bar(surface, view.boss_health_bar)
         self._draw_boss_intro_banner(surface, view.boss_intro_banner)
+        self._draw_status_meter_rail(surface, view.status_meters)
 
     # ── world-space health bars ─────────────────────────
     def _draw_entity_health_bars(self, surface, bar_views):
@@ -206,6 +211,37 @@ class HUD:
         txt = self._small_font.render(
             f"Armor: {view.armor_hp}/{ARMOR_HP}", True, COLOR_WHITE)
         surface.blit(txt, (x + w + 6, y - 1))
+
+    # ── status-accumulator meter rail ───────────────────
+    # Positioned just below the armor bar (or below the health bar if
+    # no armor is active).  Each meter is a compact horizontal bar with
+    # a label rendered in small font.  Multiple meters stack vertically
+    # with _STATUS_METER_GAP pixels between them.
+    def _draw_status_meter_rail(self, surface, status_meters):
+        if status_meters is None or not status_meters.meters:
+            return
+        # Anchor just below the lowest health/armor bar.
+        x = 10
+        y_base = 48  # below armor bar (y=32, h=12) + 4px gap
+        w = _STATUS_METER_W
+        h = _STATUS_METER_H
+
+        for i, meter in enumerate(status_meters.meters):
+            y = y_base + i * (h + _STATUS_METER_GAP)
+            fill_frac = min(1.0, meter.value / max(1.0, meter.max_value))
+            fill_w = max(0, int(w * fill_frac))
+            # Choose color: pulse tint when near-full.
+            fill_color = meter.pulse_color if meter.pulsing else meter.fill_color
+            # Background track.
+            pygame.draw.rect(surface, meter.bg_color, (x, y, w, h))
+            # Fill.
+            if fill_w > 0:
+                pygame.draw.rect(surface, fill_color, (x, y, fill_w, h))
+            # Border.
+            pygame.draw.rect(surface, COLOR_WHITE, (x, y, w, h), 1)
+            # Label to the right.
+            lbl = self._small_font.render(meter.label, True, COLOR_WHITE)
+            surface.blit(lbl, (x + w + 4, y - 1))
 
     # ── weapon indicator ────────────────────────────────
     def _draw_weapon(self, surface, view):

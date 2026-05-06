@@ -16,6 +16,7 @@ from settings import (
     COLOR_DOOR, COLOR_PORTAL,
     COLOR_QUICKSAND, COLOR_SPIKE_PATCH, COLOR_PIT_TILE, COLOR_CURRENT,
     COLOR_THIN_ICE, COLOR_HEARTH, COLOR_CART_RAIL, COLOR_GLYPH_TILE,
+    COLOR_SLIDE, COLOR_TRAIL_FREEZE,
     COLOR_BLACK, COLOR_WHITE,
     ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM,
     ENEMY_DOOR_BUFFER_TILES, ROOM_MAX_DISTINCT_ENEMY_TYPES,
@@ -33,11 +34,20 @@ from settings import (
     TIDE_LORD_WAVE_SPAWN_RADIUS,
     ICE_THIN_ICE_FIELD_DOOR_BUFFER, ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE,
     ICE_CRYSTAL_ROOM_CRYSTAL_COUNT, ICE_CRYSTAL_ROOM_DOOR_BUFFER,
+    ICE_THIN_ICE_SLIDE_RETROFIT,
+    THIN_ICE_CRACK_BONUS_MAX_PITS,
+    SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX,
+    ESCORT_PRESERVATION_BONUS_HP_RATIO,
+    FREEZE_AURA_ROOM_CRYSTAL_COUNT_RANGE, FREEZE_AURA_ROOM_DOOR_BUFFER,
+    FREEZE_AURA_ROOM_MIN_SEP_TILES,
+    ICE_SPIRIT_SWARM_COUNT_RANGE, ICE_SPIRIT_SWARM_ALCOVE_BUFFER,
+    ICE_AVALANCHE_BOULDER_SIZE, ICE_AVALANCHE_PILLAR_COUNT,
+    FROST_WITCH_ARENA_ICE_RADIUS, FROST_WITCH_ARENA_SLIDE_BAND,
 )
 from enemies import (
     ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy,
     PulsatorEnemy, LauncherEnemy, SentryEnemy, WaterSpiritEnemy, TideLord,
-    IceCrystalEnemy,
+    IceCrystalEnemy, FrostWitch,
 )
 
 # tile type constants
@@ -67,12 +77,16 @@ THIN_ICE   = "thin_ice"
 HEARTH     = "hearth"
 CART_RAIL  = "cart_rail"
 GLYPH_TILE = "glyph_tile"
+# Phase A new ice verbs:
+SLIDE        = "slide"          # direction-committing ice surface
+TRAIL_FREEZE = "trail_freeze"   # temporary tile from IceSpirit; collapses to PIT
 
 # Tiles that block player and enemy movement (treated as walls).  Only
 # WALL itself qualifies today; biome-room hazard tiles are walkable.
 WALKABLE_HAZARD_TILES = (
     QUICKSAND, SPIKE_PATCH, PIT_TILE, CURRENT,
     THIN_ICE, HEARTH, CART_RAIL, GLYPH_TILE,
+    SLIDE, TRAIL_FREEZE,
 )
 
 TERRAIN_COLORS = {
@@ -83,14 +97,16 @@ TERRAIN_COLORS = {
     WATER:  COLOR_WATER,
     DOOR:   COLOR_DOOR,
     PORTAL: COLOR_PORTAL,
-    QUICKSAND:   COLOR_QUICKSAND,
-    SPIKE_PATCH: COLOR_SPIKE_PATCH,
-    PIT_TILE:    COLOR_PIT_TILE,
-    CURRENT:     COLOR_CURRENT,
-    THIN_ICE:    COLOR_THIN_ICE,
-    HEARTH:      COLOR_HEARTH,
-    CART_RAIL:   COLOR_CART_RAIL,
-    GLYPH_TILE:  COLOR_GLYPH_TILE,
+    QUICKSAND:    COLOR_QUICKSAND,
+    SPIKE_PATCH:  COLOR_SPIKE_PATCH,
+    PIT_TILE:     COLOR_PIT_TILE,
+    CURRENT:      COLOR_CURRENT,
+    THIN_ICE:     COLOR_THIN_ICE,
+    HEARTH:       COLOR_HEARTH,
+    CART_RAIL:    COLOR_CART_RAIL,
+    GLYPH_TILE:   COLOR_GLYPH_TILE,
+    SLIDE:        COLOR_SLIDE,
+    TRAIL_FREEZE: COLOR_TRAIL_FREEZE,
 }
 
 # terrain types that can be randomly placed (default pool)
@@ -104,6 +120,11 @@ HAZARD_ROOM_TERRAIN = {
     "earth_quicksand_trap":   QUICKSAND,
     "earth_tremor_chamber":   HEARTH,
     "ice_thin_ice_field":     THIN_ICE,
+    # Phase A new ice rooms: patch terrain suppressed — layouts hand-built.
+    "ice_freeze_aura_room":   THIN_ICE,
+    "ice_spirit_swarm_room":  THIN_ICE,
+    "ice_avalanche_run":      THIN_ICE,
+    "ice_frost_witch_arena":  THIN_ICE,
 }
 
 # Identifier for the bespoke "Tuning Test Room" used by the room-test menu.
@@ -692,6 +713,14 @@ class Room:
                 self._polish_thin_ice_field()
             elif self.room_plan.room_id == "ice_crystal_room":
                 self._polish_ice_crystal_room()
+            elif self.room_plan.room_id == "ice_freeze_aura_room":
+                self._polish_freeze_aura_room()
+            elif self.room_plan.room_id == "ice_spirit_swarm_room":
+                self._polish_ice_spirit_swarm_room()
+            elif self.room_plan.room_id == "ice_avalanche_run":
+                self._polish_ice_avalanche_run()
+            elif self.room_plan.room_id == "ice_frost_witch_arena":
+                self._polish_frost_witch_arena()
 
     def _polish_stalagmite_field(self):
         """Refine the spike-patch grid for the Stalagmite Field room.
@@ -960,6 +989,223 @@ class Room:
             self.enemy_configs.append((IceCrystalEnemy, (px, py)))
             if len(placed) >= ICE_CRYSTAL_ROOM_CRYSTAL_COUNT:
                 break
+
+    # ── Phase A: new ice room polish methods ──────────────────────────────────
+
+    def _polish_freeze_aura_room(self):
+        """Place FreezeAuraCrystal fixtures for the Freeze Aura Room.
+
+        Three-to-four immortal crystals are positioned on interior floor
+        tiles respecting:
+        - ``FREEZE_AURA_ROOM_DOOR_BUFFER`` chebyshev clearance from doors.
+        - ``FREEZE_AURA_ROOM_MIN_SEP_TILES`` chebyshev separation between
+          any two crystals so their auras partially overlap but don't
+          completely stack.
+
+        The floor under and around each crystal is converted to ICE
+        (including a small 3×3 patch) to give the room its frozen aesthetic
+        while keeping the layout open for the player to navigate.
+        """
+        from enemies import FreezeAuraCrystal
+        door_tiles = self._door_tile_set()
+        buffer = FREEZE_AURA_ROOM_DOOR_BUFFER
+        min_sep = FREEZE_AURA_ROOM_MIN_SEP_TILES
+
+        count_range = FREEZE_AURA_ROOM_CRYSTAL_COUNT_RANGE
+        local_seed = hash(tuple(
+            self.grid[r][c]
+            for r in range(ROOM_ROWS)
+            for c in range(ROOM_COLS)
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+        target_count = local_rng.randint(*count_range)
+
+        candidates = [
+            (c, r)
+            for r in range(2, ROOM_ROWS - 2)
+            for c in range(2, ROOM_COLS - 2)
+            if self.grid[r][c] == FLOOR
+            and not self._near_door_tile(c, r, door_tiles, buffer)
+        ]
+        local_rng.shuffle(candidates)
+
+        placed: list[tuple[int, int]] = []
+        for c, r in candidates:
+            too_close = any(
+                max(abs(c - pc), abs(r - pr)) < min_sep
+                for pc, pr in placed
+            )
+            if too_close:
+                continue
+            placed.append((c, r))
+            # Paint a small ICE patch around the crystal for aesthetics.
+            for dr in range(-1, 2):
+                for dc in range(-1, 2):
+                    nr, nc = r + dr, c + dc
+                    if (0 < nr < ROOM_ROWS - 1 and 0 < nc < ROOM_COLS - 1
+                            and self.grid[nr][nc] == FLOOR):
+                        self.grid[nr][nc] = ICE
+            px = c * TILE_SIZE + TILE_SIZE // 2
+            py = r * TILE_SIZE + TILE_SIZE // 2
+            self.enemy_configs.append((FreezeAuraCrystal, (px, py)))
+            if len(placed) >= target_count:
+                break
+
+    def _polish_ice_spirit_swarm_room(self):
+        """Place IceSpirit swarm enemies for the Ice Spirit Swarm Room.
+
+        Spirits are placed at random interior floor/ice positions respecting
+        the ``ICE_SPIRIT_SWARM_ALCOVE_BUFFER`` door clearance.  A 2-tile
+        THIN_ICE ring is painted around the room perimeter (inside walls)
+        so retreating spirits leave trail tiles near the edges.
+        """
+        from enemies import IceSpirit
+        door_tiles = self._door_tile_set()
+        buffer = ICE_SPIRIT_SWARM_ALCOVE_BUFFER
+        count_range = ICE_SPIRIT_SWARM_COUNT_RANGE
+
+        local_seed = hash(tuple(
+            self.grid[r][c]
+            for r in range(ROOM_ROWS)
+            for c in range(ROOM_COLS)
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+        target_count = local_rng.randint(*count_range)
+
+        # Paint a perimeter ring of THIN_ICE two tiles inside the walls.
+        for r in range(2, ROOM_ROWS - 2):
+            for c in range(2, ROOM_COLS - 2):
+                if self.grid[r][c] in (FLOOR, ICE):
+                    on_ring = (r == 2 or r == ROOM_ROWS - 3
+                               or c == 2 or c == ROOM_COLS - 3)
+                    if on_ring and not self._near_door_tile(c, r, door_tiles, 2):
+                        self.grid[r][c] = THIN_ICE
+
+        candidates = [
+            (c, r)
+            for r in range(3, ROOM_ROWS - 3)
+            for c in range(3, ROOM_COLS - 3)
+            if self.grid[r][c] in (FLOOR, ICE)
+            and not self._near_door_tile(c, r, door_tiles, buffer)
+        ]
+        local_rng.shuffle(candidates)
+
+        placed = 0
+        for c, r in candidates:
+            px = c * TILE_SIZE + TILE_SIZE // 2
+            py = r * TILE_SIZE + TILE_SIZE // 2
+            self.enemy_configs.append((IceSpirit, (px, py)))
+            placed += 1
+            if placed >= target_count:
+                break
+
+    def _polish_ice_avalanche_run(self):
+        """Build the Ice Avalanche Run layout.
+
+        Layout mirrors Boulder Run but uses a 5-row band with:
+        - Rows 0, 2, 4 (0-indexed within band): SLIDE tile lanes.
+        - Rows 1, 3: FLOOR lanes where boulders roll (added by spawner).
+        - Two IcePillar cover objects placed mid-arena at least
+          ``ICE_AVALANCHE_PILLAR_COUNT`` chebyshev tiles apart.
+
+        The existing THIN_ICE hazard-patch tiles (placed by the biome
+        terrain pass) are kept outside the band for visual texture.
+        """
+        from enemies import IceAvalancheBoulderSpawner
+        from objective_entities import IcePillar
+
+        local_seed = hash(tuple(
+            self.grid[r][c]
+            for r in range(ROOM_ROWS)
+            for c in range(ROOM_COLS)
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+
+        # Determine run axis: horizontal (boulders roll left→right or right→left).
+        # Room must have doors on the east/west walls for the run to be playable,
+        # but we don't enforce that here — the catalog guarantees it.
+        run_rows_start = ROOM_ROWS // 2 - 2   # centre the 5-row band
+        band_rows = list(range(run_rows_start, run_rows_start + 5))
+
+        # Clear band to FLOOR first, then paint SLIDE lanes.
+        for band_idx, r in enumerate(band_rows):
+            for c in range(1, ROOM_COLS - 1):
+                if self.grid[r][c] not in (WALL, DOOR):
+                    if band_idx in (0, 2, 4):   # slide lanes
+                        self.grid[r][c] = SLIDE
+                    else:                        # boulder lanes → floor
+                        self.grid[r][c] = FLOOR
+
+        # Place IcePillar cover objects in the centre column region of boulder lanes.
+        mid_c = ROOM_COLS // 2
+        pillar_candidates = [
+            (mid_c + dc, r)
+            for r in (band_rows[1], band_rows[3])
+            for dc in (-2, -1, 0, 1, 2)
+            if 2 <= mid_c + dc < ROOM_COLS - 2
+            and self.grid[r][mid_c + dc] == FLOOR
+        ]
+        local_rng.shuffle(pillar_candidates)
+        placed_pillars: list[tuple[int, int]] = []
+        for c, r in pillar_candidates:
+            too_close = any(
+                max(abs(c - pc), abs(r - pr)) < 4
+                for pc, pr in placed_pillars
+            )
+            if too_close:
+                continue
+            placed_pillars.append((c, r))
+            px = c * TILE_SIZE + TILE_SIZE // 2
+            py = r * TILE_SIZE + TILE_SIZE // 2
+            self.objective_entity_configs.append(
+                {"kind": "ice_pillar", "x": px, "y": py}
+            )
+            if len(placed_pillars) >= ICE_AVALANCHE_PILLAR_COUNT:
+                break
+
+        # Register a single BoulderRunSpawner analog for the avalanche lanes.
+        # The spawner config is identical to the mud_boulder_run but uses the
+        # ICE_AVALANCHE_* constants; rpg.py reads the config key to branch.
+        self.enemy_configs.append((
+            IceAvalancheBoulderSpawner,
+            (ROOM_COLS // 2 * TILE_SIZE, run_rows_start * TILE_SIZE),
+        ))
+
+    def _polish_frost_witch_arena(self):
+        """Lay the Frost Witch Arena terrain: a central THIN_ICE disc ringed by SLIDE tiles.
+
+        Layout mirrors the Tide Lord Arena (flooded disc + CURRENT ring) but
+        uses ice-biome tiles:
+
+        * A disc of radius :data:`FROST_WITCH_ARENA_ICE_RADIUS` tiles at the
+          room centre is filled with THIN_ICE tiles (crackable under repeated
+          steps, giving the fight a ticking-floor pressure).
+        * A band of :data:`FROST_WITCH_ARENA_SLIDE_BAND` tiles rings the outside
+          of the disc with SLIDE tiles; crossing these commits the player to a
+          direction, making reactive dodging during the witch's attacks harder.
+        * A chebyshev buffer of 3 tiles around each open door is kept as FLOOR
+          so the player never spawns onto hazard terrain.
+        """
+        ice_r   = FROST_WITCH_ARENA_ICE_RADIUS
+        band    = FROST_WITCH_ARENA_SLIDE_BAND
+        door_buf = 3
+        door_tiles = self._door_tile_set()
+        cx_col = ROOM_COLS // 2
+        cy_row = ROOM_ROWS // 2
+        outer = ice_r + band
+        for dr in range(-outer, outer + 1):
+            for dc in range(-outer, outer + 1):
+                rr = cy_row + dr
+                cc = cx_col + dc
+                if not (1 <= rr < ROOM_ROWS - 1 and 1 <= cc < ROOM_COLS - 1):
+                    continue
+                if self._near_door_tile(cc, rr, door_tiles, door_buf):
+                    continue
+                dist = math.hypot(dc, dr)
+                if dist <= ice_r:
+                    self.grid[rr][cc] = THIN_ICE
+                elif dist <= outer:
+                    self.grid[rr][cc] = SLIDE
 
     def _polish_river_room(self):
         """Lay a CURRENT band spanning the room for the River Room.
@@ -1368,6 +1614,88 @@ class Room:
                 }
             return None
 
+        # ── Phase C: ice bespoke room payoff bonuses ──────────────────────────
+        # Non-exit rooms that award a bonus chest on a performance threshold.
+        # Each handler fires once (guarded by an _ice_*_awarded flag) when
+        # enemies_cleared flips True, then falls through to return None.
+        if self.room_plan.room_id == "ice_thin_ice_field":
+            if self.enemies_cleared and not getattr(self, "_ice_intact_bonus_awarded", False):
+                self._ice_intact_bonus_awarded = True
+                pits = getattr(self, "_thin_ice_pits_created", 0)
+                if pits <= THIN_ICE_CRACK_BONUS_MAX_PITS:
+                    pos = self._random_floor_pos(margin=3)
+                    reward_tier = _REWARD_TIER_UPGRADES.get(
+                        self._chest_reward_tier, self._chest_reward_tier
+                    )
+                    return {
+                        "kind": "spawn_reward_chest",
+                        "position": pos,
+                        "reward_tier": reward_tier,
+                    }
+            return None
+
+        if self.room_plan.room_id == "ice_avalanche_run":
+            if self.enemies_cleared and not getattr(self, "_pillar_guardian_awarded", False):
+                self._pillar_guardian_awarded = True
+                alive = getattr(self, "_pillar_count_alive", 0)
+                if alive > 0:
+                    pos = self._random_floor_pos(margin=3)
+                    reward_tier = _REWARD_TIER_UPGRADES.get(
+                        self._chest_reward_tier, self._chest_reward_tier
+                    )
+                    return {
+                        "kind": "spawn_reward_chest",
+                        "position": pos,
+                        "reward_tier": reward_tier,
+                    }
+            return None
+
+        if self.room_plan.room_id == "ice_crystal_room":
+            if self.enemies_cleared and not getattr(self, "_ice_unshaken_awarded", False):
+                self._ice_unshaken_awarded = True
+                if not getattr(self, "_player_froze", False):
+                    pos = self._random_floor_pos(margin=3)
+                    reward_tier = _REWARD_TIER_UPGRADES.get(
+                        self._chest_reward_tier, self._chest_reward_tier
+                    )
+                    return {
+                        "kind": "spawn_reward_chest",
+                        "position": pos,
+                        "reward_tier": reward_tier,
+                    }
+            return None
+
+        if self.room_plan.room_id == "ice_freeze_aura_room":
+            if self.enemies_cleared and not getattr(self, "_ice_unattuned_awarded", False):
+                self._ice_unattuned_awarded = True
+                if not getattr(self, "_player_froze", False):
+                    pos = self._random_floor_pos(margin=3)
+                    reward_tier = _REWARD_TIER_UPGRADES.get(
+                        self._chest_reward_tier, self._chest_reward_tier
+                    )
+                    return {
+                        "kind": "spawn_reward_chest",
+                        "position": pos,
+                        "reward_tier": reward_tier,
+                    }
+            return None
+
+        if self.room_plan.room_id == "ice_spirit_swarm_room":
+            if self.enemies_cleared and not getattr(self, "_ice_clean_floor_awarded", False):
+                self._ice_clean_floor_awarded = True
+                pits = getattr(self, "_trail_freeze_pits_created", 0)
+                if pits <= SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX:
+                    pos = self._random_floor_pos(margin=3)
+                    reward_tier = _REWARD_TIER_UPGRADES.get(
+                        self._chest_reward_tier, self._chest_reward_tier
+                    )
+                    return {
+                        "kind": "spawn_reward_chest",
+                        "position": pos,
+                        "reward_tier": reward_tier,
+                    }
+            return None
+
         if not self.is_exit:
             return None
 
@@ -1436,7 +1764,17 @@ class Room:
                     # the loot drop at the spot where they vanished.
                     pos = escort.get("pos")
                     escort["destroyed"] = True
-                    return {"kind": "despawn_escort", "pos": pos}
+                    result = {"kind": "despawn_escort", "pos": pos}
+                    # E2: preservation bonus — if escort arrived healthy enough,
+                    # carry an upgrade signal for the room chest.
+                    max_hp = int(escort.get("max_hp") or 1)
+                    hp_ratio = int(escort.get("current_hp") or 0) / max_hp
+                    if hp_ratio >= ESCORT_PRESERVATION_BONUS_HP_RATIO:
+                        result["preservation_bonus_tier"] = _REWARD_TIER_UPGRADES.get(
+                            self._chest_reward_tier, self._chest_reward_tier
+                        )
+                        result["preservation_bonus_pos"] = self._random_floor_pos(margin=3)
+                    return result
             elif escort.get("destroyed"):
                 failure_status = (
                     "carrier_down" if rule == "escort_bomb_to_exit" else "escort_down"
@@ -2987,11 +3325,19 @@ class Room:
                         pos,
                         self.room_plan.objective_patrol_offset,
                         shape=self.room_plan.objective_patrol_shape,
+                        beacon_index=index,
                     ),
                     "patrol_cycle_ms": 1800 + index * 250,
                     "vision_angle_deg": 75,
                 }
                 for index, pos in enumerate(beacon_positions)
+            ]
+            # Add LOS-blocking columns so the player can use cover.
+            self.objective_entity_configs += [
+                {"kind": "sentry_blocker", "pos": pos}
+                for pos in self._sentry_blocker_positions(
+                    beacon_positions, count=2
+                )
             ]
         elif self.room_plan.objective_rule == "rune_altar":
             self.objective_entity_configs = self._build_rune_altar_configs()
@@ -3020,6 +3366,8 @@ class Room:
             self.objective_entity_configs = self._build_golem_arena_configs()
         elif self.room_plan.room_id == "water_tide_lord_arena":
             self.objective_entity_configs = self._build_tide_lord_arena_configs()
+        elif self.room_plan.room_id == "ice_frost_witch_arena":
+            self.objective_entity_configs = self._build_frost_witch_arena_configs()
 
     def _build_crystal_vein_configs(self):
         """Place 3-4 destructible vein crystals on FLOOR cells.
@@ -3252,7 +3600,31 @@ class Room:
             "loot_granted": False,
         }]
 
-    def _build_shrine_circle_configs(self):
+    def _build_frost_witch_arena_configs(self):
+        """Spawn the Frost Witch mini-boss controller config.
+
+        The FrostWitch is registered through the regular enemy_configs pipeline
+        so ``clear_enemies`` unseals the portal once it (and all wave-spawned
+        IceSpirits) are dead.
+
+        Config keys consumed by ``rpg.py``:
+
+        * ``wave_specs`` — HP-threshold (float) → IceSpirit count (int).
+        * ``wave_spawn_radius`` — px radius from boss centre for wave spawns.
+        * ``loot_granted`` — flips True once defeat loot has been awarded.
+        """
+        from settings import FROST_WITCH_WAVE_SPAWN_RADIUS
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        return [{
+            "kind": "frost_witch_arena_controller",
+            "boss_pos": (cx, cy),
+            "wave_specs": {0.75: 2, 0.5: 3, 0.25: 4},
+            "wave_spawn_radius": FROST_WITCH_WAVE_SPAWN_RADIUS,
+            "loot_granted": False,
+        }]
+
+
         """Lay a 3x3 GLYPH_TILE shrine in the room centre + place the glyph entity.
 
         The entity tracks the glyph tile coords; while the player stands
@@ -3946,7 +4318,7 @@ class Room:
             positions.append(self._offset_to_pixel(offset))
         return tuple(positions)
 
-    def _stealth_patrol_points(self, position, patrol_offset=None, shape="line"):
+    def _stealth_patrol_points(self, position, patrol_offset=None, shape="line", beacon_index=0):
         if patrol_offset is None:
             center_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
             center_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
@@ -3978,6 +4350,31 @@ class Room:
                 (ox + px, oy + py),
                 (px, py),
             ]
+        elif shape_key == "rect":
+            # Rectangular patrol whose aspect ratio is seeded on spawn position
+            # so it is deterministic but varies across rooms.  The dominant axis
+            # of patrol_offset becomes the primary leg; the perpendicular axis
+            # is scaled independently to produce a non-square rectangle.
+            _rng = random.Random(
+                hash((int(position[0]) // 4, int(position[1]) // 4, beacon_index)) & 0xFFFF_FFFF
+            )
+            aspect_choices = [(4, 1), (1, 4), (3, 1), (1, 3), (3, 2), (2, 3)]
+            pt, qt = _rng.choice(aspect_choices)
+            # Snap the patrol_offset to unit tile vectors for each axis.
+            ax, ay = abs(patrol_offset[0]), abs(patrol_offset[1])
+            if ax >= ay:
+                ux = (1 if patrol_offset[0] >= 0 else -1) * TILE_SIZE
+                uy = 0
+            else:
+                ux = 0
+                uy = (1 if patrol_offset[1] >= 0 else -1) * TILE_SIZE
+            vx, vy = -uy, ux          # perpendicular (90° CCW)
+            offsets = [
+                (0, 0),
+                (ux * pt, uy * pt),
+                (ux * pt + vx * qt, uy * pt + vy * qt),
+                (vx * qt, vy * qt),
+            ]
         elif shape_key == "zigzag":
             offsets = [
                 (0, 0),
@@ -3997,6 +4394,36 @@ class Room:
             for dx, dy in offsets
         ]
         return tuple(dict.fromkeys(patrol_points))
+
+    def _sentry_blocker_positions(self, beacon_positions, count=2):
+        """Return *count* interior floor positions suitable for sentry blocker columns.
+
+        Positions are chosen deterministically (seeded on the room's room_id) so
+        the layout is stable across revisits.  Candidates must be on FLOOR tiles
+        at least 3 tiles from any wall/door edge and at least 2 tiles away from
+        every beacon spawn position.
+        """
+        rng = random.Random(
+            hash((getattr(self.room_plan, "room_id", ""), "sentry_blocker")) & 0xFFFF_FFFF
+        )
+        margin = 3
+        beacon_px = set(beacon_positions)
+        candidates = []
+        for row in range(margin, ROOM_ROWS - margin):
+            for col in range(margin, ROOM_COLS - margin):
+                if self.grid[row][col] != FLOOR:
+                    continue
+                px = col * TILE_SIZE + TILE_SIZE // 2
+                py = row * TILE_SIZE + TILE_SIZE // 2
+                # Keep at least 2 tiles away from each beacon.
+                if any(
+                    abs(px - bx) < 2 * TILE_SIZE and abs(py - by) < 2 * TILE_SIZE
+                    for bx, by in beacon_px
+                ):
+                    continue
+                candidates.append((px, py))
+        rng.shuffle(candidates)
+        return candidates[:count]
 
     @staticmethod
     def _clamp_objective_pixel(position):
@@ -4597,6 +5024,13 @@ class Room:
             cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
             cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
             return [(TideLord, (cx, cy))]
+        if (
+            self.room_plan is not None
+            and self.room_plan.room_id == "ice_frost_witch_arena"
+        ):
+            cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+            cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+            return [(FrostWitch, (cx, cy))]
         return self._gen_enemy_configs_for_range(self._enemy_count_range)
 
     def _build_enemy_palette(self):

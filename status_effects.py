@@ -111,6 +111,65 @@ def speed_multiplier(holder, now_ticks):
     return multiplier
 
 
+# ── CHILL accumulator ──────────────────────────────────────────────────────
+# CHILL is not a standard expires-at status: it accumulates 0–100.0 on a
+# holder and is stored as ``holder.chill`` (float).  On reaching CHILL_MAX
+# it triggers FROZEN for CHILL_FREEZE_DURATION_MS and resets to 0.  It
+# decays at CHILL_DECAY_RATE per second when not being actively chilled.
+#
+# Sources call ``add_chill(holder, amount, now_ticks)`` for burst additions
+# or ``apply_chill_rate(holder, rate, dt_sec, now_ticks)`` per-frame.
+# The update loop calls ``decay_chill(holder, dt_sec)`` once per frame.
+
+def get_chill(holder):
+    """Return current chill level (0–100) for *holder*."""
+    return float(getattr(holder, "chill", 0.0))
+
+
+def add_chill(holder, amount, now_ticks):
+    """Add *amount* chill to *holder*.  Triggers FROZEN if meter caps.
+
+    Returns True when the cap was hit (FROZEN applied) this call.
+    """
+    from settings import CHILL_MAX, CHILL_FREEZE_DURATION_MS
+    current = float(getattr(holder, "chill", 0.0))
+    current += amount
+    if current >= CHILL_MAX:
+        holder.chill = 0.0
+        apply_status(holder, FROZEN, now_ticks,
+                     duration_ms=CHILL_FREEZE_DURATION_MS)
+        return True
+    holder.chill = current
+    return False
+
+
+def apply_chill_rate(holder, rate, dt_sec, now_ticks):
+    """Apply per-frame chill accumulation from a continuous source.
+
+    *rate* is chill per second; *dt_sec* is the frame delta in seconds.
+    Returns True if the cap was hit this call.
+    """
+    return add_chill(holder, rate * dt_sec, now_ticks)
+
+
+def decay_chill(holder, dt_sec):
+    """Decay the chill meter toward 0 at CHILL_DECAY_RATE per second.
+
+    Call once per frame for every entity that can be chilled.  No-ops if
+    the holder has no chill attribute.
+    """
+    from settings import CHILL_DECAY_RATE
+    current = float(getattr(holder, "chill", 0.0))
+    if current <= 0.0:
+        return
+    holder.chill = max(0.0, current - CHILL_DECAY_RATE * dt_sec)
+
+
+def reset_chill(holder):
+    """Zero out the chill meter without triggering freeze."""
+    holder.chill = 0.0
+
+
 def tick_statuses(holder, now_ticks, damage_fn):
     """Advance DOT timers and expire stale statuses.
 

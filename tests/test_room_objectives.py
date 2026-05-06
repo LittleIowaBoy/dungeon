@@ -69,6 +69,7 @@ def _plan(
     objective_layout_offsets=(),
     objective_spawn_offset=None,
     objective_patrol_offset=None,
+    objective_patrol_shape="line",
     objective_radius=0,
     objective_trigger_padding=0,
     objective_max_hp=0,
@@ -130,6 +131,7 @@ def _plan(
         objective_layout_offsets=objective_layout_offsets,
         objective_spawn_offset=objective_spawn_offset,
         objective_patrol_offset=objective_patrol_offset,
+        objective_patrol_shape=objective_patrol_shape,
         objective_radius=objective_radius,
         objective_trigger_padding=objective_trigger_padding,
         objective_max_hp=objective_max_hp,
@@ -1839,6 +1841,76 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(center_col, PORTAL)
         self.assertEqual(room.objective_status, "completed")
 
+    # ── E2: escort preservation reward scaling ────────────────────────────────
+
+    def test_despawn_escort_includes_preservation_bonus_when_escort_healthy(self):
+        """Escort arriving at >= ESCORT_PRESERVATION_BONUS_HP_RATIO of max HP
+        should cause the despawn_escort event to carry preservation_bonus_tier."""
+        import math
+        from settings import ESCORT_PRESERVATION_BONUS_HP_RATIO
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_protection", objective_rule="escort_to_exit", enemy_count_range=(1, 1)),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        max_hp = escort["max_hp"]
+        # Use ceil so HP/max_hp >= threshold (floor would undershoot by 1 point).
+        escort["current_hp"] = math.ceil(max_hp * ESCORT_PRESERVATION_BONUS_HP_RATIO)
+        escort["reached_exit"] = True
+        update = room.update_objective(2000, [])
+        self.assertEqual(update["kind"], "despawn_escort")
+        self.assertIn("preservation_bonus_tier", update)
+        self.assertIn("preservation_bonus_pos", update)
+
+    def test_despawn_escort_no_bonus_when_escort_damaged(self):
+        """Escort arriving below the HP threshold should not include a bonus."""
+        from settings import ESCORT_PRESERVATION_BONUS_HP_RATIO
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_protection", objective_rule="escort_to_exit", enemy_count_range=(1, 1)),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        max_hp = escort["max_hp"]
+        # HP one point below threshold.
+        escort["current_hp"] = max(0, int(max_hp * ESCORT_PRESERVATION_BONUS_HP_RATIO) - 1)
+        escort["reached_exit"] = True
+        update = room.update_objective(2000, [])
+        self.assertEqual(update["kind"], "despawn_escort")
+        self.assertNotIn("preservation_bonus_tier", update)
+
+    def test_despawn_escort_full_hp_always_awards_bonus(self):
+        """Escort at full HP must include the preservation bonus."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_protection", objective_rule="escort_to_exit", enemy_count_range=(1, 1)),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # current_hp is already max on room entry; just mark reached_exit.
+        escort["reached_exit"] = True
+        update = room.update_objective(2000, [])
+        self.assertIn("preservation_bonus_tier", update)
+
+    def test_bomb_carrier_includes_preservation_bonus_at_full_hp(self):
+        """Bomb-carrier variant should also award the preservation bonus."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan("escort_bomb_carrier", objective_rule="escort_bomb_to_exit", enemy_count_range=(1, 1)),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["reached_exit"] = True
+        update = room.update_objective(2000, [])
+        self.assertIn("preservation_bonus_tier", update)
+
+    # ── end E2 ────────────────────────────────────────────────────────────────
+
     def test_puzzle_room_uses_metadata_layout_and_label(self):
         offsets = ((-2, -1), (2, 1))
         room = Room(
@@ -2117,13 +2189,14 @@ class RoomObjectiveTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(len(room.objective_entity_configs), 2)
-        self.assertEqual([config["pos"] for config in room.objective_entity_configs], list(_offsets_to_pixels(offsets)))
-        self.assertTrue(all(config["label"] == "Ward" for config in room.objective_entity_configs))
-        self.assertTrue(all(config["radius"] == 48 for config in room.objective_entity_configs))
+        beacon_configs = [c for c in room.objective_entity_configs if c.get("kind") == "alarm_beacon"]
+        self.assertEqual(len(beacon_configs), 2)
+        self.assertEqual([config["pos"] for config in beacon_configs], list(_offsets_to_pixels(offsets)))
+        self.assertTrue(all(config["label"] == "Ward" for config in beacon_configs))
+        self.assertTrue(all(config["radius"] == 48 for config in beacon_configs))
         first_pos = _offsets_to_pixels((offsets[0],))[0]
         self.assertEqual(
-            room.objective_entity_configs[0]["patrol_points"],
+            beacon_configs[0]["patrol_points"],
             (
                 first_pos,
                 (first_pos[0], first_pos[1] + 3 * TILE_SIZE),
@@ -2308,6 +2381,53 @@ class RoomObjectiveTests(unittest.TestCase):
             room._playtest_identifier_detail(4100),
             "Solve: Stealth failed. The seals broke. Escape before pursuit corners you, or clear the room.",
         )
+
+    def test_stealth_room_includes_sentry_blocker_configs(self):
+        """avoid_alarm_zones rooms should spawn sentry_blocker cover columns."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "stealth_passage",
+                objective_rule="avoid_alarm_zones",
+                enemy_count_range=(0, 0),
+            ),
+        )
+        blocker_configs = [
+            c for c in room.objective_entity_configs if c.get("kind") == "sentry_blocker"
+        ]
+        self.assertGreater(len(blocker_configs), 0)
+        # Each blocker must have a "pos" tuple.
+        for cfg in blocker_configs:
+            self.assertIn("pos", cfg)
+            px, py = cfg["pos"]
+            self.assertIsInstance(px, (int, float))
+            self.assertIsInstance(py, (int, float))
+
+    def test_stealth_patrol_rect_produces_four_distinct_points(self):
+        """Rect patrol shape should yield four corner waypoints in a non-square layout."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "stealth_passage",
+                objective_rule="avoid_alarm_zones",
+                enemy_count_range=(0, 0),
+                objective_entity_count=1,
+                objective_patrol_shape="rect",
+                objective_patrol_offset=(0, 2),
+            ),
+        )
+        beacon_cfgs = [c for c in room.objective_entity_configs if c.get("kind") == "alarm_beacon"]
+        self.assertEqual(len(beacon_cfgs), 1)
+        pts = beacon_cfgs[0]["patrol_points"]
+        self.assertEqual(len(pts), 4, "rect patrol should produce exactly 4 waypoints")
+        # The four points must not all share the same x or the same y
+        # (i.e. it should not collapse to a line).
+        xs = {p[0] for p in pts}
+        ys = {p[1] for p in pts}
+        self.assertGreater(len(xs), 1)
+        self.assertGreater(len(ys), 1)
 
     def test_ritual_objective_unlocks_portal_after_altars_are_destroyed(self):
         room = Room(

@@ -9,6 +9,7 @@ import enemy_attack_rules
 from settings import (
     SENTRY_ALERT_FLASH_MS, SENTRY_ARM_MS, SENTRY_DETONATE_RADIUS,
     SENTRY_EXPLOSION_DAMAGE, SENTRY_EXPLOSION_RADIUS, SENTRY_SIGHT_RADIUS,
+    SENTRY_CONE_ANGLE_DEG,
     TILE_SIZE,
 )
 
@@ -35,12 +36,58 @@ def _player_rect(x, y):
 
 
 class SentryStateMachineTests(unittest.TestCase):
-    def test_radius_only_sight_triggers_alert(self):
+    def test_cone_sight_triggers_alert_when_player_in_front(self):
+        # Default facing is (1, 0) — right.  Player directly ahead triggers.
         sentry = enemies.SentryEnemy(200, 200, patrol_points=[(200, 200)])
-        # Player just within sight radius — angle does NOT matter.
-        far_behind = _player_rect(200 - int(SENTRY_SIGHT_RADIUS) + 4, 200)
-        sentry.update_movement(far_behind, [])
+        self.assertEqual(sentry._facing, (1.0, 0.0))
+        in_front = _player_rect(200 + int(SENTRY_SIGHT_RADIUS) - 4, 200)
+        sentry.update_movement(in_front, [])
         self.assertEqual(sentry._sentry_state, enemies.SENTRY_ALERT)
+
+    def test_cone_sight_misses_player_directly_behind(self):
+        # Player directly behind the sentry (opposite facing) should NOT trigger.
+        sentry = enemies.SentryEnemy(200, 200, patrol_points=[(200, 200)])
+        self.assertEqual(sentry._facing, (1.0, 0.0))
+        behind = _player_rect(200 - int(SENTRY_SIGHT_RADIUS) + 4, 200)
+        sentry.update_movement(behind, [])
+        self.assertEqual(sentry._sentry_state, enemies.SENTRY_PATROL)
+
+    def test_cone_sight_blocked_by_sentry_blocker(self):
+        import pygame
+        from objective_entities import SentryBlocker
+        sentry = enemies.SentryEnemy(200, 200, patrol_points=[(200, 200)])
+        blocker = SentryBlocker(240, 200)
+        sentry._blocker_rects = [blocker.rect]
+        # Player is in the cone but behind the blocker — should not be seen.
+        blocked_player = _player_rect(280, 200)
+        result = sentry._player_in_sight(blocked_player)
+        self.assertFalse(result)
+
+    def test_cone_sight_detects_player_beside_blocker(self):
+        from objective_entities import SentryBlocker
+        sentry = enemies.SentryEnemy(200, 200, patrol_points=[(200, 200)])
+        # Blocker is below the sight line — player at same distance but offset
+        # upward should still be visible.
+        blocker = SentryBlocker(240, 230)
+        sentry._blocker_rects = [blocker.rect]
+        visible_player = _player_rect(260, 170)
+        result = sentry._player_in_sight(visible_player)
+        self.assertTrue(result)
+
+    def test_draw_overlay_returns_without_error(self):
+        sentry = enemies.SentryEnemy(200, 200, patrol_points=[(200, 200)])
+        surface = pygame.Surface((640, 480), pygame.SRCALPHA)
+        sentry.draw_overlay(surface)  # should not raise
+
+    def test_patrol_step_updates_facing_direction(self):
+        sentry = enemies.SentryEnemy(
+            200, 200, patrol_points=[(200, 200), (240, 200)]
+        )
+        sentry._patrol_step([])
+        # Moving right → facing should point rightward.
+        fx, fy = sentry._facing
+        self.assertGreater(fx, 0)
+        self.assertAlmostEqual(fy, 0.0, places=5)
 
     def test_alarm_config_marked_triggered_on_alert(self):
         cfg = {"triggered": False}
@@ -48,6 +95,7 @@ class SentryStateMachineTests(unittest.TestCase):
             200, 200, patrol_points=[(200, 200)], alarm_config=cfg
         )
         sentry.update_movement(_player_rect(210, 200), [])
+        self.assertTrue(cfg["triggered"])
         self.assertTrue(cfg["triggered"])
 
     def test_arm_explode_kills_sentry_and_damages_player(self):

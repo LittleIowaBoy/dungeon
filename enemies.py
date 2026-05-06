@@ -42,6 +42,7 @@ from settings import (
     COLOR_SENTRY, SENTRY_HP, SENTRY_PATROL_SPEED, SENTRY_CHASE_SPEED,
     SENTRY_SIGHT_RADIUS, SENTRY_DETONATE_RADIUS, SENTRY_EXPLOSION_RADIUS,
     SENTRY_EXPLOSION_DAMAGE, SENTRY_ALERT_FLASH_MS, SENTRY_ARM_MS,
+    SENTRY_CONE_ANGLE_DEG,
     GOLEM_HP, GOLEM_SPEED, GOLEM_COLOR, GOLEM_SIZE,
     GOLEM_MELEE_TRIGGER, GOLEM_THROW_RANGE, GOLEM_SLAM_RADIUS,
     GOLEM_SLAM_DAMAGE, GOLEM_SLAM_WINDUP_MS, GOLEM_SLAM_STRIKE_MS,
@@ -84,6 +85,32 @@ from settings import (
     TIDE_LORD_SURGE_SHOTS_P1, TIDE_LORD_SURGE_SHOTS_P2,
     TIDE_LORD_PROJECTILE_SPEED, TIDE_LORD_PROJECTILE_RANGE,
     TIDE_LORD_PROJECTILE_DAMAGE, TIDE_LORD_PROJECTILE_SIZE,
+    # Phase A new ice classes
+    COLOR_FREEZE_AURA_CRYSTAL, COLOR_FREEZE_AURA_PULSE,
+    FREEZE_AURA_CRYSTAL_SIZE,
+    FREEZE_AURA_PULSE_INTERVAL_MS, FREEZE_AURA_PULSE_WINDUP_MS,
+    FREEZE_AURA_PULSE_ACTIVE_MS, FREEZE_AURA_PULSE_RADIUS,
+    FREEZE_AURA_CHILL_RATE,
+    ICE_SPIRIT_HP, ICE_SPIRIT_SPEED, COLOR_ICE_SPIRIT, ICE_SPIRIT_SIZE,
+    ICE_SPIRIT_CONTACT_DAMAGE, ICE_SPIRIT_CONTACT_CHILL,
+    ICE_SPIRIT_RETREAT_MS, ICE_SPIRIT_TRAIL_INTERVAL_MS,
+    ICE_SPIRIT_ENGAGE_RADIUS, ICE_SPIRIT_ATTACK_TRIGGER,
+    ICE_SPIRIT_ATTACK_WINDUP_MS, ICE_SPIRIT_ATTACK_STRIKE_MS,
+    ICE_SPIRIT_ATTACK_COOLDOWN_MS,
+    ICE_AVALANCHE_BOULDER_SPEED_RANGE, ICE_AVALANCHE_BOULDER_SPAWN_INTERVAL_RANGE_MS,
+    ICE_AVALANCHE_BOULDER_DAMAGE, ICE_AVALANCHE_BOULDER_SIZE,
+    # Phase B: Frost Witch boss
+    FROST_WITCH_HP, FROST_WITCH_SPEED, COLOR_FROST_WITCH, FROST_WITCH_SIZE,
+    FROST_WITCH_CONE_RANGE, FROST_WITCH_CONE_WINDUP_MS, FROST_WITCH_CONE_STRIKE_MS,
+    FROST_WITCH_CONE_COOLDOWN_MS, FROST_WITCH_CONE_SPREAD_DEG,
+    FROST_WITCH_CONE_SHOTS_P1, FROST_WITCH_CONE_SHOTS_P2,
+    FROST_WITCH_SHARD_SPEED, FROST_WITCH_SHARD_RANGE,
+    FROST_WITCH_SHARD_DAMAGE, FROST_WITCH_SHARD_SIZE, COLOR_FROST_WITCH_SHARD,
+    FROST_WITCH_NOVA_RANGE, FROST_WITCH_NOVA_WINDUP_MS, FROST_WITCH_NOVA_STRIKE_MS,
+    FROST_WITCH_NOVA_COOLDOWN_MS, FROST_WITCH_NOVA_RADIUS,
+    FROST_WITCH_NOVA_DAMAGE, FROST_WITCH_NOVA_CHILL,
+    FROST_WITCH_LUNGE_RANGE, FROST_WITCH_LUNGE_WINDUP_MS, FROST_WITCH_LUNGE_STRIKE_MS,
+    FROST_WITCH_LUNGE_COOLDOWN_MS, FROST_WITCH_LUNGE_DASH_SPEED, FROST_WITCH_LUNGE_DAMAGE,
 )
 from item_catalog import ENEMY_LOOT_IDS, ENEMY_LOOT_WEIGHTS
 from items import LootDrop, Coin
@@ -735,6 +762,8 @@ class SentryEnemy(Enemy):
         self._alert_until = 0
         self._alarm_config = alarm_config
         self.exploded = False
+        self._facing = (1.0, 0.0)   # unit vector: direction the sentry is looking
+        self._blocker_rects = []    # synced each frame by rpg.py
 
     def update_movement(self, player_rect, wall_rects):
         if self.is_attacking_blocking_movement():
@@ -765,6 +794,7 @@ class SentryEnemy(Enemy):
             return
         nx = dx / dist
         ny = dy / dist
+        self._facing = (nx, ny)
         self._move_axis(nx * SENTRY_PATROL_SPEED, 0, wall_rects)
         self._move_axis(0, ny * SENTRY_PATROL_SPEED, wall_rects)
 
@@ -778,13 +808,102 @@ class SentryEnemy(Enemy):
             return
         nx = dx / dist
         ny = dy / dist
+        self._facing = (nx, ny)
         self._move_axis(nx * SENTRY_CHASE_SPEED, 0, wall_rects)
         self._move_axis(0, ny * SENTRY_CHASE_SPEED, wall_rects)
 
     def _player_in_sight(self, player_rect):
+        """Return True if player is within the forward cone and not behind a blocker."""
         dx = player_rect.centerx - self.rect.centerx
         dy = player_rect.centery - self.rect.centery
-        return (dx * dx + dy * dy) <= (SENTRY_SIGHT_RADIUS * SENTRY_SIGHT_RADIUS)
+        dist2 = dx * dx + dy * dy
+        if dist2 > SENTRY_SIGHT_RADIUS * SENTRY_SIGHT_RADIUS:
+            return False
+        dist = math.sqrt(dist2)
+        # Cone check: dot product of facing and direction-to-player.
+        if dist > 0:
+            fx, fy = self._facing
+            dot = (dx * fx + dy * fy) / dist
+            min_dot = math.cos(math.radians(SENTRY_CONE_ANGLE_DEG / 2))
+            if dot < min_dot:
+                return False
+            # LOS check: ray to player must not pass through any blocker rect.
+            rdx = dx / dist
+            rdy = dy / dist
+            for brect in self._blocker_rects:
+                t = self._ray_aabb_t(
+                    self.rect.centerx, self.rect.centery, rdx, rdy, brect
+                )
+                if t is not None and 0 < t < dist:
+                    return False
+        return True
+
+    @staticmethod
+    def _ray_aabb_t(ox, oy, dx, dy, rect):
+        """Return the smallest t >= 0 at which ray (ox+t*dx, oy+t*dy) enters *rect*.
+
+        Returns None if the ray misses the rect entirely.
+        """
+        t_enter = 0.0
+        t_exit = float("inf")
+        if abs(dx) < 1e-9:
+            if ox < rect.left or ox > rect.right:
+                return None
+        else:
+            t1 = (rect.left - ox) / dx
+            t2 = (rect.right - ox) / dx
+            if t1 > t2:
+                t1, t2 = t2, t1
+            t_enter = max(t_enter, t1)
+            t_exit = min(t_exit, t2)
+        if abs(dy) < 1e-9:
+            if oy < rect.top or oy > rect.bottom:
+                return None
+        else:
+            t1 = (rect.top - oy) / dy
+            t2 = (rect.bottom - oy) / dy
+            if t1 > t2:
+                t1, t2 = t2, t1
+            t_enter = max(t_enter, t1)
+            t_exit = min(t_exit, t2)
+        if t_enter > t_exit or t_exit < 0:
+            return None
+        return t_enter if t_enter >= 0 else t_exit
+
+    def draw_overlay(self, surface):
+        """Draw a vision cone overlay, clipped where SentryBlocker columns occlude the view."""
+        if self._sentry_state == SENTRY_EXPLODE:
+            return
+        cx, cy = self.rect.center
+        fx, fy = self._facing
+        facing_angle = math.atan2(fy, fx)
+        half_angle = math.radians(SENTRY_CONE_ANGLE_DEG / 2)
+        arc_steps = 12
+        arc_pts = []
+        for step in range(arc_steps + 1):
+            angle = facing_angle - half_angle + (2 * half_angle * step / arc_steps)
+            rdx = math.cos(angle)
+            rdy = math.sin(angle)
+            max_t = float(SENTRY_SIGHT_RADIUS)
+            for brect in self._blocker_rects:
+                t = self._ray_aabb_t(cx, cy, rdx, rdy, brect)
+                if t is not None and 0 < t < max_t:
+                    max_t = t
+            arc_pts.append((round(cx + rdx * max_t), round(cy + rdy * max_t)))
+        cone_pts = [(cx, cy)] + arc_pts
+        if len(cone_pts) < 3:
+            return
+        if self._sentry_state == SENTRY_PATROL:
+            fill_color = (220, 200, 50, 55)
+            edge_color = (220, 200, 50)
+        else:
+            fill_color = (255, 80, 50, 80)
+            edge_color = (255, 80, 50)
+        w, h = surface.get_size()
+        cone_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.polygon(cone_surf, fill_color, cone_pts)
+        surface.blit(cone_surf, (0, 0))
+        pygame.draw.polygon(surface, edge_color, cone_pts, 1)
 
     def _enter_alert(self, now_ticks):
         self._sentry_state = SENTRY_ALERT
@@ -1502,6 +1621,470 @@ class TideLord(Enemy):
         out = self.emitted_projectiles
         self.emitted_projectiles = []
         return out
+
+
+# ── Phase B: Frost Witch boss ────────────────────────────────────────────────
+
+_FROST_WITCH_ATTACK_NONE  = "none"
+_FROST_WITCH_ATTACK_CONE  = "cone"
+_FROST_WITCH_ATTACK_NOVA  = "nova"
+_FROST_WITCH_ATTACK_LUNGE = "lunge"
+
+
+class FrostWitchShard(pygame.sprite.Sprite):
+    """Ice-shard projectile fired in a fan by :class:`FrostWitch` during Blizzard Cone.
+
+    Linear motion, despawns after travelling :data:`FROST_WITCH_SHARD_RANGE`
+    pixels or on wall contact.  Damage is delivered by the launcher-projectile
+    pipeline.
+    """
+
+    damage = FROST_WITCH_SHARD_DAMAGE
+    damage_type = "ice"
+
+    def __init__(self, x, y, vx, vy):
+        super().__init__()
+        self.image = make_rect_surface(
+            FROST_WITCH_SHARD_SIZE, FROST_WITCH_SHARD_SIZE, COLOR_FROST_WITCH_SHARD
+        )
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._vx = float(vx)
+        self._vy = float(vy)
+        self._travelled = 0.0
+        self._origin = (float(x), float(y))
+
+    def update(self, *_args, **_kwargs):
+        step = math.hypot(self._vx, self._vy)
+        self._travelled += step
+        if self._travelled >= FROST_WITCH_SHARD_RANGE:
+            self.kill()
+            return
+        self.rect.x += int(round(self._vx))
+        self.rect.y += int(round(self._vy))
+
+    def collide_walls(self, wall_rects):
+        for wall in wall_rects:
+            if self.rect.colliderect(wall):
+                self.kill()
+                return True
+        return False
+
+
+class FrostWitch(Enemy):
+    """Ice-biome mini-boss with three telegraphed attacks.
+
+    Attack selection is distance-gated:
+
+    * Player within :data:`FROST_WITCH_NOVA_RANGE`  → ``nova``
+      (close-range AOE chill burst + freeze).
+    * Player within :data:`FROST_WITCH_CONE_RANGE`  → ``cone``
+      (fan of ice-shard projectiles).
+    * Phase 2 only, player within :data:`FROST_WITCH_LUNGE_RANGE` →
+      ``lunge`` (dash charge).
+
+    Phase 2 is set externally by :class:`BossController` when HP drops
+    to 50 %.  IceSpirit add-waves are managed by the controller /
+    rpg.py, not here.
+    """
+
+    hp = FROST_WITCH_HP
+    speed = FROST_WITCH_SPEED
+    damage = 0
+    color = COLOR_FROST_WITCH
+
+    attack_damage     = 0
+    attack_windup_ms  = FROST_WITCH_NOVA_WINDUP_MS
+    attack_strike_ms  = FROST_WITCH_NOVA_STRIKE_MS
+    attack_cooldown_ms = FROST_WITCH_NOVA_COOLDOWN_MS
+    attack_damage_type = "ice"
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self.image = make_rect_surface(FROST_WITCH_SIZE, FROST_WITCH_SIZE, self.color)
+        self._base_image = self.image
+        self.rect = self.image.get_rect(center=(x, y))
+        self.phase_2 = False
+        self._pending_attack  = _FROST_WITCH_ATTACK_NONE
+        self._committed_attack = _FROST_WITCH_ATTACK_NONE
+        self._cone_dir = (1.0, 0.0)
+        self._lunge_dir = (1.0, 0.0)
+        self._lunge_dash_until = 0
+        self.emitted_projectiles: list[FrostWitchShard] = []
+
+    # ── movement ──────────────────────────────────────────────────────────
+    def update_movement(self, player_rect, wall_rects):
+        now = pygame.time.get_ticks()
+        if (
+            self._committed_attack == _FROST_WITCH_ATTACK_LUNGE
+            and now < self._lunge_dash_until
+        ):
+            lx, ly = self._lunge_dir
+            spd = FROST_WITCH_LUNGE_DASH_SPEED
+            self._move_axis(lx * spd, 0, wall_rects)
+            self._move_axis(0, ly * spd, wall_rects)
+            return
+        if self.is_attacking_blocking_movement():
+            return
+        if player_rect is None:
+            return
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+        nx, ny = dx / dist, dy / dist
+        self._move_axis(nx * self.speed, 0, wall_rects)
+        self._move_axis(0, ny * self.speed, wall_rects)
+
+    # ── attack selection ──────────────────────────────────────────────────
+    def _player_dist(self, player_rect):
+        if player_rect is None:
+            return float("inf")
+        return math.hypot(
+            player_rect.centerx - self.rect.centerx,
+            player_rect.centery - self.rect.centery,
+        )
+
+    def _can_begin_attack(self, player_rect):
+        dist = self._player_dist(player_rect)
+        if dist == float("inf"):
+            return False
+        if dist <= FROST_WITCH_NOVA_RANGE:
+            self._pending_attack = _FROST_WITCH_ATTACK_NOVA
+            return True
+        if (
+            self.phase_2
+            and dist <= FROST_WITCH_LUNGE_RANGE
+        ):
+            self._pending_attack = _FROST_WITCH_ATTACK_LUNGE
+            return True
+        if dist <= FROST_WITCH_CONE_RANGE:
+            self._pending_attack = _FROST_WITCH_ATTACK_CONE
+            return True
+        return False
+
+    def _on_telegraph_start(self, player_rect, _now_ticks):
+        kind = self._pending_attack
+        self._committed_attack = kind
+        if kind == _FROST_WITCH_ATTACK_NOVA:
+            self.attack_windup_ms   = FROST_WITCH_NOVA_WINDUP_MS
+            self.attack_strike_ms   = FROST_WITCH_NOVA_STRIKE_MS
+            self.attack_cooldown_ms = FROST_WITCH_NOVA_COOLDOWN_MS
+        elif kind == _FROST_WITCH_ATTACK_CONE:
+            self.attack_windup_ms   = FROST_WITCH_CONE_WINDUP_MS
+            self.attack_strike_ms   = FROST_WITCH_CONE_STRIKE_MS
+            self.attack_cooldown_ms = FROST_WITCH_CONE_COOLDOWN_MS
+            if player_rect is not None:
+                dx = player_rect.centerx - self.rect.centerx
+                dy = player_rect.centery - self.rect.centery
+                d = math.hypot(dx, dy) or 1.0
+                self._cone_dir = (dx / d, dy / d)
+        elif kind == _FROST_WITCH_ATTACK_LUNGE:
+            self.attack_windup_ms   = FROST_WITCH_LUNGE_WINDUP_MS
+            self.attack_strike_ms   = FROST_WITCH_LUNGE_STRIKE_MS
+            self.attack_cooldown_ms = FROST_WITCH_LUNGE_COOLDOWN_MS
+            if player_rect is not None:
+                dx = player_rect.centerx - self.rect.centerx
+                dy = player_rect.centery - self.rect.centery
+                d = math.hypot(dx, dy) or 1.0
+                self._lunge_dir = (dx / d, dy / d)
+        self._attack_state_until = _now_ticks + max(1, self.attack_windup_ms)
+
+    def _on_strike_start(self, _player_rect, now_ticks):
+        self._attack_state_until = now_ticks + max(1, self.attack_strike_ms)
+        if self._committed_attack == _FROST_WITCH_ATTACK_CONE:
+            shots = FROST_WITCH_CONE_SHOTS_P2 if self.phase_2 else FROST_WITCH_CONE_SHOTS_P1
+            spread_rad = math.radians(FROST_WITCH_CONE_SPREAD_DEG)
+            fx, fy = self._cone_dir
+            base_angle = math.atan2(fy, fx)
+            half = (shots - 1) / 2.0
+            for i in range(shots):
+                angle = base_angle + spread_rad * (i - half)
+                vx = math.cos(angle) * FROST_WITCH_SHARD_SPEED
+                vy = math.sin(angle) * FROST_WITCH_SHARD_SPEED
+                self.emitted_projectiles.append(
+                    FrostWitchShard(self.rect.centerx, self.rect.centery, vx, vy)
+                )
+        elif self._committed_attack == _FROST_WITCH_ATTACK_LUNGE:
+            self._lunge_dash_until = now_ticks + max(1, self.attack_strike_ms)
+
+    def _on_strike_end(self, _now_ticks):
+        self._attack_state_until = _now_ticks + max(0, self.attack_cooldown_ms)
+        self._committed_attack = _FROST_WITCH_ATTACK_NONE
+        self._pending_attack   = _FROST_WITCH_ATTACK_NONE
+
+    def _hitbox_geometry(self):
+        if self._committed_attack == _FROST_WITCH_ATTACK_NOVA:
+            self.attack_damage = FROST_WITCH_NOVA_DAMAGE
+            size = FROST_WITCH_NOVA_RADIUS * 2
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = self.rect.center
+            return (rect,)
+        if self._committed_attack == _FROST_WITCH_ATTACK_LUNGE:
+            self.attack_damage = FROST_WITCH_LUNGE_DAMAGE
+            return (self.rect.copy(),)
+        return ()
+
+    def consume_emitted_projectiles(self):
+        out = self.emitted_projectiles
+        self.emitted_projectiles = []
+        return out
+
+    @property
+    def nova_chill(self):
+        """Chill amount applied to the player on a successful Nova hit."""
+        return FROST_WITCH_NOVA_CHILL
+
+
+# ── Phase A: New Ice Biome Enemies ────────────────────────────────────────────
+
+
+class FreezeAuraCrystal(Enemy):
+    """Stationary ice-crystal fixture that emits a slow, expanding aura ring.
+
+    Unlike :class:`IceCrystalEnemy` (which applies ``FROZEN`` status
+    instantly), this crystal builds *chill* in any player standing inside
+    the aura while it is active.  The attack-state machine drives the
+    windup / active / cooldown cycle; the "pulse" is not a hitbox but a
+    chill-rate window that the runtime reads via :meth:`is_aura_active`.
+
+    The crystal is immortal and never moves.
+    """
+
+    hp = 1          # nominal value; take_damage() is a no-op
+    speed = 0
+    damage = 0
+    color = COLOR_FREEZE_AURA_CRYSTAL
+    immortal = True
+
+    attack_damage = 0
+    attack_windup_ms  = FREEZE_AURA_PULSE_WINDUP_MS
+    attack_strike_ms  = FREEZE_AURA_PULSE_ACTIVE_MS
+    attack_cooldown_ms = FREEZE_AURA_PULSE_INTERVAL_MS
+    attack_damage_type = "ice"
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        # Stagger start so multiple crystals don't all pulse simultaneously.
+        self._next_pulse_at: int = random.randint(
+            FREEZE_AURA_PULSE_INTERVAL_MS // 4,
+            FREEZE_AURA_PULSE_INTERVAL_MS,
+        )
+        self._aura_active = False
+
+    # ── immortality ────────────────────────────────────────────────────────
+    def take_damage(self, amount):
+        """Crystals cannot be destroyed."""
+
+    def update_movement(self, _player_rect, _wall_rects):
+        """Stationary fixture."""
+
+    # ── attack-state overrides ─────────────────────────────────────────────
+    def _can_begin_attack(self, player_rect):
+        return True   # always pulses; range is checked by the runtime
+
+    def _on_telegraph_start(self, player_rect, now_ticks):
+        self._aura_active = False
+        self.image = make_rect_surface(
+            FREEZE_AURA_CRYSTAL_SIZE, FREEZE_AURA_CRYSTAL_SIZE, COLOR_FREEZE_AURA_PULSE
+        )
+
+    def _on_strike_start(self, player_rect, now_ticks):
+        self._aura_active = True
+        self.image = self._base_image
+
+    def _on_strike_end(self, now_ticks):
+        self._aura_active = False
+
+    def _hitbox_geometry(self):
+        return ()   # damage delivered via chill rate, not hitbox
+
+    def update_attack_state(self, player_rect, now_ticks):
+        """Defer first pulse so crystals don't all fire on room entry."""
+        if self._next_pulse_at > 0 and self._next_pulse_at < 100_000:
+            self._next_pulse_at = now_ticks + self._next_pulse_at
+        if now_ticks < self._next_pulse_at:
+            return
+        if self._attack_state == ATTACK_IDLE:
+            self._next_pulse_at = 0
+        super().update_attack_state(player_rect, now_ticks)
+
+    # ── runtime API ────────────────────────────────────────────────────────
+    def is_aura_active(self):
+        """Return True during the active (expanding) aura window."""
+        return self._aura_active
+
+    def aura_radius(self):
+        """Return the current aura radius in pixels."""
+        return FREEZE_AURA_PULSE_RADIUS
+
+
+class IceSpirit(Enemy):
+    """Swarmer enemy that darts at the player and leaves trail-freeze tiles.
+
+    Behaviour:
+    - When the player is within ``ICE_SPIRIT_ENGAGE_RADIUS``, the spirit
+      approaches.  On reaching ``ICE_SPIRIT_ATTACK_TRIGGER`` range it
+      uses the attack-state machine to fire a single contact strike that
+      delivers ``ICE_SPIRIT_CONTACT_DAMAGE`` + ``ICE_SPIRIT_CONTACT_CHILL``.
+    - After striking, it retreats for ``ICE_SPIRIT_RETREAT_MS`` before
+      re-engaging.
+    - Every ``ICE_SPIRIT_TRAIL_INTERVAL_MS``, while the spirit is moving,
+      it emits a TRAIL_FREEZE tile at its current grid position via
+      ``terrain_effects.emit_trail_freeze_tile()``.
+    """
+
+    hp = ICE_SPIRIT_HP
+    speed = ICE_SPIRIT_SPEED
+    damage = ICE_SPIRIT_CONTACT_DAMAGE
+    color = COLOR_ICE_SPIRIT
+    immortal = False
+
+    attack_damage      = ICE_SPIRIT_CONTACT_DAMAGE
+    attack_windup_ms   = ICE_SPIRIT_ATTACK_WINDUP_MS
+    attack_strike_ms   = ICE_SPIRIT_ATTACK_STRIKE_MS
+    attack_cooldown_ms = ICE_SPIRIT_ATTACK_COOLDOWN_MS
+    attack_damage_type = "ice"
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self.image = make_rect_surface(ICE_SPIRIT_SIZE, ICE_SPIRIT_SIZE, self.color)
+        self._base_image = self.image
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._retreat_until = 0
+        self._last_trail_ticks = 0
+        self._chill_amount = ICE_SPIRIT_CONTACT_CHILL
+
+    # ── movement ───────────────────────────────────────────────────────────
+    def update_movement(self, player_rect, wall_rects):
+        if self.is_attacking_blocking_movement():
+            return
+        if player_rect is None:
+            return
+        now = pygame.time.get_ticks()
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        dist = math.hypot(dx, dy)
+        if dist == 0:
+            return
+
+        # Retreat after striking.
+        if now < self._retreat_until:
+            nx, ny = -dx / dist, -dy / dist
+            self._move_axis(nx * self.speed, 0, wall_rects)
+            self._move_axis(0, ny * self.speed, wall_rects)
+            return
+
+        # Only engage within radius.
+        if dist > ICE_SPIRIT_ENGAGE_RADIUS:
+            return
+
+        nx, ny = dx / dist, dy / dist
+        self._move_axis(nx * self.speed, 0, wall_rects)
+        self._move_axis(0, ny * self.speed, wall_rects)
+
+    # ── attack-state overrides ─────────────────────────────────────────────
+    def _can_begin_attack(self, player_rect):
+        if player_rect is None:
+            return False
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        return math.hypot(dx, dy) <= ICE_SPIRIT_ATTACK_TRIGGER
+
+    def _on_strike_start(self, player_rect, now_ticks):
+        self._retreat_until = now_ticks + ICE_SPIRIT_RETREAT_MS
+
+    def _hitbox_geometry(self):
+        rect = pygame.Rect(0, 0, ICE_SPIRIT_SIZE + 4, ICE_SPIRIT_SIZE + 4)
+        rect.center = self.rect.center
+        return (rect,)
+
+    # ── trail-freeze emission ──────────────────────────────────────────────
+    def emit_trail(self, room, now_ticks):
+        """Emit a TRAIL_FREEZE tile at the spirit's grid cell if interval elapsed.
+
+        Called by the runtime each frame.  Returns True if a tile was emitted.
+        """
+        if now_ticks - self._last_trail_ticks < ICE_SPIRIT_TRAIL_INTERVAL_MS:
+            return False
+        self._last_trail_ticks = now_ticks
+        import terrain_effects
+        col = self.rect.centerx // TILE_SIZE
+        row = self.rect.centery // TILE_SIZE
+        terrain_effects.emit_trail_freeze_tile(room, col, row, now_ticks)
+        return True
+
+    # ── chill delivery hook ────────────────────────────────────────────────
+    def apply_contact_chill(self, player, now_ticks):
+        """Apply chill to player on contact attack strike.  Called by rpg.py."""
+        import status_effects as _se
+        _se.add_chill(player, self._chill_amount, now_ticks)
+
+
+class IceAvalancheBoulderSpawner(pygame.sprite.Sprite):
+    """Spawner for rolling boulders in the Ice Avalanche Run room.
+
+    Mirrors :class:`BoulderRunSpawner` (from objective_entities.py) but
+    uses the ``ICE_AVALANCHE_*`` constants so boulder speed and spawn rate
+    can be tuned independently.
+
+    The spawner itself is invisible (1×1 sprite at the room's mid-point).
+    The runtime reads ``consume_pending_boulders()`` each frame and adds any
+    returned :class:`IceAvalancheBoulder` instances to the projectile group.
+    """
+
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._next_spawn_at = pygame.time.get_ticks()
+        self._pending: list = []
+        self._rng = random.Random()
+
+    def update(self, *_args, **_kwargs):
+        now = pygame.time.get_ticks()
+        if now < self._next_spawn_at:
+            return
+        # Queue one boulder per elapsed interval.
+        speed = self._rng.uniform(*ICE_AVALANCHE_BOULDER_SPEED_RANGE)
+        self._pending.append((_IceAvalancheBoulder, speed))
+        interval = self._rng.randint(*ICE_AVALANCHE_BOULDER_SPAWN_INTERVAL_RANGE_MS)
+        self._next_spawn_at = now + interval
+
+    def consume_pending_boulders(self):
+        out = self._pending
+        self._pending = []
+        return out
+
+
+class _IceAvalancheBoulder(pygame.sprite.Sprite):
+    """Single rolling ice boulder for the Ice Avalanche Run.
+
+    Rolls horizontally at a fixed speed; direction (left or right) is
+    assigned by the spawner/runtime based on the launch row.  The boulder
+    kills itself once it exits the room.
+    """
+
+    damage = ICE_AVALANCHE_BOULDER_DAMAGE
+    damage_type = "ice"
+
+    def __init__(self, x, y, vx):
+        super().__init__()
+        self.image = make_rect_surface(
+            ICE_AVALANCHE_BOULDER_SIZE, ICE_AVALANCHE_BOULDER_SIZE, (180, 220, 245)
+        )
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._vx = float(vx)
+
+    def update(self, *_args, **_kwargs):
+        self.rect.x += int(round(self._vx))
+
+    def collide_walls(self, wall_rects):
+        for wall in wall_rects:
+            if self.rect.colliderect(wall):
+                self.kill()
+                return True
+        return False
 
 
 ENEMY_CLASSES = [

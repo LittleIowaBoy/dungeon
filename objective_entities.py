@@ -2437,3 +2437,126 @@ class BossController:
             phase_advanced=phase_advanced,
             defeated=defeated_now,
         )
+
+
+# ── Phase A: Ice Avalanche Run cover entity ───────────────────────────────────
+
+class IcePillar(pygame.sprite.Sprite):
+    """Shatterable cover object for the Ice Avalanche Run room.
+
+    A frosty rectangular block that occupies one grid cell.  It has
+    ``ICE_PILLAR_HP`` hit points and is destroyed on reaching 0.  While
+    standing it blocks both the player and boulders (handled by the
+    runtime's wall-rect builder — ``get_wall_rects()`` includes the pillar
+    rect when the pillar is alive).  On death it leaves a one-frame flash
+    then disappears.
+
+    The pillar is registered in the runtime by an ``"ice_pillar"`` config
+    entry in ``room.objective_entity_configs``.
+
+    Attributes
+    ----------
+    alive : bool
+        True while the pillar has HP > 0.
+    hp : int
+        Remaining hit points.
+    """
+
+    def __init__(self, x, y):
+        from settings import ICE_PILLAR_HP, ICE_PILLAR_SIZE, COLOR_ICE_PILLAR
+        super().__init__()
+        self._hp = ICE_PILLAR_HP
+        self._size = ICE_PILLAR_SIZE
+        self._color = COLOR_ICE_PILLAR
+        self._shatter_color = (220, 240, 255)
+        self._destroyed_at = None
+        self.image = make_rect_surface(self._size, self._size, self._color)
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+
+    # ── public API ────────────────────────────────────────────────────────
+
+    @property
+    def hp(self):
+        return self._hp
+
+    @property
+    def alive(self):
+        return self._hp > 0
+
+    def take_damage(self, amount):
+        """Reduce HP by *amount*.  Returns True if the pillar was destroyed."""
+        if self._hp <= 0:
+            return False
+        self._hp = max(0, self._hp - amount)
+        if self._hp == 0:
+            self._on_destroy()
+            return True
+        # Tint darker to show damage.
+        ratio = self._hp / ICE_PILLAR_HP if (
+            "ICE_PILLAR_HP" in dir()
+        ) else self._hp / 30
+        from settings import ICE_PILLAR_HP as _MAX
+        ratio = self._hp / _MAX
+        r, g, b = self._color
+        tinted = (max(60, int(r * ratio)), max(60, int(g * ratio)), max(80, int(b * ratio)))
+        self.image = make_rect_surface(self._size, self._size, tinted)
+        return False
+
+    def _on_destroy(self):
+        from settings import ICE_PILLAR_SIZE
+        self.image = make_rect_surface(ICE_PILLAR_SIZE, ICE_PILLAR_SIZE, self._shatter_color)
+
+    def update(self, now_ticks=None):
+        """Kill the sprite one frame after destruction (flash visible for 1 frame)."""
+        if self._hp <= 0:
+            if self._destroyed_at is None:
+                import pygame as _pg
+                self._destroyed_at = _pg.time.get_ticks()
+            elif now_ticks is not None and now_ticks - self._destroyed_at > 50:
+                self.kill()
+
+    def draw_overlay(self, surface, camera_offset=(0, 0)):
+        """Draw HP pip indicators above the pillar when damaged."""
+        from settings import ICE_PILLAR_HP as _MAX
+        if self._hp <= 0 or self._hp >= _MAX:
+            return
+        ox, oy = camera_offset
+        x = self.rect.centerx - ox - 12
+        y = self.rect.top - oy - 6
+        pip_w = 5
+        for i in range(_MAX // 10):
+            color = self._color if i < self._hp // 10 else (50, 50, 80)
+            pygame.draw.rect(surface, color, (x + i * (pip_w + 1), y, pip_w, 3))
+
+
+class SentryBlocker(pygame.sprite.Sprite):
+    """Impassable column that blocks sentry line-of-sight in stealth rooms.
+
+    Unlike IcePillar, SentryBlocker is indestructible.  It exists solely to
+    create cover the player can hide behind to avoid the sentry's vision cone.
+    It is registered in the dungeon via a ``"sentry_blocker"`` config entry and
+    spawned into ``dungeon.objective_group``.
+
+    Attributes
+    ----------
+    alive : bool
+        Always True — blockers are never destroyed.
+    """
+
+    def __init__(self, x, y):
+        from settings import SENTRY_BLOCKER_SIZE, COLOR_SENTRY_BLOCKER
+        super().__init__()
+        self._size = SENTRY_BLOCKER_SIZE
+        self._color = COLOR_SENTRY_BLOCKER
+        self.image = make_rect_surface(self._size, self._size, self._color)
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+
+    @property
+    def alive(self):
+        return True
+
+    def take_damage(self, amount):
+        return False
+
+    def update(self, now_ticks=None):
+        pass

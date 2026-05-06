@@ -3,7 +3,10 @@
 from dataclasses import dataclass
 
 import pygame
-from settings import COLOR_COIN, COLOR_HEALTH_BAR, COLOR_PORTAL, COLOR_WHITE
+from settings import (
+    COLOR_COIN, COLOR_HEALTH_BAR, COLOR_PORTAL, COLOR_WHITE,
+    CHILL_MAX, COLOR_CHILL_METER, COLOR_CHILL_METER_BG, COLOR_CHILL_METER_PULSE,
+)
 
 import consumable_rules
 import ability_rules
@@ -174,6 +177,25 @@ class OverlayHUDView:
 
 
 @dataclass(frozen=True)
+class StatusMeterHUDView:
+    """A single status-accumulator bar (e.g. the Chill meter)."""
+    meter_id: str           # stable identifier, e.g. "chill"
+    label: str              # short display label, e.g. "CHILL"
+    value: float            # current level 0.0–max
+    max_value: float        # 100.0 for chill
+    fill_color: tuple       # RGB fill
+    bg_color: tuple         # RGB background track
+    pulse_color: tuple      # RGB tint when nearly full (≥ 75 %)
+    pulsing: bool           # True when fill ≥ 75 % of max
+
+
+@dataclass(frozen=True)
+class StatusMetersHUDView:
+    """Collection of all active status-accumulator meters."""
+    meters: tuple  # tuple[StatusMeterHUDView, ...]
+
+
+@dataclass(frozen=True)
 class HUDView:
     current_hp: int
     max_hp: int
@@ -196,6 +218,7 @@ class HUDView:
     keystone_bonus_banner: KeystoneBonusBannerHUDView | None = None
     boss_health_bar: BossHealthBarHUDView | None = None
     boss_intro_banner: BossIntroBannerHUDView | None = None
+    status_meters: StatusMetersHUDView | None = None
 
 
 def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
@@ -279,6 +302,7 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         keystone_bonus_banner=keystone_bonus_banner,
         boss_health_bar=boss_health_bar,
         boss_intro_banner=boss_intro_banner,
+        status_meters=_build_status_meters_view(player),
     )
 
 
@@ -534,3 +558,34 @@ def _build_ability_view(player, now_ticks):
         ready=ability_rules.can_activate(player, now_ticks),
         cooldown_fraction=ability_rules.cooldown_fraction_remaining(player, now_ticks),
     )
+
+
+def _build_status_meters_view(player):
+    """Build the status-accumulator meters view for the HUD rail.
+
+    Currently only the Chill meter is tracked.  Future accumulators (e.g.
+    a Bleed meter, an Exhaustion meter) should add their own
+    ``StatusMeterHUDView`` to the *meters* tuple here.
+
+    Returns ``None`` if no meters are active (chill == 0 and nothing else),
+    keeping the HUD clean during normal play.
+    """
+    meters = []
+
+    chill = float(getattr(player, "chill", 0.0))
+    if chill > 0.0:
+        pulsing = chill >= CHILL_MAX * 0.75
+        meters.append(StatusMeterHUDView(
+            meter_id="chill",
+            label="CHILL",
+            value=chill,
+            max_value=CHILL_MAX,
+            fill_color=COLOR_CHILL_METER,
+            bg_color=COLOR_CHILL_METER_BG,
+            pulse_color=COLOR_CHILL_METER_PULSE,
+            pulsing=pulsing,
+        ))
+
+    if not meters:
+        return None
+    return StatusMetersHUDView(meters=tuple(meters))

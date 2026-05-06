@@ -35,6 +35,7 @@ def update_motion(player, wall_rects, terrain_at, keys):
 
     terrain = terrain_at(player.rect.centerx, player.rect.centery)
     player._on_ice = terrain == "ice"
+    _on_slide = terrain == "slide"
 
     speed = PLAYER_BASE_SPEED * player._effective_speed_multiplier()
     terrain_multiplier = TERRAIN_SPEED.get(terrain, 1.0)
@@ -45,6 +46,17 @@ def update_motion(player, wall_rects, terrain_at, keys):
     if status_effects.is_immobilized(player, now_ticks):
         raw_dx = 0.0
         raw_dy = 0.0
+
+    # ── SLIDE tile: direction commitment ─────────────────────────────────
+    # When on a slide tile and a committed direction is recorded (by
+    # terrain_effects.py on first entry), override raw input with that
+    # locked direction.  Dodging always clears the lock via terrain_effects.
+    if _on_slide:
+        slide_dir = getattr(player, "_slide_dir", None)
+        if slide_dir is not None:
+            raw_dx, raw_dy = slide_dir
+        # Notify terrain_effects that we are still on slide this frame.
+        # (The flag is cleared in terrain_effects when tile != SLIDE.)
 
     if player._on_ice:
         player.velocity_x += raw_dx * speed * 0.15
@@ -59,6 +71,9 @@ def update_motion(player, wall_rects, terrain_at, keys):
     dodge_v = dodge_rules.dodge_velocity(player, pygame.time.get_ticks(), speed)
     if dodge_v is not None:
         player.velocity_x, player.velocity_y = dodge_v
+        # Dodge cancels the slide direction commitment so the player
+        # regains free control on landing.
+        player._slide_dir = None
 
     move_axis(player, player.velocity_x, 0, wall_rects)
     move_axis(player, 0, player.velocity_y, wall_rects)

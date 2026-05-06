@@ -396,6 +396,9 @@ SENTRY_EXPLOSION_RADIUS = int(2.0 * TILE_SIZE)
 SENTRY_EXPLOSION_DAMAGE = 45
 SENTRY_ALERT_FLASH_MS   = 200
 SENTRY_ARM_MS           = 600
+SENTRY_CONE_ANGLE_DEG   = 80          # full angular width of the LOS cone
+SENTRY_BLOCKER_SIZE     = 20          # pixel size of the sentry blocker sprite
+COLOR_SENTRY_BLOCKER    = (100, 130, 170)  # muted blue-grey column
 
 # ── Golem mini-boss (Earth biome finale) ───────────────
 # Golem is a slow, high-HP melee/ranged hybrid. At range it telegraphs
@@ -507,14 +510,16 @@ TERRAIN_SPEED = {
     # Biome-room hazard tiles.  ``pit_tile`` is lethal so its speed is
     # nominal; ``quicksand`` uses the slowest non-zero multiplier so the
     # player can still attempt to escape before the drowning timer fires.
-    "quicksand":   0.3,
-    "spike_patch": 1.0,
-    "pit_tile":    1.0,
-    "current":     1.0,
-    "thin_ice":    1.0,
-    "hearth":      1.0,
-    "cart_rail":   1.0,
-    "glyph_tile":  1.0,
+    "quicksand":    0.3,
+    "spike_patch":  1.0,
+    "pit_tile":     1.0,
+    "current":      1.0,
+    "thin_ice":     1.0,
+    "hearth":       1.0,
+    "cart_rail":    1.0,
+    "glyph_tile":   1.0,
+    "slide":        1.0,        # slide speed unchanged; direction is committed
+    "trail_freeze": 1.0,        # walkable until expiry; then collapses to pit
 }
 ICE_FRICTION = 0.92          # velocity *= friction each frame on ice
 
@@ -619,6 +624,11 @@ ENEMY_CURRENT_PUSH_FACTOR    = 0.5
 # so it always visually lags just behind them rather than running alongside.
 ESCORT_FOLLOW_DISTANCE_PX = 44
 
+# E2: preservation reward threshold.
+# When the escort reaches the exit with at least this fraction of max HP
+# remaining, the room chest is upgraded one reward tier as a performance bonus.
+ESCORT_PRESERVATION_BONUS_HP_RATIO = 0.6
+
 
 # Walking onto a THIN_ICE tile increments a per-tile step counter stored on
 # the room.  After THIN_ICE_STEPS_TO_CRACK steps on the same tile, that tile
@@ -659,6 +669,19 @@ PIT_FALL_HP_PENALTY          = 15     # HP deducted on respawn; never lethal
 # Thin Ice Field room polish constants (analog of STALAGMITE_FIELD_*).
 ICE_THIN_ICE_FIELD_DOOR_BUFFER          = 2
 ICE_THIN_ICE_FIELD_SINGLETON_COUNT_RANGE = (4, 7)
+# Phase C: bonus chest threshold for the "Intact Floor" reward.
+# If the player cracks through at most this many thin-ice tiles during combat,
+# the room spawns an upgraded bonus chest at enemy-clear time.
+THIN_ICE_CRACK_BONUS_MAX_PITS = 3
+
+# Phase D: bonus chest thresholds for the remaining ice bespoke rooms.
+# ice_crystal_room / ice_freeze_aura_room — "Unshaken" / "Unattuned":
+#   player must never receive the FROZEN status while enemies are alive.
+#   No numeric constant needed; the flag _player_froze on the room suffices.
+# ice_spirit_swarm_room — "Clean Floor":
+#   if at most this many TRAIL_FREEZE tiles collapse to pit during combat,
+#   the room spawns an upgraded bonus chest at enemy-clear time.
+SPIRIT_SWARM_TRAIL_PIT_BONUS_MAX = 4
 
 # ── IceCrystalEnemy (ice_crystal_room) ───────────────────────────────────────
 # Stationary crystal pillars that periodically blast nearby targets with
@@ -715,6 +738,135 @@ TIDE_LORD_PROJECTILE_SIZE       = 14
 TIDE_LORD_ARENA_FLOOD_RADIUS    = 4    # tile radius of central WATER disc
 TIDE_LORD_ARENA_CURRENT_BAND    = 2    # tile width of outward-CURRENT ring
 TIDE_LORD_WAVE_SPAWN_RADIUS     = int(4 * TILE_SIZE)  # px from boss centre for wave spawns
+
+# ── Frost Witch mini-boss (ice_frost_witch_arena) ────────────────────────────
+# Three-attack ice boss.  Phase 2 unlocks at 50 % HP (adds Spike Lunge).
+# Spirit-add waves spawn at 75 / 50 / 25 % HP thresholds.
+
+FROST_WITCH_HP                   = 600
+FROST_WITCH_SPEED                = 0.75
+COLOR_FROST_WITCH                = (130, 190, 250)
+FROST_WITCH_SIZE                 = 48
+
+# Attack: Blizzard Cone — fan of ice-shard projectiles at mid-range
+FROST_WITCH_CONE_RANGE           = int(8.0 * TILE_SIZE)
+FROST_WITCH_CONE_WINDUP_MS       = 1000
+FROST_WITCH_CONE_STRIKE_MS       = 120
+FROST_WITCH_CONE_COOLDOWN_MS     = 2200
+FROST_WITCH_CONE_SPREAD_DEG      = 40
+FROST_WITCH_CONE_SHOTS_P1        = 3
+FROST_WITCH_CONE_SHOTS_P2        = 5
+FROST_WITCH_SHARD_SPEED          = 3.5
+FROST_WITCH_SHARD_RANGE          = int(9.0 * TILE_SIZE)
+FROST_WITCH_SHARD_DAMAGE         = 14
+FROST_WITCH_SHARD_SIZE           = 12
+COLOR_FROST_WITCH_SHARD          = (180, 220, 255)
+
+# Attack: Frost Nova — close-range AOE chill burst + freeze
+FROST_WITCH_NOVA_RANGE           = int(2.5 * TILE_SIZE)
+FROST_WITCH_NOVA_WINDUP_MS       = 700
+FROST_WITCH_NOVA_STRIKE_MS       = 200
+FROST_WITCH_NOVA_COOLDOWN_MS     = 1800
+FROST_WITCH_NOVA_RADIUS          = int(3.0 * TILE_SIZE)
+FROST_WITCH_NOVA_DAMAGE          = 20
+FROST_WITCH_NOVA_CHILL           = 60.0   # chill added to player on hit
+
+# Attack: Ice Spike Lunge — phase-2 only dash toward player
+FROST_WITCH_LUNGE_RANGE          = int(6.0 * TILE_SIZE)
+FROST_WITCH_LUNGE_WINDUP_MS      = 600
+FROST_WITCH_LUNGE_STRIKE_MS      = 180
+FROST_WITCH_LUNGE_COOLDOWN_MS    = 1600
+FROST_WITCH_LUNGE_DASH_SPEED     = 6.0
+FROST_WITCH_LUNGE_DAMAGE         = 22
+
+# Arena layout
+FROST_WITCH_ARENA_ICE_RADIUS     = 4     # tile radius of central THIN_ICE disc
+FROST_WITCH_ARENA_SLIDE_BAND     = 2     # tile width of SLIDE ring outside disc
+FROST_WITCH_WAVE_SPAWN_RADIUS    = int(4 * TILE_SIZE)
+
+# ── Ice Phase A: new mechanical verbs ─────────────────────────────────────────
+
+# Feature flag: add SLIDE tiles to existing ice_thin_ice_field safe corridors.
+# Default ON; flip OFF to revert to the shipped layout for playtest comparison.
+ICE_THIN_ICE_SLIDE_RETROFIT = True
+
+# SLIDE terrain tile
+# When the player steps onto a SLIDE tile their movement direction is
+# committed for the duration of that slide run; they keep moving at base
+# speed until they collide with a wall, a non-slide tile, or an enemy.
+# Dodge cancels the committed direction and grants normal control.
+COLOR_SLIDE = (140, 200, 240)          # pale blue-white ice sheen
+TERRAIN_SPEED_SLIDE = 1.0              # slide doesn't slow — it locks direction
+
+# TRAIL_FREEZE terrain tile
+# Emitted by IceSpirit enemies while they move.  The tile is walkable but
+# collapses to PIT_TILE after TRAIL_FREEZE_DURATION_MS.  If the player is
+# standing on the tile when it collapses, the normal pit-fall animation fires.
+COLOR_TRAIL_FREEZE = (110, 170, 210)   # darker blue-grey; visually distinct from SLIDE
+TRAIL_FREEZE_DURATION_MS = 3000        # ms before TRAIL_FREEZE → PIT_TILE
+
+# CHILL accumulator status
+# CHILL is not a standard expires-at status; it accumulates 0–100 on a holder
+# and is stored as holder.chill (float).  At 100 it triggers FROZEN for
+# CHILL_FREEZE_DURATION_MS and resets to 0.  Decays at CHILL_DECAY_RATE per
+# second when no chill source is active.
+CHILL_MAX = 100.0
+CHILL_DECAY_RATE = 10.0                # chill points per second (at rest)
+CHILL_FREEZE_DURATION_MS = 1500        # FROZEN duration when meter caps
+COLOR_CHILL_METER = (80, 200, 255)     # fill color for the status-meter rail bar
+COLOR_CHILL_METER_BG = (20, 50, 70)    # background track
+COLOR_CHILL_METER_PULSE = (200, 240, 255)   # pulse color when meter is nearly full
+
+# IcePillar (shatterable cover)
+# Damageable room fixture that blocks line-of-sight and movement.
+# Used by alarm beacons and pulse anchors to test LoS.
+ICE_PILLAR_HP = 30
+ICE_PILLAR_SIZE = 28
+COLOR_ICE_PILLAR = (190, 220, 250)     # frosty blue-white block
+
+# FreezeAuraCrystal (ice_freeze_aura_room immortal fixture)
+# Emits an expanding-then-contracting aura ring; standing inside builds chill.
+# Distinct from IceCrystalEnemy which applies FROZEN instantly.
+COLOR_FREEZE_AURA_CRYSTAL = (150, 210, 255)   # brighter than IceCrystalEnemy
+COLOR_FREEZE_AURA_PULSE = (210, 235, 255)      # tint during active pulse phase
+FREEZE_AURA_CRYSTAL_SIZE = 20
+FREEZE_AURA_PULSE_INTERVAL_MS = 4000   # ms between aura events
+FREEZE_AURA_PULSE_WINDUP_MS = 800      # telegraph before ring expands
+FREEZE_AURA_PULSE_ACTIVE_MS = 1000     # window while ring is live (expanding)
+FREEZE_AURA_PULSE_RADIUS = int(3 * TILE_SIZE)   # max aura radius (px)
+FREEZE_AURA_CHILL_RATE = 25.0          # chill per second while inside aura
+FREEZE_AURA_ROOM_CRYSTAL_COUNT_RANGE = (3, 4)
+FREEZE_AURA_ROOM_DOOR_BUFFER = 3       # chebyshev tiles around doors kept clear
+FREEZE_AURA_ROOM_MIN_SEP_TILES = 4     # minimum chebyshev separation between crystals
+
+# IceSpirit swarmer (ice_spirit_swarm_room)
+# Three-segment connected sprite that darts toward the player then retreats
+# for ICE_SPIRIT_RETREAT_MS after a hit.  Emits TRAIL_FREEZE tiles while
+# moving.  Contact applies damage and chill.
+ICE_SPIRIT_HP = 20
+ICE_SPIRIT_SPEED = 2.2
+COLOR_ICE_SPIRIT = (170, 230, 255)     # pale ice blue
+ICE_SPIRIT_SIZE = 18                   # size of each segment
+ICE_SPIRIT_CONTACT_DAMAGE = 8
+ICE_SPIRIT_CONTACT_CHILL = 30.0        # chill added on each contact event
+ICE_SPIRIT_RETREAT_MS = 1000           # ms the spirit backs away after hit
+ICE_SPIRIT_TRAIL_INTERVAL_MS = 500     # ms between TRAIL_FREEZE tile drops
+ICE_SPIRIT_ENGAGE_RADIUS = int(8 * TILE_SIZE)   # px — begin approach
+ICE_SPIRIT_ATTACK_TRIGGER = int(0.8 * TILE_SIZE) # px — contact hitbox range
+ICE_SPIRIT_ATTACK_WINDUP_MS = 80       # minimal windup (fast dart attack)
+ICE_SPIRIT_ATTACK_STRIKE_MS = 60
+ICE_SPIRIT_ATTACK_COOLDOWN_MS = 800
+ICE_SPIRIT_SWARM_COUNT_RANGE = (4, 6)
+ICE_SPIRIT_SWARM_ALCOVE_BUFFER = 3     # chebyshev tiles from door kept spawn-free
+
+# Ice Avalanche Run room
+# Boulder Run analog: 5-row layout with rolling boulders on odd rows and
+# SLIDE tiles on even rows.  Two shatterable ICE_PILLARs provide mid-room cover.
+ICE_AVALANCHE_BOULDER_SPEED_RANGE = (4.0, 6.5)
+ICE_AVALANCHE_BOULDER_SPAWN_INTERVAL_RANGE_MS = (800, 1600)
+ICE_AVALANCHE_BOULDER_DAMAGE = 10
+ICE_AVALANCHE_BOULDER_SIZE = 20
+ICE_AVALANCHE_PILLAR_COUNT = 2         # shatterable pillars placed mid-arena
 
 # ── Terrain generation ──────────────────────────────────
 TERRAIN_PATCH_MIN = 2
