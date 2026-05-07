@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pygame
 
@@ -88,6 +89,10 @@ def _plan(
     trap_intensity_scale=1.0,
     trap_speed_scale=1.0,
     trap_challenge_reward_kind="chest_upgrade",
+    trap_suppress_duration_ms=2500,
+    trap_suppress_cooldown_ms=8000,
+    trap_safespot_speed_mult=1.0,
+    trap_sweeper_knockback_px=0,
 ):
     return RoomPlan(
         position=(0, 0),
@@ -150,6 +155,10 @@ def _plan(
         trap_intensity_scale=trap_intensity_scale,
         trap_speed_scale=trap_speed_scale,
         trap_challenge_reward_kind=trap_challenge_reward_kind,
+        trap_suppress_duration_ms=trap_suppress_duration_ms,
+        trap_suppress_cooldown_ms=trap_suppress_cooldown_ms,
+        trap_safespot_speed_mult=trap_safespot_speed_mult,
+        trap_sweeper_knockback_px=trap_sweeper_knockback_px,
     )
 
 
@@ -180,7 +189,7 @@ class RoomObjectiveTests(unittest.TestCase):
             sum(1 for config in room.objective_entity_configs if config["kind"] == "trap_lane_switch"),
             3,
         )
-        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Safe lane Middle | Bonus route Bottom")
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Navigate | Bonus route Bottom")
 
     def test_trap_lane_switch_changes_the_safe_lane_and_deactivates_matching_sweeper(self):
         room = Room(
@@ -257,7 +266,7 @@ class RoomObjectiveTests(unittest.TestCase):
 
         self.assertEqual(update, {"kind": "upgrade_reward_chest", "reward_tier": "finale_bonus", "reward_kind": "chest_upgrade"})
         self.assertEqual(room.chest_reward_tier(), "finale_bonus")
-        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Challenge lane Bottom | Reward upgraded")
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Challenge lane Bottom | Reward upgraded | Flawless!")
 
     def test_trap_challenge_lane_payload_carries_biome_reward_kind(self):
         room = Room(
@@ -289,7 +298,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["reward_kind"], "stat_shard")
         self.assertEqual(
             room.objective_hud_state(1000)["label"],
-            "Objective: Challenge lane Bottom | Stat shard claimed",
+            "Objective: Challenge lane Bottom | Stat shard claimed | Flawless!",
         )
 
     def test_trap_challenge_lane_label_reflects_tempo_rune_reward(self):
@@ -321,7 +330,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["reward_kind"], "tempo_rune")
         self.assertEqual(
             room.objective_hud_state(1000)["label"],
-            "Objective: Challenge lane Bottom | Tempo rune claimed",
+            "Objective: Challenge lane Bottom | Tempo rune claimed | Flawless!",
         )
 
     def test_trap_challenge_lane_label_reflects_mobility_consumable_reward(self):
@@ -353,7 +362,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["reward_kind"], "mobility_consumable")
         self.assertEqual(
             room.objective_hud_state(1000)["label"],
-            "Objective: Challenge lane Bottom | Mobility charge claimed",
+            "Objective: Challenge lane Bottom | Mobility charge claimed | Flawless!",
         )
 
     def test_trap_gauntlet_can_build_vent_lane_variant(self):
@@ -416,7 +425,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(len(switches), 2)
         crusher = TrapCrusher(crushers[0])
         crusher.update(1000)
-        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Safe lane Top | Bonus route Bottom")
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Navigate | Bonus route Bottom")
         self.assertEqual(
             room._playtest_identifier_detail(1000),
             "Solve: Pick a corridor and time the crushers. The challenge corridor stays active but upgrades the chest.",
@@ -469,7 +478,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(room.tile_at(5, separator_rows[1]), WALL)
         self.assertEqual(room.tile_at(ROOM_COLS // 2, separator_rows[0]), FLOOR)
         self.assertEqual(room.tile_at(ROOM_COLS // 2, separator_rows[1]), FLOOR)
-        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Safe lane Middle | Bonus route Bottom")
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Navigate | Bonus route Bottom")
 
         checkpoint_switch = next(
             config
@@ -641,6 +650,426 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(vents[0]["cycle_ms"], round(2800 / 0.85))  # 3294
         self.assertEqual(crushers[0]["cycle_ms"], round(2400 / 0.85))  # 2824
         self.assertEqual(crushers[0]["active_ms"], round(1300 / 0.85))  # 1529
+
+    def test_trap_lane_switch_sets_suppress_timer_on_step(self):
+        """Stepping on a regular switch sets a timed suppression window, not a permanent safe lane."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_suppress_duration_ms=3000,
+                trap_suppress_cooldown_ms=9000,
+            ),
+        )
+        switch_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_lane_switch" and c["lane_index"] == 0
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(switch_config).rect.copy())
+
+        with patch("pygame.time.get_ticks", return_value=1000):
+            TrapLaneSwitch(switch_config).sync_player_overlap(player)
+
+        controller = room._trap_controller()
+        self.assertEqual(controller["lane_suppress_until"][0], 4000)   # 1000 + 3000
+        self.assertEqual(controller["lane_suppress_cooldown_until"][0], 10000)  # 1000 + 9000
+
+    def test_trap_lane_switch_cooldown_prevents_re_trigger(self):
+        """Stepping on a switch while it is on cooldown has no effect."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_suppress_duration_ms=3000,
+                trap_suppress_cooldown_ms=9000,
+            ),
+        )
+        switch_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_lane_switch" and c["lane_index"] == 0
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(switch_config).rect.copy())
+
+        with patch("pygame.time.get_ticks", return_value=1000):
+            TrapLaneSwitch(switch_config).sync_player_overlap(player)
+
+        # Now at ticks=5000 (cooldown expires at 10000), try again — should be no-op
+        with patch("pygame.time.get_ticks", return_value=5000):
+            result = TrapLaneSwitch(switch_config).sync_player_overlap(player)
+
+        self.assertFalse(result)
+        controller = room._trap_controller()
+        self.assertEqual(controller["lane_suppress_until"][0], 4000)  # unchanged
+
+    def test_trap_suppression_expires_and_sweeper_reactivates(self):
+        """After the suppress window expires the sweeper becomes active again."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_suppress_duration_ms=2000,
+                trap_suppress_cooldown_ms=8000,
+            ),
+        )
+        switch_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_lane_switch" and c["lane_index"] == 0
+        )
+        sweeper_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c["lane_index"] == 0
+        )
+        player = SimpleNamespace(rect=TrapLaneSwitch(switch_config).rect.copy())
+
+        with patch("pygame.time.get_ticks", return_value=0):
+            TrapLaneSwitch(switch_config).sync_player_overlap(player)
+
+        # Within suppression window (now=500 < suppress_until=2000) — inactive
+        TrapSweeper(sweeper_config).update(500)
+        self.assertFalse(sweeper_config["active"])
+
+        # After suppression expires (now=3000 >= suppress_until=2000) — active again
+        TrapSweeper(sweeper_config).update(3000)
+        self.assertTrue(sweeper_config["active"])
+
+    def test_trap_all_lanes_active_at_spawn(self):
+        """With no switches pressed, all lanes start active (no default safe lane)."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+            ),
+        )
+        sweepers = [c for c in room.objective_entity_configs if c["kind"] == "trap_sweeper"]
+        for sweeper_config in sweepers:
+            TrapSweeper(sweeper_config).update(1000)
+            self.assertTrue(sweeper_config["active"], f"lane {sweeper_config['lane_index']} should be active at spawn")
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Navigate | Bonus route Bottom")
+
+    def test_trap_challenge_hit_increments_counter(self):
+        """Sweeper hit on challenge lane increments trap_challenge_hits."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_challenge_reward_kind="stat_shard",
+            ),
+        )
+        controller = room._trap_controller()
+        challenge_lane = controller["challenge_lane"]
+        controller["challenge_route_selected"] = True
+        sweeper_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c["lane_index"] == challenge_lane
+        )
+        sweeper_config["safe_spots"] = ()  # disable safe spots so collision always deals damage
+        sweeper = TrapSweeper(sweeper_config)
+        sweeper.update(1000)
+        player = SimpleNamespace(
+            rect=sweeper.rect.copy(),
+            _invincible_until=0,
+            hp=20,
+            max_hp=20,
+        )
+        player.take_damage = lambda amount, damage_type=None: None
+        sweeper.apply_player_pressure(player)
+        self.assertEqual(controller["trap_challenge_hits"], 1)
+
+    def test_trap_non_challenge_hit_does_not_increment_counter(self):
+        """Sweeper hit on a non-challenge lane does NOT increment trap_challenge_hits."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+            ),
+        )
+        controller = room._trap_controller()
+        challenge_lane = controller["challenge_lane"]
+        controller["challenge_route_selected"] = True
+        non_challenge_lane = 0 if challenge_lane != 0 else 1
+        sweeper_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c["lane_index"] == non_challenge_lane
+        )
+        sweeper = TrapSweeper(sweeper_config)
+        sweeper.update(1000)
+        player = SimpleNamespace(rect=sweeper.rect.copy())
+        player.take_damage = lambda amount, damage_type=None: None
+        sweeper.apply_player_pressure(player)
+        self.assertEqual(controller.get("trap_challenge_hits", 0), 0)
+
+    def test_trap_flawless_bonus_loot_id_when_no_hits(self):
+        """Returns biome trophy loot id when challenge applied and no hits taken."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_challenge_reward_kind="stat_shard",
+            ),
+        )
+        controller = room._trap_controller()
+        controller["challenge_route_selected"] = True
+        controller["challenge_reward_applied"] = True
+        controller["trap_challenge_hits"] = 0
+        self.assertEqual(room.trap_challenge_flawless_bonus_loot_id(), "stat_shard")
+
+    def test_trap_flawless_bonus_loot_id_returns_none_when_hit(self):
+        """Returns None when any challenge-lane hit was taken."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_challenge_reward_kind="stat_shard",
+            ),
+        )
+        controller = room._trap_controller()
+        controller["challenge_route_selected"] = True
+        controller["challenge_reward_applied"] = True
+        controller["trap_challenge_hits"] = 1
+        self.assertIsNone(room.trap_challenge_flawless_bonus_loot_id())
+
+    def test_trap_flawless_reward_label(self):
+        """HUD shows flawless annotation when challenge applied with no hits."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_challenge_reward_kind="stat_shard",
+            ),
+        )
+        controller = room._trap_controller()
+        controller["challenge_route_selected"] = True
+        controller["challenge_reward_applied"] = True
+        controller["trap_challenge_hits"] = 0
+        label = room.objective_hud_state(1000)["label"]
+        self.assertIn("Flawless", label)
+        self.assertIn("Stat shard claimed", label)
+
+    def test_trap_non_flawless_reward_label(self):
+        """HUD does not show flawless annotation when hits were taken."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_challenge_reward_kind="stat_shard",
+            ),
+        )
+        controller = room._trap_controller()
+        controller["challenge_route_selected"] = True
+        controller["challenge_reward_applied"] = True
+        controller["trap_challenge_hits"] = 2
+        label = room.objective_hud_state(1000)["label"]
+        self.assertNotIn("Flawless", label)
+        self.assertIn("Stat shard claimed", label)
+
+    # ── T22: sweeper knockback + safe-spot slow ───────────────────────────────
+
+    def test_trap_sweeper_knockback_pushes_player_on_hit(self):
+        """When sweeper_knockback_px > 0, the sweeper pushes the player away on hit."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_sweeper_knockback_px=64,
+            ),
+        )
+        controller = room._trap_controller()
+        self.assertEqual(controller["sweeper_knockback_px"], 64)
+
+        sweeper_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c["lane_index"] == 0
+        )
+        sweeper_config["safe_spots"] = ()  # disable safe spots so collision lands
+        sweeper = TrapSweeper(sweeper_config)
+        sweeper.update(1000)
+
+        player = SimpleNamespace(rect=sweeper.rect.copy())
+        player.take_damage = lambda amount, damage_type=None: None
+
+        pre_x = player.rect.x
+        sweeper.apply_player_pressure(player)
+        self.assertNotEqual(player.rect.x, pre_x)
+
+    def test_trap_sweeper_no_knockback_in_default_biome(self):
+        """When sweeper_knockback_px == 0 (default), player position is unchanged."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_sweeper_knockback_px=0,
+            ),
+        )
+        sweeper_config = next(
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c["lane_index"] == 0
+        )
+        sweeper_config["safe_spots"] = ()
+        sweeper = TrapSweeper(sweeper_config)
+        sweeper.update(1000)
+
+        player = SimpleNamespace(rect=sweeper.rect.copy())
+        player.take_damage = lambda amount, damage_type=None: None
+
+        pre_x, pre_y = player.rect.x, player.rect.y
+        sweeper.apply_player_pressure(player)
+        self.assertEqual(player.rect.x, pre_x)
+        self.assertEqual(player.rect.y, pre_y)
+
+    def test_trap_safespot_slow_terrain_in_mud_biome(self):
+        """terrain_at_pixel returns 'trap_safespot_slow' inside a sweeper safe spot
+        when safespot_speed_mult < 1.0."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_safespot_speed_mult=0.6,
+            ),
+        )
+        # Find any sweeper safe spot rect and check terrain inside it.
+        sweeper_configs = [
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c.get("safe_spots")
+        ]
+        self.assertTrue(sweeper_configs, "Expected at least one sweeper with safe spots")
+        sx, sy, sw, sh = sweeper_configs[0]["safe_spots"][0]
+        cx = sx + sw // 2
+        cy = sy + sh // 2
+        self.assertEqual(room.terrain_at_pixel(cx, cy), "trap_safespot_slow")
+
+    def test_trap_safespot_no_slow_in_default_biome(self):
+        """terrain_at_pixel does NOT return 'trap_safespot_slow' when safespot_speed_mult == 1.0."""
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=False,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=False,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=2,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_safespot_speed_mult=1.0,
+            ),
+        )
+        sweeper_configs = [
+            c for c in room.objective_entity_configs
+            if c["kind"] == "trap_sweeper" and c.get("safe_spots")
+        ]
+        if sweeper_configs:
+            sx, sy, sw, sh = sweeper_configs[0]["safe_spots"][0]
+            cx = sx + sw // 2
+            cy = sy + sh // 2
+            terrain = room.terrain_at_pixel(cx, cy)
+            self.assertNotEqual(terrain, "trap_safespot_slow")
+
+    # ── end T22 ───────────────────────────────────────────────────────────────
 
     def test_ordered_puzzle_resets_when_player_activates_wrong_plate(self):
         room = Room(

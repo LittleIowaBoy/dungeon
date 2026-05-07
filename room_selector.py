@@ -494,6 +494,10 @@ class RoomSelector:
         trap_intensity_scale = max(0.0, float(template.trap_intensity_scale or 1.0))
         trap_speed_scale = max(0.0, float(template.trap_speed_scale or 1.0))
         trap_challenge_reward_kind = str(template.trap_challenge_reward_kind or "chest_upgrade")
+        trap_suppress_duration_ms = max(0, int(template.trap_suppress_duration_ms or 2500))
+        trap_suppress_cooldown_ms = max(0, int(template.trap_suppress_cooldown_ms or 8000))
+        trap_safespot_speed_mult = max(0.0, float(template.trap_safespot_speed_mult if template.trap_safespot_speed_mult is not None else 1.0))
+        trap_sweeper_knockback_px = max(0, int(template.trap_sweeper_knockback_px or 0))
 
         if objective_rule == "charge_plates":
             if puzzle_reinforcement_count <= 0:
@@ -614,4 +618,8 @@ class RoomSelector:
             trap_intensity_scale=trap_intensity_scale,
             trap_speed_scale=trap_speed_scale,
             trap_challenge_reward_kind=trap_challenge_reward_kind,
+            trap_suppress_duration_ms=trap_suppress_duration_ms,
+            trap_suppress_cooldown_ms=trap_suppress_cooldown_ms,
+            trap_safespot_speed_mult=trap_safespot_speed_mult,
+            trap_sweeper_knockback_px=trap_sweeper_knockback_px,
         )

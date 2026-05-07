@@ -328,6 +328,65 @@ class GameRuntimeTests(unittest.TestCase):
         self.assertEqual(spawn_x, expected_x)
         self.assertEqual(spawn_y, expected_y)
 
+    def test_handle_playing_chest_spawns_flawless_bonus_item_when_eligible(self):
+        """Opening a chest on a flawless challenge run spawns an extra biome trophy."""
+        spawned_items = _DummyGroup()
+        chest_rect = SimpleNamespace(centerx=100, centery=100)
+        dummy_chest = SimpleNamespace(
+            rect=chest_rect,
+            try_open=Mock(return_value=True),
+        )
+        chest_group = [dummy_chest]
+        room = SimpleNamespace(
+            allows_chest_open=Mock(return_value=True),
+            notify_chest_opened=Mock(),
+            trap_challenge_flawless_bonus_loot_id=Mock(return_value="stat_shard"),
+        )
+        game = rpg.Game.__new__(rpg.Game)
+        game.dungeon = SimpleNamespace(
+            chest_group=chest_group,
+            item_group=spawned_items,
+            current_room=room,
+        )
+        game.player = SimpleNamespace(rect=SimpleNamespace())
+        event = SimpleNamespace(key=rpg.pygame.K_e)
+
+        with patch("rpg.LootDrop") as loot_drop_cls:
+            loot_drop_cls.return_value = SimpleNamespace()
+            rpg.Game._handle_playing_chest(game, event)
+
+        loot_drop_cls.assert_called_once()
+        args = loot_drop_cls.call_args[0]
+        self.assertEqual(args[2], "stat_shard")
+        self.assertEqual(len(spawned_items), 1)
+
+    def test_handle_playing_chest_no_flawless_item_when_not_eligible(self):
+        """Opening a non-flawless chest does not spawn a bonus item."""
+        spawned_items = _DummyGroup()
+        chest_rect = SimpleNamespace(centerx=100, centery=100)
+        dummy_chest = SimpleNamespace(
+            rect=chest_rect,
+            try_open=Mock(return_value=True),
+        )
+        room = SimpleNamespace(
+            allows_chest_open=Mock(return_value=True),
+            notify_chest_opened=Mock(),
+            trap_challenge_flawless_bonus_loot_id=Mock(return_value=None),
+        )
+        game = rpg.Game.__new__(rpg.Game)
+        game.dungeon = SimpleNamespace(
+            chest_group=[dummy_chest],
+            item_group=spawned_items,
+            current_room=room,
+        )
+        game.player = SimpleNamespace(rect=SimpleNamespace())
+        event = SimpleNamespace(key=rpg.pygame.K_e)
+
+        with patch("rpg.LootDrop") as loot_drop_cls:
+            rpg.Game._handle_playing_chest(game, event)
+
+        loot_drop_cls.assert_not_called()
+
 
 class TrophyTallyHelperTests(unittest.TestCase):
     def test_returns_empty_when_progress_has_no_trophies(self):

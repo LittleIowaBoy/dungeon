@@ -871,23 +871,38 @@ class TrapLaneSwitch(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=config["pos"])
 
     def update(self, now_ticks):
-        del now_ticks
-        self._config["selected"] = self._selected()
+        self._config["selected"] = self._selected(now_ticks)
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=self.rect.center)
 
     def sync_player_overlap(self, player):
+        import pygame
+        now_ticks = pygame.time.get_ticks()
         padding = self._config.get("trigger_padding", 18)
         if not player.rect.colliderect(self.rect.inflate(padding, padding)):
             return False
 
         controller = self._config.get("controller") or {}
         lane_index = self._config.get("lane_index", 0)
-        if controller.get("safe_lane") == lane_index:
-            return False
+        is_challenge = lane_index == controller.get("challenge_lane")
 
-        controller["safe_lane"] = lane_index
-        controller["challenge_route_selected"] = lane_index == controller.get("challenge_lane")
+        if is_challenge:
+            if controller.get("challenge_route_selected"):
+                return False
+            controller["safe_lane"] = lane_index
+            controller["challenge_route_selected"] = True
+        else:
+            cooldown_until = controller.setdefault("lane_suppress_cooldown_until", {})
+            if now_ticks < cooldown_until.get(lane_index, 0):
+                return False
+            suppress_until = controller.setdefault("lane_suppress_until", {})
+            suppress_duration_ms = controller.get("suppress_duration_ms", 2500)
+            suppress_cooldown_ms = controller.get("suppress_cooldown_ms", 8000)
+            suppress_until[lane_index] = now_ticks + suppress_duration_ms
+            cooldown_until[lane_index] = now_ticks + suppress_cooldown_ms
+            controller["safe_lane"] = lane_index
+            controller["challenge_route_selected"] = False
+
         self._config["selected"] = True
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=self.rect.center)
@@ -901,9 +916,15 @@ class TrapLaneSwitch(pygame.sprite.Sprite):
         color = _TRAP_SWITCH_SELECTED_COLOR if self._selected() else _TRAP_SWITCH_COLOR
         pygame.draw.circle(surface, color, self.rect.center, self.SIZE // 2 + 4, 1)
 
-    def _selected(self):
+    def _selected(self, now_ticks=None):
+        import pygame
         controller = self._config.get("controller") or {}
-        return controller.get("safe_lane") == self._config.get("lane_index")
+        lane_index = self._config.get("lane_index")
+        if controller.get("challenge_route_selected") and controller.get("challenge_lane") == lane_index:
+            return True
+        if now_ticks is None:
+            now_ticks = pygame.time.get_ticks()
+        return now_ticks < controller.get("lane_suppress_until", {}).get(lane_index, 0)
 
     def _build_image(self):
         color = _TRAP_SWITCH_SELECTED_COLOR if self._selected() else _TRAP_SWITCH_COLOR
@@ -939,10 +960,27 @@ class TrapSweeper(pygame.sprite.Sprite):
         if _player_in_safe_spot(player, self._config.get("safe_spots", ())):
             return False
 
-        player.take_damage(self._config.get("damage", 8))
+        player.take_damage(self._config.get("damage", 8), damage_type="trap")
         self._config["damage_cooldown_until"] = (
             self._last_now_ticks + self._config.get("damage_cooldown_ms", 350)
         )
+        controller = self._config.get("controller") or {}
+        if (
+            controller.get("challenge_route_selected")
+            and controller.get("challenge_lane") == self._config.get("lane_index")
+        ):
+            controller["trap_challenge_hits"] = controller.get("trap_challenge_hits", 0) + 1
+        knockback_px = controller.get("sweeper_knockback_px", 0)
+        if knockback_px > 0:
+            orientation = self._config.get("orientation", "horizontal")
+            sx, sy = self.rect.center
+            px, py = player.rect.center
+            if orientation == "horizontal":
+                push = knockback_px if px >= sx else -knockback_px
+                player.rect.x += push
+            else:
+                push = knockback_px if py >= sy else -knockback_px
+                player.rect.y += push
         return True
 
     def take_damage(self, amount):
@@ -973,12 +1011,13 @@ class TrapSweeper(pygame.sprite.Sprite):
     def _active(self):
         controller = self._config.get("controller") or {}
         lane_index = self._config.get("lane_index")
-        if controller.get("safe_lane") != lane_index:
-            return True
-        return (
+        if (
             controller.get("challenge_route_selected")
             and controller.get("challenge_lane") == lane_index
-        )
+        ):
+            return True
+        suppress_until = controller.get("lane_suppress_until", {})
+        return self._last_now_ticks >= suppress_until.get(lane_index, 0)
 
     def _build_image(self):
         lane_thickness = self._config.get("lane_thickness", 20)
@@ -1048,10 +1087,16 @@ class TrapVentLane(pygame.sprite.Sprite):
         if _player_in_safe_spot(player, self._config.get("safe_spots", ())):
             return False
 
-        player.take_damage(self._config.get("damage", 7))
+        player.take_damage(self._config.get("damage", 7), damage_type="trap")
         self._config["damage_cooldown_until"] = (
             self._last_now_ticks + self._config.get("damage_cooldown_ms", 300)
         )
+        controller = self._config.get("controller") or {}
+        if (
+            controller.get("challenge_route_selected")
+            and controller.get("challenge_lane") == self._config.get("lane_index")
+        ):
+            controller["trap_challenge_hits"] = controller.get("trap_challenge_hits", 0) + 1
         return True
 
     def take_damage(self, amount):
@@ -1065,20 +1110,19 @@ class TrapVentLane(pygame.sprite.Sprite):
     def _active(self, now_ticks):
         controller = self._config.get("controller") or {}
         lane_index = self._config.get("lane_index")
-        selected = controller.get("safe_lane") == lane_index
         challenge_selected = (
             controller.get("challenge_route_selected")
             and controller.get("challenge_lane") == lane_index
         )
-        if selected and not challenge_selected:
-            return False
-
+        if not challenge_selected:
+            suppress_until = controller.get("lane_suppress_until", {})
+            if now_ticks < suppress_until.get(lane_index, 0):
+                return False
         cycle_ms = self._config.get("cycle_ms", 1100)
         active_ms = self._config.get("active_ms", 650)
         if challenge_selected:
             cycle_ms = self._config.get("challenge_cycle_ms", max(500, cycle_ms - 250))
             active_ms = self._config.get("challenge_active_ms", max(200, active_ms - 200))
-
         phase = (now_ticks + self._config.get("phase_offset_ms", 0)) % cycle_ms
         return phase < active_ms
 
@@ -1131,10 +1175,16 @@ class TrapCrusher(pygame.sprite.Sprite):
         if _player_in_safe_spot(player, self._config.get("safe_spots", ())):
             return False
 
-        player.take_damage(self._config.get("damage", 9))
+        player.take_damage(self._config.get("damage", 9), damage_type="trap")
         self._config["damage_cooldown_until"] = (
             self._last_now_ticks + self._config.get("damage_cooldown_ms", 350)
         )
+        controller = self._config.get("controller") or {}
+        if (
+            controller.get("challenge_route_selected")
+            and controller.get("challenge_lane") == self._config.get("lane_index")
+        ):
+            controller["trap_challenge_hits"] = controller.get("trap_challenge_hits", 0) + 1
         return True
 
     def take_damage(self, amount):
@@ -1148,13 +1198,14 @@ class TrapCrusher(pygame.sprite.Sprite):
     def _active(self, now_ticks):
         controller = self._config.get("controller") or {}
         lane_index = self._config.get("lane_index")
-        selected = controller.get("safe_lane") == lane_index
         challenge_selected = (
             controller.get("challenge_route_selected")
             and controller.get("challenge_lane") == lane_index
         )
-        if selected and not challenge_selected:
-            return False
+        if not challenge_selected:
+            suppress_until = controller.get("lane_suppress_until", {})
+            if now_ticks < suppress_until.get(lane_index, 0):
+                return False
 
         cycle_ms = self._config.get("cycle_ms", 1200)
         active_ms = self._config.get("active_ms", 700)

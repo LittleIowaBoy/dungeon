@@ -290,6 +290,13 @@ _TRAP_REWARD_KIND_LABELS = {
     "tempo_rune": "Tempo rune claimed",
     "mobility_consumable": "Mobility charge claimed",
 }
+# Biome trophy loot ids awarded as a second bonus when the challenge lane is
+# cleared without taking any hits. Mirrors the mapping in chest.py.
+_TRAP_CHALLENGE_FLAWLESS_LOOT = {
+    "stat_shard": "stat_shard",
+    "tempo_rune": "tempo_rune",
+    "mobility_consumable": "mobility_charge",
+}
 _TIMED_EXTRACTION_CLEAN_BONUS_COINS = {
     "standard": 10,
     "branch_bonus": 14,
@@ -383,6 +390,8 @@ class Room:
         self._ritual_reaction_ids = set()
         self._ritual_last_wrong_strike_at = None
         self.objective_entity_configs = []
+        self._trap_safespot_rects = []
+        self._trap_safespot_speed_mult = 1.0
         self._chest_reward_tier = room_plan.reward_tier if room_plan is not None else "standard"
 
         # build grid
@@ -495,6 +504,11 @@ class Room:
         if t in WALKABLE_HAZARD_TILES:
             return t
         if t in (FLOOR, DOOR, PORTAL):
+            # Check if the player is inside a sweeper safe spot with slow enabled.
+            if self._trap_safespot_speed_mult < 1.0:
+                for sx, sy, sw, sh in self._trap_safespot_rects:
+                    if sx <= px <= sx + sw and sy <= py <= sy + sh:
+                        return "trap_safespot_slow"
             return "floor"
         return "floor"
 
@@ -2144,13 +2158,16 @@ class Room:
 
         rule = self.room_plan.objective_rule
         if self.room_plan.room_id == "trap_gauntlet":
-            route_prefix = "Challenge lane" if self._trap_challenge_route_selected() else "Safe lane"
-            route_label = self._trap_safe_lane_label()
+            challenge_selected = self._trap_challenge_route_selected()
+            route_label = self._trap_safe_lane_label(now_ticks)
             reward_label = self._trap_reward_status_label()
-            return {
-                "visible": True,
-                "label": f"Objective: {route_prefix} {route_label} | {reward_label}",
-            }
+            if challenge_selected:
+                label = f"Objective: Challenge lane {route_label} | {reward_label}"
+            elif route_label:
+                label = f"Objective: Safe lane {route_label} | {reward_label}"
+            else:
+                label = f"Objective: Navigate | {reward_label}"
+            return {"visible": True, "label": label}
 
         if rule == "holdout_timer" and self.is_exit and self.objective_status != "completed":
             started_at = self.objective_started_at or now_ticks
@@ -2983,15 +3000,20 @@ class Room:
                 return controller
         return None
 
-    def _trap_safe_lane_label(self):
+    def _trap_safe_lane_label(self, now_ticks=0):
         controller = self._trap_controller()
         if controller is None:
-            return "Center"
+            return ""
         labels = controller.get("lane_labels", ())
-        safe_lane = controller.get("safe_lane", 0)
-        if 0 <= safe_lane < len(labels):
-            return labels[safe_lane]
-        return f"Lane {safe_lane + 1}"
+        safe_lane = controller.get("safe_lane", -1)
+        if safe_lane == -1:
+            return ""
+        if controller.get("challenge_route_selected") and controller.get("challenge_lane") == safe_lane:
+            return labels[safe_lane] if 0 <= safe_lane < len(labels) else f"Lane {safe_lane + 1}"
+        suppress_until = controller.get("lane_suppress_until", {}).get(safe_lane, 0)
+        if now_ticks >= suppress_until:
+            return ""
+        return labels[safe_lane] if 0 <= safe_lane < len(labels) else f"Lane {safe_lane + 1}"
 
     def chest_reward_tier(self):
         return self._chest_reward_tier
@@ -3006,6 +3028,20 @@ class Room:
         controller = self._trap_controller()
         return bool(controller and controller.get("challenge_route_selected"))
 
+    def trap_challenge_flawless_bonus_loot_id(self):
+        """Return the extra biome-trophy loot id if the challenge lane was cleared
+        without any hits, else None.  Safe to call any frame after a chest open."""
+        controller = self._trap_controller()
+        if controller is None:
+            return None
+        if not controller.get("challenge_reward_applied"):
+            return None
+        if controller.get("trap_challenge_hits", 0) > 0:
+            return None
+        return _TRAP_CHALLENGE_FLAWLESS_LOOT.get(
+            controller.get("reward_kind", "chest_upgrade")
+        )
+
     def _trap_reward_status_label(self):
         controller = self._trap_controller()
         if controller is None:
@@ -3017,6 +3053,8 @@ class Room:
                 controller.get("reward_kind", "chest_upgrade"),
                 "Reward upgraded",
             )
+            if controller.get("trap_challenge_hits", 0) == 0:
+                return f"{label} | Flawless!"
             return label
         return f"Bonus route {controller.get('challenge_lane_label', 'armed')}"
 
@@ -3725,8 +3763,12 @@ class Room:
         intensity_scale = max(0.0, float(self.room_plan.trap_intensity_scale or 1.0))
         speed_scale = max(0.0, float(self.room_plan.trap_speed_scale or 1.0))
         reward_kind = str(self.room_plan.trap_challenge_reward_kind or "chest_upgrade")
+        suppress_duration_ms = max(0, int(self.room_plan.trap_suppress_duration_ms or 2500))
+        suppress_cooldown_ms = max(0, int(self.room_plan.trap_suppress_cooldown_ms or 8000))
+        safespot_speed_mult = max(0.0, float(self.room_plan.trap_safespot_speed_mult if self.room_plan.trap_safespot_speed_mult is not None else 1.0))
+        sweeper_knockback_px = max(0, int(self.room_plan.trap_sweeper_knockback_px or 0))
         controller = {
-            "safe_lane": 0 if lane_count == 2 else lane_count // 2,
+            "safe_lane": -1,
             "lane_labels": lane_labels,
             "lane_offsets": lane_offsets,
             "orientation": orientation,
@@ -3736,9 +3778,16 @@ class Room:
             "challenge_lane_label": lane_labels[challenge_lane],
             "challenge_route_selected": False,
             "challenge_reward_applied": False,
+            "trap_challenge_hits": 0,
             "intensity_scale": intensity_scale,
             "speed_scale": speed_scale,
             "reward_kind": reward_kind,
+            "lane_suppress_until": {},
+            "lane_suppress_cooldown_until": {},
+            "suppress_duration_ms": suppress_duration_ms,
+            "suppress_cooldown_ms": suppress_cooldown_ms,
+            "sweeper_knockback_px": sweeper_knockback_px,
+            "safespot_speed_mult": safespot_speed_mult,
         }
         configs = []
         for index, offset in enumerate(lane_offsets):
@@ -3790,6 +3839,14 @@ class Room:
                         active_switch_bank,
                     )
                 )
+        # Collect all sweeper safe-spot rects so terrain_at_pixel can slow the
+        # player when they stand inside one (mud biome only).
+        all_safe_spots = []
+        for cfg in configs:
+            for rect in cfg.get("safe_spots", ()):
+                all_safe_spots.append(rect)
+        self._trap_safespot_rects = all_safe_spots
+        self._trap_safespot_speed_mult = safespot_speed_mult
         return configs
 
     @staticmethod

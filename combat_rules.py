@@ -5,7 +5,7 @@ import damage_feedback
 import dodge_rules
 import identity_runes
 import stat_runes
-from settings import INVINCIBILITY_MS
+from settings import INVINCIBILITY_MS, TRAP_DAMAGE_IFRAME_MS
 
 
 def reset_runtime_combat(player, max_hp):
@@ -42,8 +42,9 @@ def take_damage(player, amount, now_ticks, damage_type=None):
 
     amount = stat_runes.modify_incoming_damage(player, amount)
     amount = armor_rules.apply_incoming_damage_multiplier(player, amount, damage_type)
+    _iframe = TRAP_DAMAGE_IFRAME_MS if damage_type == "trap" else INVINCIBILITY_MS
     if amount <= 0:
-        player._invincible_until = now_ticks + INVINCIBILITY_MS
+        player._invincible_until = now_ticks + _iframe
         return
 
     pre_total = player.armor_hp + player.current_hp
@@ -53,7 +54,7 @@ def take_damage(player, amount, now_ticks, damage_type=None):
         amount -= absorbed
 
     player.current_hp = max(0, player.current_hp - amount)
-    player._invincible_until = now_ticks + INVINCIBILITY_MS
+    player._invincible_until = now_ticks + _iframe
     stat_runes.on_player_damage_taken(player, amount)
     total_taken = pre_total - (player.armor_hp + player.current_hp)
     if total_taken > 0:

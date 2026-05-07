@@ -710,6 +710,11 @@ class Game:
                     continue
                 if chest.try_open(self.player.rect, self.dungeon.item_group):
                     self.dungeon.current_room.notify_chest_opened(now_ticks)
+                    flawless_loot_id = self.dungeon.current_room.trap_challenge_flawless_bonus_loot_id()
+                    if flawless_loot_id:
+                        self.dungeon.item_group.add(
+                            LootDrop(chest.rect.centerx + 22, chest.rect.centery - 24, flawless_loot_id)
+                        )
 
     def _handle_playing_keydown(self, event):
         assert self.dungeon is not None

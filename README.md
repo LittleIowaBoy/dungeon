@@ -275,6 +275,21 @@ Deferred follow-up after the initial breadth-first roadmap sweep:
 2. Timed Extraction T2/T3: stronger pursuit scripting and additional clean-vs-overtime reward depth beyond the current completion bonus and result messaging
 3. Puzzle P1 follow-up: additional anti-camping and alternate-solve variants beyond ordered, staggered, and paired rule sets
 
+**Trap gauntlet deepening (T19–T25) — started May 2026:**
+
+Three core exploits identified before this slice: (1) a permanent safe lane that never required engagement, (2) 1000ms i-frames that let players tank-and-walk through sweepers, and (3) a no-cost optional challenge lane with no punishment for ignoring it. The following slices address each exploit and add biome-specific texture:
+
+- **T19 — Reduced trap i-frames** ✅: `TRAP_DAMAGE_IFRAME_MS = 300` added to `settings.py`; all three hazard entities (`TrapSweeper`, `TrapVentLane`, `TrapCrusher`) now pass `damage_type="trap"` so trap hits use the short window; 2 new tests; 1265 total
+- **T20 — Timed lane suppression** ✅: replaced permanent safe-lane assignment with a timer-based suppress window (default 2500ms active, 8000ms cooldown); switch step sets `lane_suppress_until` and `lane_suppress_cooldown_until` in the shared controller; hazards read the timer to determine activity; new template fields `trap_suppress_duration_ms` / `trap_suppress_cooldown_ms` flow through the full data pipeline (content_db → room_plan → room_selector → room.py); mud biome uses tighter 2000ms/10000ms split; 4 new tests; 1267 total
+- **T21 — Flawless challenge bonus** ✅: controller tracks `trap_challenge_hits`; any challenge-lane hit increments the counter; `trap_challenge_flawless_bonus_loot_id()` returns the biome trophy loot id when the challenge reward was collected with zero hits; `rpg.py` spawns an extra `LootDrop` on chest open when flawless; HUD appends `| Flawless!` while hits remain zero; 8 new tests; 1267 total (subtests counted separately)
+- **T22 — Mud sweeper knockback + safe-spot slow** ✅: new template fields `trap_sweeper_knockback_px` (default 0, mud=64) and `trap_safespot_speed_mult` (default 1.0, mud=0.6) through the full data pipeline; `TrapSweeper.apply_player_pressure` pushes the player `knockback_px` pixels away from the sweeper center along the lane axis on hit; `terrain_at_pixel` returns `"trap_safespot_slow"` when the player stands inside a sweeper safe-spot recess and the mult is below 1.0; `TERRAIN_SPEED["trap_safespot_slow"] = 0.6` added to `settings.py`; 4 new tests; 1267 total
+
+**Remaining slices:**
+
+- **T23 — Frozen biome CHILLED status**: vent hits in the ice biome apply a `CHILLED` status effect (3s duration, 50% speed reduction); new `CHILLED` entry in `status_effects.py`; speed hook in `movement_rules.py`; tint/visual in `player_visual_rules.py`; hit counter in `objective_entities.py` TrapVentLane
+- **T24 — Sunken biome surge event**: every 12s all lanes activate simultaneously for 1.5s, overriding any active suppression window; new template fields `trap_surge_interval_ms` / `trap_surge_duration_ms` through the full data pipeline; room.py tracks surge state in the controller; `hud_view.py` flashes a `SURGE INCOMING` banner 2s before each surge fires
+- **T25 — Spike panel hazard**: new `spike_panel` hazard kind for `mixed_lanes` variant; floor tiles toggle active/inactive on a fixed cycle; room.py only — no data pipeline changes needed
+
 ## Project Layout
 
 Important files and directories:

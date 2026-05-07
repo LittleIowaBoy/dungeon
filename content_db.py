@@ -85,6 +85,10 @@ ROOM_TEMPLATE_COLUMNS = (
     "trap_intensity_scale",
     "trap_speed_scale",
     "trap_challenge_reward_kind",
+    "trap_suppress_duration_ms",
+    "trap_suppress_cooldown_ms",
+    "trap_safespot_speed_mult",
+    "trap_sweeper_knockback_px",
     "notes",
 )
 
@@ -140,6 +144,10 @@ def _plan_shape(
     trap_intensity_scale=1.0,
     trap_speed_scale=1.0,
     trap_challenge_reward_kind="chest_upgrade",
+    trap_suppress_duration_ms=2500,
+    trap_suppress_cooldown_ms=8000,
+    trap_safespot_speed_mult=1.0,
+    trap_sweeper_knockback_px=0,
 ):
     return {
         "objective_rule": objective_rule,
@@ -191,6 +199,10 @@ def _plan_shape(
         "trap_intensity_scale": trap_intensity_scale,
         "trap_speed_scale": trap_speed_scale,
         "trap_challenge_reward_kind": trap_challenge_reward_kind,
+        "trap_suppress_duration_ms": trap_suppress_duration_ms,
+        "trap_suppress_cooldown_ms": trap_suppress_cooldown_ms,
+        "trap_safespot_speed_mult": trap_safespot_speed_mult,
+        "trap_sweeper_knockback_px": trap_sweeper_knockback_px,
     }
 
 BASE_ROOM_TEMPLATES = (
@@ -1171,6 +1183,10 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             trap_intensity_scale=1.4,
             trap_speed_scale=0.85,
             trap_challenge_reward_kind="stat_shard",
+            trap_suppress_duration_ms=2000,
+            trap_suppress_cooldown_ms=10000,
+            trap_safespot_speed_mult=0.6,
+            trap_sweeper_knockback_px=64,
             notes="Thread through moving stone sweepers, or risk the challenge lane for a better cache. The boulders hit heavy and roll a touch slower, so a single brush off the safe lane can shred low-armor builds. Bonus route grants a stat shard.",
         ),
         _override_template(
@@ -1339,6 +1355,8 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             trap_intensity_scale=0.8,
             trap_speed_scale=1.25,
             trap_challenge_reward_kind="tempo_rune",
+            trap_suppress_duration_ms=2200,
+            trap_suppress_cooldown_ms=8000,
             notes="Use the switches to quiet one frost-vent lane, or take the challenge route for better loot. Vents jet quickly and bite a little less than the boulder run, rewarding precise timing over heavy armor. Bonus route grants a tempo rune.",
         ),
         _override_template(
@@ -1474,6 +1492,8 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             objective_variant="mixed_lanes",
             trap_intensity_scale=1.15,
             trap_challenge_reward_kind="mobility_consumable",
+            trap_suppress_duration_ms=2500,
+            trap_suppress_cooldown_ms=7000,
             notes="Use the entry and checkpoint switches to reroute through a mixed floodgate gauntlet of sweepers, vents, and crushers, then commit to the challenge lane for the vault cache. The flood-charged hazards hit harder than the standard set.",
         ),
         _override_template(
@@ -1617,6 +1637,10 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     trap_intensity_scale REAL NOT NULL DEFAULT 1.0,
     trap_speed_scale REAL NOT NULL DEFAULT 1.0,
     trap_challenge_reward_kind TEXT NOT NULL DEFAULT 'chest_upgrade',
+    trap_suppress_duration_ms INTEGER NOT NULL DEFAULT 2500,
+    trap_suppress_cooldown_ms INTEGER NOT NULL DEFAULT 8000,
+    trap_safespot_speed_mult REAL NOT NULL DEFAULT 1.0,
+    trap_sweeper_knockback_px INTEGER NOT NULL DEFAULT 0,
     notes TEXT NOT NULL DEFAULT ''
 );
 """
@@ -1777,6 +1801,10 @@ def _ensure_schema_columns(conn):
         "trap_intensity_scale": "REAL NOT NULL DEFAULT 1.0",
         "trap_speed_scale": "REAL NOT NULL DEFAULT 1.0",
         "trap_challenge_reward_kind": "TEXT NOT NULL DEFAULT 'chest_upgrade'",
+        "trap_suppress_duration_ms": "INTEGER NOT NULL DEFAULT 2500",
+        "trap_suppress_cooldown_ms": "INTEGER NOT NULL DEFAULT 8000",
+        "trap_safespot_speed_mult": "REAL NOT NULL DEFAULT 1.0",
+        "trap_sweeper_knockback_px": "INTEGER NOT NULL DEFAULT 0",
     }
     for table_name in (BASE_ROOM_TEMPLATE_TABLE, *DUNGEON_ROOM_TEMPLATE_TABLES.values()):
         existing = {

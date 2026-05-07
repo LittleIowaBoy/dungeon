@@ -132,7 +132,8 @@ COLOR_HEALTH_BG  = (60, 20, 20)
 PLAYER_BASE_SPEED   = 3.0    # pixels per frame
 PLAYER_MAX_HP       = 100
 PLAYER_SIZE         = 28     # pixels (square)
-INVINCIBILITY_MS    = 1000   # 1 second
+INVINCIBILITY_MS       = 1000   # 1 second (standard post-damage window)
+TRAP_DAMAGE_IFRAME_MS  = 300    # shorter window after trap hits so players can't tank-and-coast
 FLASH_INTERVAL_MS   = 100
 
 # ── Consumable items ────────────────────────────────────
@@ -520,6 +521,8 @@ TERRAIN_SPEED = {
     "glyph_tile":   1.0,
     "slide":        1.0,        # slide speed unchanged; direction is committed
     "trail_freeze": 1.0,        # walkable until expiry; then collapses to pit
+    # Trap-gauntlet safe-spot slow (mud biome variant only)
+    "trap_safespot_slow": 0.6,
 }
 ICE_FRICTION = 0.92          # velocity *= friction each frame on ice
 

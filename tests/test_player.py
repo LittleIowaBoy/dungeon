@@ -9,7 +9,7 @@ import movement_rules
 from player import Player
 from progress import PlayerProgress
 from settings import ATTACK_BOOST_MULTIPLIER, FLASH_INTERVAL_MS, SPEED_BOOST_MULTIPLIER, WEAPON_PLUS_MULTIPLIER
-from settings import COMPASS_DISPLAY_MS
+from settings import COMPASS_DISPLAY_MS, INVINCIBILITY_MS, TRAP_DAMAGE_IFRAME_MS
 import damage_feedback
 
 
@@ -325,6 +325,22 @@ class PlayerLoadoutTests(unittest.TestCase):
             self.assertFalse(player.is_speed_boosted)
             self.assertFalse(player.is_attack_boosted)
             self.assertEqual(player._effective_speed_multiplier(), 0.75)
+
+
+    def test_trap_damage_grants_short_iframe(self):
+        """Trap-type damage grants TRAP_DAMAGE_IFRAME_MS not the full INVINCIBILITY_MS."""
+        player = Player(32, 32)
+        with patch("pygame.time.get_ticks", return_value=5000):
+            player.take_damage(5, damage_type="trap")
+        self.assertEqual(player._invincible_until, 5000 + TRAP_DAMAGE_IFRAME_MS)
+        self.assertLess(player._invincible_until, 5000 + INVINCIBILITY_MS)
+
+    def test_normal_damage_grants_full_invincibility_window(self):
+        """Non-trap damage still grants the full INVINCIBILITY_MS window."""
+        player = Player(32, 32)
+        with patch("pygame.time.get_ticks", return_value=5000):
+            player.take_damage(5)
+        self.assertEqual(player._invincible_until, 5000 + INVINCIBILITY_MS)
 
 
 if __name__ == "__main__":
