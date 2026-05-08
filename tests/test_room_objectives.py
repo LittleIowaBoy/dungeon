@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pygame
 
-from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, HoldoutZone, PressurePlate, PuzzleStabilizer, TrapCrusher, TrapLaneSwitch, TrapSweeper, TrapVentLane
+from objective_entities import AlarmBeacon, AltarAnchor, EscortNPC, HoldoutStabilizer, HoldoutZone, PressurePlate, PuzzleStabilizer, TrapCrusher, TrapLaneSwitch, TrapSpikePanel, TrapSweeper, TrapVentLane
 from room import FLOOR, PORTAL, WALL, Room
 from room_plan import RoomPlan, RoomTemplate
 from settings import ROOM_COLS, ROOM_ROWS, TILE_SIZE
@@ -93,6 +93,9 @@ def _plan(
     trap_suppress_cooldown_ms=8000,
     trap_safespot_speed_mult=1.0,
     trap_sweeper_knockback_px=0,
+    trap_vent_chilled_duration_ms=0,
+    trap_surge_interval_ms=0,
+    trap_surge_duration_ms=0,
 ):
     return RoomPlan(
         position=(0, 0),
@@ -159,6 +162,9 @@ def _plan(
         trap_suppress_cooldown_ms=trap_suppress_cooldown_ms,
         trap_safespot_speed_mult=trap_safespot_speed_mult,
         trap_sweeper_knockback_px=trap_sweeper_knockback_px,
+        trap_vent_chilled_duration_ms=trap_vent_chilled_duration_ms,
+        trap_surge_interval_ms=trap_surge_interval_ms,
+        trap_surge_duration_ms=trap_surge_duration_ms,
     )
 
 
@@ -266,7 +272,7 @@ class RoomObjectiveTests(unittest.TestCase):
 
         self.assertEqual(update, {"kind": "upgrade_reward_chest", "reward_tier": "finale_bonus", "reward_kind": "chest_upgrade"})
         self.assertEqual(room.chest_reward_tier(), "finale_bonus")
-        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Challenge lane Bottom | Reward upgraded | Flawless!")
+        self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Challenge lane Bottom | Reward upgraded")
 
     def test_trap_challenge_lane_payload_carries_biome_reward_kind(self):
         room = Room(
@@ -298,7 +304,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["reward_kind"], "stat_shard")
         self.assertEqual(
             room.objective_hud_state(1000)["label"],
-            "Objective: Challenge lane Bottom | Stat shard claimed | Flawless!",
+            "Objective: Challenge lane Bottom | Stat shard claimed",
         )
 
     def test_trap_challenge_lane_label_reflects_tempo_rune_reward(self):
@@ -330,7 +336,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["reward_kind"], "tempo_rune")
         self.assertEqual(
             room.objective_hud_state(1000)["label"],
-            "Objective: Challenge lane Bottom | Tempo rune claimed | Flawless!",
+            "Objective: Challenge lane Bottom | Tempo rune claimed",
         )
 
     def test_trap_challenge_lane_label_reflects_mobility_consumable_reward(self):
@@ -362,7 +368,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(update["reward_kind"], "mobility_consumable")
         self.assertEqual(
             room.objective_hud_state(1000)["label"],
-            "Objective: Challenge lane Bottom | Mobility charge claimed | Flawless!",
+            "Objective: Challenge lane Bottom | Mobility charge claimed",
         )
 
     def test_trap_gauntlet_can_build_vent_lane_variant(self):
@@ -893,7 +899,7 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertIsNone(room.trap_challenge_flawless_bonus_loot_id())
 
     def test_trap_flawless_reward_label(self):
-        """HUD shows flawless annotation when challenge applied with no hits."""
+        """HUD shows flawless annotation only after the chest is claimed with no hits."""
         room = Room(
             {"top": False, "bottom": False, "left": True, "right": False},
             is_exit=False,
@@ -913,9 +919,14 @@ class RoomObjectiveTests(unittest.TestCase):
         controller["challenge_route_selected"] = True
         controller["challenge_reward_applied"] = True
         controller["trap_challenge_hits"] = 0
+        # Before chest is looted: reward label visible but no Flawless! yet
+        label = room.objective_hud_state(1000)["label"]
+        self.assertNotIn("Flawless", label)
+        self.assertIn("Stat shard claimed", label)
+        # After chest is looted with no hits: Flawless! appears
+        room.chest_looted = True
         label = room.objective_hud_state(1000)["label"]
         self.assertIn("Flawless", label)
-        self.assertIn("Stat shard claimed", label)
 
     def test_trap_non_flawless_reward_label(self):
         """HUD does not show flawless annotation when hits were taken."""
@@ -941,6 +952,42 @@ class RoomObjectiveTests(unittest.TestCase):
         label = room.objective_hud_state(1000)["label"]
         self.assertNotIn("Flawless", label)
         self.assertIn("Stat shard claimed", label)
+        # After chest looted with hits: still no Flawless
+        room.chest_looted = True
+        label = room.objective_hud_state(1000)["label"]
+        self.assertNotIn("Flawless", label)
+
+    def test_sweeper_challenge_speed_does_not_stall_at_boundary(self):
+        """Challenge-lane sweeper at sub-pixel speed must keep moving after reaching a boundary."""
+        config = {
+            "kind": "trap_sweeper",
+            "lane_index": 2,
+            "controller": {
+                "challenge_route_selected": True,
+                "challenge_lane": 2,
+                "lane_suppress_until": {},
+                "surge_active": False,
+            },
+            "orientation": "horizontal",
+            "pos": (70, 100),
+            "travel_min": 70,
+            "travel_max": 200,
+            "direction": -1,
+            "speed": 1.5,
+            "challenge_speed": 0.7,  # sub-pixel — was the stall trigger
+            "damage": 8,
+            "damage_cooldown_ms": 350,
+            "damage_cooldown_until": 0,
+            "lane_thickness": 48,
+            "safe_spots": [],
+            "active": True,
+        }
+        sweeper = TrapSweeper(config)
+        # Drive it to the left boundary and then keep ticking
+        for tick in range(1, 300):
+            sweeper.update(tick * 16)
+        # After 300 frames it must not be frozen at travel_min
+        self.assertGreater(sweeper.rect.centerx, config["travel_min"])
 
     # ── T22: sweeper knockback + safe-spot slow ───────────────────────────────
 
@@ -3700,6 +3747,259 @@ class SecondaryObjectiveSeamTests(unittest.TestCase):
         completed = room._check_secondary_objective(1100, [])
         self.assertFalse(completed)
         self.assertNotEqual(room.objective_status, "completed")
+
+
+class TrapChilledStatusTests(unittest.TestCase):
+    """T23 – Frost Vent CHILLED application."""
+
+    def _make_vent_room(self, chilled_ms=0):
+        return Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=True,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Vent Switch",
+                objective_trigger_padding=18,
+                objective_variant="vent_lanes",
+                trap_vent_chilled_duration_ms=chilled_ms,
+            ),
+        )
+
+    def test_vent_applies_chilled_when_configured(self):
+        import status_effects as se
+        room = self._make_vent_room(chilled_ms=3000)
+        vent_configs = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        self.assertTrue(vent_configs)
+        cfg = vent_configs[0]
+        cfg["active"] = True
+        cfg["damage_cooldown_until"] = 0
+
+        player = SimpleNamespace(
+            rect=pygame.Rect(0, 0, 12, 12),
+            hp=20,
+            max_hp=20,
+            statuses={},
+            _damage_cooldown_until=0,
+        )
+        center = cfg["center"]
+        if cfg["orientation"] == "horizontal":
+            player.rect.center = (200, center)
+        else:
+            player.rect.center = (center, 200)
+
+        def take_damage(amount, damage_type="trap"):
+            pass
+
+        player.take_damage = take_damage
+
+        sprite = TrapVentLane(cfg)
+        sprite._last_now_ticks = 1000
+        sprite.apply_player_pressure(player)
+
+        self.assertTrue(se.has_status(player, se.CHILLED, 1000))
+
+    def test_vent_no_chilled_when_not_configured(self):
+        import status_effects as se
+        room = self._make_vent_room(chilled_ms=0)
+        vent_configs = [c for c in room.objective_entity_configs if c["kind"] == "trap_vent_lane"]
+        cfg = vent_configs[0]
+        cfg["active"] = True
+        cfg["damage_cooldown_until"] = 0
+
+        player = SimpleNamespace(
+            rect=pygame.Rect(0, 0, 12, 12),
+            hp=20,
+            max_hp=20,
+            statuses={},
+            _damage_cooldown_until=0,
+        )
+        center = cfg["center"]
+        if cfg["orientation"] == "horizontal":
+            player.rect.center = (200, center)
+        else:
+            player.rect.center = (center, 200)
+
+        def take_damage(amount, damage_type="trap"):
+            pass
+
+        player.take_damage = take_damage
+
+        sprite = TrapVentLane(cfg)
+        sprite._last_now_ticks = 1000
+        sprite.apply_player_pressure(player)
+
+        self.assertFalse(se.has_status(player, se.CHILLED, 1000))
+
+    def test_chilled_reduces_speed(self):
+        import status_effects as se
+        player = SimpleNamespace(statuses={})
+        se.apply_status(player, se.CHILLED, 0, duration_ms=3000)
+        mult = se.speed_multiplier(player, 500)
+        self.assertLess(mult, 1.0)
+
+
+class TrapSurgeTests(unittest.TestCase):
+    """T24 – Surge state machine."""
+
+    def _make_surge_room(self, surge_interval_ms=10000, surge_duration_ms=2000):
+        return Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=True,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=3,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                trap_surge_interval_ms=surge_interval_ms,
+                trap_surge_duration_ms=surge_duration_ms,
+            ),
+        )
+
+    def test_surge_not_active_at_start(self):
+        room = self._make_surge_room()
+        controller = room._trap_controller()
+        self.assertFalse(controller["surge_active"])
+
+    def test_surge_becomes_active_after_interval(self):
+        room = self._make_surge_room(surge_interval_ms=5000)
+        # First call initialises surge_next_at
+        room._update_trap_surge(0)
+        # At 5001 ms surge should fire
+        room._update_trap_surge(5001)
+        controller = room._trap_controller()
+        self.assertTrue(controller["surge_active"])
+
+    def test_surge_warning_two_seconds_before(self):
+        room = self._make_surge_room(surge_interval_ms=8000)
+        room._update_trap_surge(0)
+        room._update_trap_surge(6001)  # 8000 - 6001 = 1999 < 2000
+        controller = room._trap_controller()
+        self.assertTrue(controller["surge_warning_active"])
+
+    def test_surge_ends_after_duration(self):
+        room = self._make_surge_room(surge_interval_ms=5000, surge_duration_ms=1500)
+        room._update_trap_surge(0)
+        room._update_trap_surge(5001)  # surge starts
+        room._update_trap_surge(6502)  # 5001 + 1501 > 5001 + 1500 → ended
+        controller = room._trap_controller()
+        self.assertFalse(controller["surge_active"])
+
+    def test_surge_hud_suffix_warning(self):
+        room = self._make_surge_room(surge_interval_ms=8000)
+        room._update_trap_surge(0)
+        room._update_trap_surge(6100)  # warning window
+        hud = room.objective_hud_state(6100)
+        self.assertIn("SURGE INCOMING", hud["label"])
+
+    def test_surge_hud_suffix_active(self):
+        room = self._make_surge_room(surge_interval_ms=5000)
+        room._update_trap_surge(0)
+        room._update_trap_surge(5001)
+        hud = room.objective_hud_state(5001)
+        self.assertIn("SURGE ACTIVE", hud["label"])
+
+    def test_surge_forces_hazards_active(self):
+        room = self._make_surge_room(surge_interval_ms=5000)
+        room._update_trap_surge(0)
+        room._update_trap_surge(5001)
+        controller = room._trap_controller()
+        controller["surge_active"] = True
+        # All sweeper/vent/crusher configs should report active via _active()
+        for cfg in room.objective_entity_configs:
+            if cfg.get("kind") == "trap_sweeper":
+                sprite = TrapSweeper(cfg)
+                sprite._last_now_ticks = 5001
+                self.assertTrue(sprite._active())
+
+
+class TrapSpikePanelTests(unittest.TestCase):
+    """T25 – TrapSpikePanel sprite."""
+
+    def _make_panel(self, active=True, phase_offset_ms=0, surge_active=False):
+        controller = {
+            "surge_active": surge_active,
+            "lane_suppress_until": {},
+            "challenge_route_selected": False,
+            "challenge_lane": 0,
+            "trap_challenge_hits": 0,
+        }
+        cfg = {
+            "kind": "trap_spike_panel",
+            "lane_index": 1,
+            "controller": controller,
+            "pos": (100, 100),
+            "cycle_ms": 1000,
+            "active_ms": 400,
+            "phase_offset_ms": phase_offset_ms,
+            "damage": 6,
+            "damage_cooldown_ms": 400,
+            "damage_cooldown_until": 0,
+            "active": active,
+        }
+        return TrapSpikePanel(cfg), cfg
+
+    def test_spike_panel_damages_player_when_active(self):
+        panel, cfg = self._make_panel(active=True, phase_offset_ms=0)
+        panel.update(0)  # phase 0 → active (< 400)
+
+        hits = []
+        player = SimpleNamespace(
+            rect=pygame.Rect(94, 94, 12, 12),
+            statuses={},
+        )
+        player.take_damage = lambda amount, damage_type="trap": hits.append(amount)
+
+        panel.apply_player_pressure(player)
+        self.assertTrue(hits)
+
+    def test_spike_panel_no_damage_when_inactive(self):
+        panel, cfg = self._make_panel(active=False)
+        # Put phase in inactive window (cycle_ms=1000, active_ms=400 → inactive at t=500)
+        panel.update(500)
+
+        hits = []
+        player = SimpleNamespace(
+            rect=pygame.Rect(94, 94, 12, 12),
+            statuses={},
+        )
+        player.take_damage = lambda amount, damage_type="trap": hits.append(amount)
+
+        panel.apply_player_pressure(player)
+        self.assertFalse(hits)
+
+    def test_spike_panel_surge_forces_active(self):
+        panel, cfg = self._make_panel(active=False, surge_active=True)
+        # Even at inactive phase, surge overrides
+        panel.update(500)
+        self.assertTrue(cfg["active"])
+
+    def test_spike_panel_in_mixed_lanes_room(self):
+        room = Room(
+            {"top": False, "bottom": False, "left": True, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "trap_gauntlet",
+                objective_rule="immediate",
+                is_exit=True,
+                guaranteed_chest=True,
+                enemy_count_range=(0, 0),
+                objective_entity_count=4,
+                objective_label="Lane Switch",
+                objective_trigger_padding=18,
+                objective_variant="mixed_lanes",
+            ),
+        )
+        spike_configs = [c for c in room.objective_entity_configs if c["kind"] == "trap_spike_panel"]
+        self.assertTrue(spike_configs, "Expected at least one spike_panel config in mixed_lanes room")
 
 
 if __name__ == "__main__":

@@ -76,6 +76,9 @@ class RoomTemplate:
     trap_suppress_cooldown_ms: int = 8000
     trap_safespot_speed_mult: float = 1.0
     trap_sweeper_knockback_px: int = 0
+    trap_vent_chilled_duration_ms: int = 0
+    trap_surge_interval_ms: int = 0
+    trap_surge_duration_ms: int = 0
     notes: str = ""
 
     @classmethod
@@ -152,6 +155,9 @@ class RoomTemplate:
             trap_suppress_cooldown_ms=row.get("trap_suppress_cooldown_ms", 8000),
             trap_safespot_speed_mult=row.get("trap_safespot_speed_mult", 1.0),
             trap_sweeper_knockback_px=row.get("trap_sweeper_knockback_px", 0),
+            trap_vent_chilled_duration_ms=row.get("trap_vent_chilled_duration_ms", 0),
+            trap_surge_interval_ms=row.get("trap_surge_interval_ms", 0),
+            trap_surge_duration_ms=row.get("trap_surge_duration_ms", 0),
             notes=row["notes"],
         )
 
@@ -224,6 +230,9 @@ class RoomPlan:
     trap_suppress_cooldown_ms: int = 8000
     trap_safespot_speed_mult: float = 1.0
     trap_sweeper_knockback_px: int = 0
+    trap_vent_chilled_duration_ms: int = 0
+    trap_surge_interval_ms: int = 0
+    trap_surge_duration_ms: int = 0
 
     @property
     def room_id(self):

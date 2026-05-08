@@ -2158,6 +2158,7 @@ class Room:
 
         rule = self.room_plan.objective_rule
         if self.room_plan.room_id == "trap_gauntlet":
+            self._update_trap_surge(now_ticks)
             challenge_selected = self._trap_challenge_route_selected()
             route_label = self._trap_safe_lane_label(now_ticks)
             reward_label = self._trap_reward_status_label()
@@ -2167,6 +2168,11 @@ class Room:
                 label = f"Objective: Safe lane {route_label} | {reward_label}"
             else:
                 label = f"Objective: Navigate | {reward_label}"
+            controller = self._trap_controller()
+            if controller and controller.get("surge_warning_active"):
+                label += " | SURGE INCOMING"
+            elif controller and controller.get("surge_active"):
+                label += " | SURGE ACTIVE"
             return {"visible": True, "label": label}
 
         if rule == "holdout_timer" and self.is_exit and self.objective_status != "completed":
@@ -3000,6 +3006,31 @@ class Room:
                 return controller
         return None
 
+    def _update_trap_surge(self, now_ticks):
+        controller = self._trap_controller()
+        if controller is None:
+            return
+        surge_interval_ms = controller.get("surge_interval_ms", 0)
+        surge_duration_ms = controller.get("surge_duration_ms", 0)
+        if surge_interval_ms <= 0 or surge_duration_ms <= 0:
+            return
+        surge_next_at = controller.get("surge_next_at", 0)
+        if surge_next_at == 0:
+            controller["surge_next_at"] = now_ticks + surge_interval_ms
+            surge_next_at = controller["surge_next_at"]
+        if controller.get("surge_active", False):
+            surge_ends_at = controller.get("surge_ends_at", 0)
+            if now_ticks >= surge_ends_at:
+                controller["surge_active"] = False
+                controller["surge_warning_active"] = False
+                controller["surge_next_at"] = now_ticks + surge_interval_ms
+        else:
+            controller["surge_warning_active"] = (now_ticks >= surge_next_at - 2000)
+            if now_ticks >= surge_next_at:
+                controller["surge_active"] = True
+                controller["surge_ends_at"] = now_ticks + surge_duration_ms
+                controller["surge_warning_active"] = False
+
     def _trap_safe_lane_label(self, now_ticks=0):
         controller = self._trap_controller()
         if controller is None:
@@ -3047,15 +3078,17 @@ class Room:
         if controller is None:
             return "Claim the cache"
         if self.chest_looted:
+            if (
+                controller.get("challenge_reward_applied")
+                and controller.get("trap_challenge_hits", 0) == 0
+            ):
+                return "Route secured | Flawless!"
             return "Route secured"
         if controller.get("challenge_reward_applied"):
-            label = _TRAP_REWARD_KIND_LABELS.get(
+            return _TRAP_REWARD_KIND_LABELS.get(
                 controller.get("reward_kind", "chest_upgrade"),
                 "Reward upgraded",
             )
-            if controller.get("trap_challenge_hits", 0) == 0:
-                return f"{label} | Flawless!"
-            return label
         return f"Bonus route {controller.get('challenge_lane_label', 'armed')}"
 
     def _puzzle_controller(self):
@@ -3767,6 +3800,9 @@ class Room:
         suppress_cooldown_ms = max(0, int(self.room_plan.trap_suppress_cooldown_ms or 8000))
         safespot_speed_mult = max(0.0, float(self.room_plan.trap_safespot_speed_mult if self.room_plan.trap_safespot_speed_mult is not None else 1.0))
         sweeper_knockback_px = max(0, int(self.room_plan.trap_sweeper_knockback_px or 0))
+        vent_chilled_duration_ms = max(0, int(self.room_plan.trap_vent_chilled_duration_ms or 0))
+        surge_interval_ms = max(0, int(self.room_plan.trap_surge_interval_ms or 0))
+        surge_duration_ms = max(0, int(self.room_plan.trap_surge_duration_ms or 0))
         controller = {
             "safe_lane": -1,
             "lane_labels": lane_labels,
@@ -3788,6 +3824,12 @@ class Room:
             "suppress_cooldown_ms": suppress_cooldown_ms,
             "sweeper_knockback_px": sweeper_knockback_px,
             "safespot_speed_mult": safespot_speed_mult,
+            "vent_chilled_duration_ms": vent_chilled_duration_ms,
+            "surge_interval_ms": surge_interval_ms,
+            "surge_duration_ms": surge_duration_ms,
+            "surge_active": False,
+            "surge_warning_active": False,
+            "surge_next_at": 0,
         }
         configs = []
         for index, offset in enumerate(lane_offsets):
@@ -3816,6 +3858,14 @@ class Room:
                     configs.extend(
                         _safe_spot_configs(crusher_cfg, index)
                     )
+            elif lane_hazard == "spike_panel":
+                for panel_cfg in self._trap_spike_panel_configs(
+                    controller,
+                    orientation,
+                    offset,
+                    index,
+                ):
+                    configs.append(panel_cfg)
             else:
                 hazard_config = self._trap_sweeper_config(
                     controller,
@@ -3852,8 +3902,46 @@ class Room:
     @staticmethod
     def _trap_lane_hazard_kind(trap_variant, lane_index):
         if trap_variant == "mixed_lanes":
-            return ("sweeper_lanes", "vent_lanes", "crusher_corridors")[lane_index % 3]
+            return ("sweeper_lanes", "vent_lanes", "crusher_corridors", "spike_panel")[lane_index % 4]
         return trap_variant
+
+    def _trap_spike_panel_configs(self, controller, orientation, offset, lane_index):
+        """Return a list of spike-panel configs arranged across the lane."""
+        if orientation == "horizontal":
+            lane_y = self._offset_to_pixel((0, offset))[1]
+            xs = [
+                (ROOM_COLS // 4) * TILE_SIZE + TILE_SIZE // 2,
+                (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2,
+                (3 * ROOM_COLS // 4) * TILE_SIZE + TILE_SIZE // 2,
+            ]
+            positions = [(x, lane_y) for x in xs]
+        else:
+            lane_x = self._offset_to_pixel((offset, 0))[0]
+            ys = [
+                (ROOM_ROWS // 4) * TILE_SIZE + TILE_SIZE // 2,
+                (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2,
+                (3 * ROOM_ROWS // 4) * TILE_SIZE + TILE_SIZE // 2,
+            ]
+            positions = [(lane_x, y) for y in ys]
+
+        configs = []
+        base_cycle_ms = _scale_trap_cycle(1400, controller)
+        active_ms = _scale_trap_cycle(600, controller)
+        for panel_index, pos in enumerate(positions):
+            configs.append({
+                "kind": "trap_spike_panel",
+                "lane_index": lane_index,
+                "controller": controller,
+                "pos": pos,
+                "cycle_ms": base_cycle_ms,
+                "active_ms": active_ms,
+                "phase_offset_ms": panel_index * (base_cycle_ms // len(positions)),
+                "damage": _scale_trap_damage(6, controller),
+                "damage_cooldown_ms": 400,
+                "damage_cooldown_until": 0,
+                "active": lane_index != controller["safe_lane"],
+            })
+        return configs
 
     @staticmethod
     def _trap_switch_banks(trap_variant, primary_switch_bank):

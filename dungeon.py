@@ -22,6 +22,7 @@ from objective_entities import (
     TrapCrusher,
     TrapLaneSwitch,
     TrapSafeSpot,
+    TrapSpikePanel,
     TrapSweeper,
     TrapVentLane,
     TremorEmitter,
@@ -499,6 +500,8 @@ class Dungeon:
                 self.objective_group.add(TrapCrusher(config))
             elif config["kind"] == "trap_safe_spot":
                 self.objective_group.add(TrapSafeSpot(config))
+            elif config["kind"] == "trap_spike_panel":
+                self.objective_group.add(TrapSpikePanel(config))
             elif config["kind"] == "rune_altar" and not config.get("consumed"):
                 self.objective_group.add(RuneAltar(config))
             elif config["kind"] == "vein_crystal" and not config.get("destroyed"):

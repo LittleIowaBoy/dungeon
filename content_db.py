@@ -89,6 +89,9 @@ ROOM_TEMPLATE_COLUMNS = (
     "trap_suppress_cooldown_ms",
     "trap_safespot_speed_mult",
     "trap_sweeper_knockback_px",
+    "trap_vent_chilled_duration_ms",
+    "trap_surge_interval_ms",
+    "trap_surge_duration_ms",
     "notes",
 )
 
@@ -148,6 +151,9 @@ def _plan_shape(
     trap_suppress_cooldown_ms=8000,
     trap_safespot_speed_mult=1.0,
     trap_sweeper_knockback_px=0,
+    trap_vent_chilled_duration_ms=0,
+    trap_surge_interval_ms=0,
+    trap_surge_duration_ms=0,
 ):
     return {
         "objective_rule": objective_rule,
@@ -203,6 +209,9 @@ def _plan_shape(
         "trap_suppress_cooldown_ms": trap_suppress_cooldown_ms,
         "trap_safespot_speed_mult": trap_safespot_speed_mult,
         "trap_sweeper_knockback_px": trap_sweeper_knockback_px,
+        "trap_vent_chilled_duration_ms": trap_vent_chilled_duration_ms,
+        "trap_surge_interval_ms": trap_surge_interval_ms,
+        "trap_surge_duration_ms": trap_surge_duration_ms,
     }
 
 BASE_ROOM_TEMPLATES = (
@@ -1357,6 +1366,7 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             trap_challenge_reward_kind="tempo_rune",
             trap_suppress_duration_ms=2200,
             trap_suppress_cooldown_ms=8000,
+            trap_vent_chilled_duration_ms=3000,
             notes="Use the switches to quiet one frost-vent lane, or take the challenge route for better loot. Vents jet quickly and bite a little less than the boulder run, rewarding precise timing over heavy armor. Bonus route grants a tempo rune.",
         ),
         _override_template(
@@ -1494,6 +1504,8 @@ DUNGEON_ROOM_TEMPLATE_OVERRIDES = {
             trap_challenge_reward_kind="mobility_consumable",
             trap_suppress_duration_ms=2500,
             trap_suppress_cooldown_ms=7000,
+            trap_surge_interval_ms=12000,
+            trap_surge_duration_ms=1500,
             notes="Use the entry and checkpoint switches to reroute through a mixed floodgate gauntlet of sweepers, vents, and crushers, then commit to the challenge lane for the vault cache. The flood-charged hazards hit harder than the standard set.",
         ),
         _override_template(
@@ -1641,6 +1653,9 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     trap_suppress_cooldown_ms INTEGER NOT NULL DEFAULT 8000,
     trap_safespot_speed_mult REAL NOT NULL DEFAULT 1.0,
     trap_sweeper_knockback_px INTEGER NOT NULL DEFAULT 0,
+    trap_vent_chilled_duration_ms INTEGER NOT NULL DEFAULT 0,
+    trap_surge_interval_ms INTEGER NOT NULL DEFAULT 0,
+    trap_surge_duration_ms INTEGER NOT NULL DEFAULT 0,
     notes TEXT NOT NULL DEFAULT ''
 );
 """
@@ -1805,6 +1820,9 @@ def _ensure_schema_columns(conn):
         "trap_suppress_cooldown_ms": "INTEGER NOT NULL DEFAULT 8000",
         "trap_safespot_speed_mult": "REAL NOT NULL DEFAULT 1.0",
         "trap_sweeper_knockback_px": "INTEGER NOT NULL DEFAULT 0",
+        "trap_vent_chilled_duration_ms": "INTEGER NOT NULL DEFAULT 0",
+        "trap_surge_interval_ms": "INTEGER NOT NULL DEFAULT 0",
+        "trap_surge_duration_ms": "INTEGER NOT NULL DEFAULT 0",
     }
     for table_name in (BASE_ROOM_TEMPLATE_TABLE, *DUNGEON_ROOM_TEMPLATE_TABLES.values()):
         existing = {

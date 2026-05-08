@@ -16,6 +16,7 @@ FROZEN = "frozen"
 STUNNED = "stunned"
 POISONED = "poisoned"
 SLOWED = "slowed"
+CHILLED = "chilled"   # ice-biome trap vent: 3 s, 50 % speed
 
 IMMOBILIZING_STATUSES = (FROZEN, STUNNED)
 SILENCING_STATUSES = (FROZEN, STUNNED)  # blocks attack
@@ -27,6 +28,7 @@ _DEFAULTS = {
     FROZEN:   {"duration_ms": 1500},
     STUNNED:  {"duration_ms": 1000},
     SLOWED:   {"duration_ms": 2000, "magnitude": 0.5},
+    CHILLED:  {"duration_ms": 3000, "magnitude": 0.5},
 }
 
 
@@ -102,7 +104,7 @@ def speed_multiplier(holder, now_ticks):
     """Combined slow factor from active speed-debuff statuses."""
     statuses = getattr(holder, "statuses", None) or {}
     multiplier = 1.0
-    for status_id in (SLOWED, POISONED):
+    for status_id in (SLOWED, POISONED, CHILLED):
         entry = statuses.get(status_id)
         if entry is None or entry["expires_at"] <= now_ticks:
             continue

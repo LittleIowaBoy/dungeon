@@ -938,6 +938,7 @@ class TrapSweeper(pygame.sprite.Sprite):
         super().__init__()
         self._config = config
         self._last_now_ticks = 0
+        self._travel_float = None  # float accumulator to avoid sub-pixel stalling
         self.image = self._build_image()
         self.rect = self.image.get_rect(center=config["pos"])
 
@@ -1010,6 +1011,8 @@ class TrapSweeper(pygame.sprite.Sprite):
 
     def _active(self):
         controller = self._config.get("controller") or {}
+        if controller.get("surge_active", False):
+            return True
         lane_index = self._config.get("lane_index")
         if (
             controller.get("challenge_route_selected")
@@ -1041,20 +1044,24 @@ class TrapSweeper(pygame.sprite.Sprite):
             speed = self._config.get("challenge_speed", max(1.2, speed * 0.6))
         travel_min = self._config["travel_min"]
         travel_max = self._config["travel_max"]
+        orientation = self._config.get("orientation")
 
-        center_x, center_y = self.rect.center
-        if self._config.get("orientation") == "horizontal":
-            center_x += direction * speed
-            if center_x <= travel_min or center_x >= travel_max:
-                direction *= -1
-                center_x = max(travel_min, min(travel_max, center_x))
-            self.rect.center = (int(center_x), center_y)
+        # Use a float accumulator so sub-pixel speeds (<1 px/frame) don't stall
+        # the sweeper at the boundary when the challenge lane slows the boulder.
+        if self._travel_float is None:
+            self._travel_float = float(
+                self.rect.centerx if orientation == "horizontal" else self.rect.centery
+            )
+
+        self._travel_float += direction * speed
+        if self._travel_float <= travel_min or self._travel_float >= travel_max:
+            direction *= -1
+            self._travel_float = max(float(travel_min), min(float(travel_max), self._travel_float))
+
+        if orientation == "horizontal":
+            self.rect.center = (int(self._travel_float), self.rect.centery)
         else:
-            center_y += direction * speed
-            if center_y <= travel_min or center_y >= travel_max:
-                direction *= -1
-                center_y = max(travel_min, min(travel_max, center_y))
-            self.rect.center = (center_x, int(center_y))
+            self.rect.center = (self.rect.centerx, int(self._travel_float))
 
         self._config["direction"] = direction
 
@@ -1097,6 +1104,11 @@ class TrapVentLane(pygame.sprite.Sprite):
             and controller.get("challenge_lane") == self._config.get("lane_index")
         ):
             controller["trap_challenge_hits"] = controller.get("trap_challenge_hits", 0) + 1
+        chilled_ms = int(controller.get("vent_chilled_duration_ms", 0))
+        if chilled_ms > 0:
+            import status_effects as _se
+            _se.apply_status(player, _se.CHILLED, self._last_now_ticks,
+                             duration_ms=chilled_ms)
         return True
 
     def take_damage(self, amount):
@@ -1109,6 +1121,8 @@ class TrapVentLane(pygame.sprite.Sprite):
 
     def _active(self, now_ticks):
         controller = self._config.get("controller") or {}
+        if controller.get("surge_active", False):
+            return True
         lane_index = self._config.get("lane_index")
         challenge_selected = (
             controller.get("challenge_route_selected")
@@ -1197,6 +1211,8 @@ class TrapCrusher(pygame.sprite.Sprite):
 
     def _active(self, now_ticks):
         controller = self._config.get("controller") or {}
+        if controller.get("surge_active", False):
+            return True
         lane_index = self._config.get("lane_index")
         challenge_selected = (
             controller.get("challenge_route_selected")
@@ -1246,6 +1262,109 @@ class TrapSafeSpot(pygame.sprite.Sprite):
         x, y, w, h = self._config["rect"]
         pygame.draw.rect(surface, _TRAP_SAFE_SPOT_COLOR, pygame.Rect(x, y, w, h))
         pygame.draw.rect(surface, (120, 240, 160), pygame.Rect(x, y, w, h), 1)
+
+
+_TRAP_SPIKE_ACTIVE_COLOR = (220, 60, 60, 200)
+_TRAP_SPIKE_IDLE_COLOR = (80, 80, 80, 120)
+_TRAP_SPIKE_WARN_COLOR = (220, 160, 40, 160)
+
+
+class TrapSpikePanel(pygame.sprite.Sprite):
+    """Floor panel hazard that pulses active/inactive on a fixed cycle.
+
+    When active the panel deals damage to any player standing on it.  The
+    panel respects the same surge-override and lane-suppress logic as the
+    other trap hazards.
+    """
+
+    SIZE = 20
+
+    def __init__(self, config):
+        super().__init__()
+        self._config = config
+        self._last_now_ticks = 0
+        self.image = self._build_image(False)
+        x, y = config.get("pos", (0, 0))
+        self.rect = self.image.get_rect(center=(x, y))
+
+    def update(self, now_ticks):
+        self._last_now_ticks = now_ticks
+        active = self._active(now_ticks)
+        self._config["active"] = active
+        self.image = self._build_image(active)
+
+    def apply_player_pressure(self, player):
+        if not self._config.get("active"):
+            return False
+        if self._last_now_ticks < self._config.get("damage_cooldown_until", 0):
+            return False
+        panel_rect = self._panel_rect()
+        if not panel_rect.colliderect(player.rect):
+            return False
+        player.take_damage(self._config.get("damage", 6), damage_type="trap")
+        self._config["damage_cooldown_until"] = (
+            self._last_now_ticks + self._config.get("damage_cooldown_ms", 400)
+        )
+        controller = self._config.get("controller") or {}
+        if (
+            controller.get("challenge_route_selected")
+            and controller.get("challenge_lane") == self._config.get("lane_index")
+        ):
+            controller["trap_challenge_hits"] = controller.get("trap_challenge_hits", 0) + 1
+        return True
+
+    def take_damage(self, amount):
+        del amount
+        return False
+
+    def draw_overlay(self, surface):
+        active = self._config.get("active", False)
+        warn = self._warn(self._last_now_ticks)
+        if active:
+            color = _TRAP_SPIKE_ACTIVE_COLOR
+        elif warn:
+            color = _TRAP_SPIKE_WARN_COLOR
+        else:
+            color = _TRAP_SPIKE_IDLE_COLOR
+        pygame.draw.rect(surface, color, self._panel_rect())
+        pygame.draw.rect(surface, (200, 200, 200), self._panel_rect(), 1)
+
+    def _active(self, now_ticks):
+        controller = self._config.get("controller") or {}
+        if controller.get("surge_active", False):
+            return True
+        lane_index = self._config.get("lane_index")
+        suppress_until = controller.get("lane_suppress_until", {})
+        if now_ticks < suppress_until.get(lane_index, 0):
+            return False
+        cycle_ms = self._config.get("cycle_ms", 1400)
+        active_ms = self._config.get("active_ms", 600)
+        phase = (now_ticks + self._config.get("phase_offset_ms", 0)) % cycle_ms
+        return phase < active_ms
+
+    def _warn(self, now_ticks):
+        """True during the 300 ms window before the panel fires."""
+        controller = self._config.get("controller") or {}
+        if controller.get("surge_active", False):
+            return False
+        lane_index = self._config.get("lane_index")
+        suppress_until = controller.get("lane_suppress_until", {})
+        if now_ticks < suppress_until.get(lane_index, 0):
+            return False
+        cycle_ms = self._config.get("cycle_ms", 1400)
+        active_ms = self._config.get("active_ms", 600)
+        warn_ms = self._config.get("warn_ms", 300)
+        phase = (now_ticks + self._config.get("phase_offset_ms", 0)) % cycle_ms
+        return cycle_ms - warn_ms <= phase < cycle_ms or phase < active_ms
+
+    def _panel_rect(self):
+        x, y = self._config.get("pos", (0, 0))
+        s = self.SIZE
+        return pygame.Rect(x - s // 2, y - s // 2, s, s)
+
+    def _build_image(self, active):
+        color = _TRAP_SPIKE_ACTIVE_COLOR if active else _TRAP_SPIKE_IDLE_COLOR
+        return make_rect_surface(self.SIZE, self.SIZE, color)
 
 
 class RuneAltar(pygame.sprite.Sprite):

@@ -498,6 +498,9 @@ class RoomSelector:
         trap_suppress_cooldown_ms = max(0, int(template.trap_suppress_cooldown_ms or 8000))
         trap_safespot_speed_mult = max(0.0, float(template.trap_safespot_speed_mult if template.trap_safespot_speed_mult is not None else 1.0))
         trap_sweeper_knockback_px = max(0, int(template.trap_sweeper_knockback_px or 0))
+        trap_vent_chilled_duration_ms = max(0, int(template.trap_vent_chilled_duration_ms or 0))
+        trap_surge_interval_ms = max(0, int(template.trap_surge_interval_ms or 0))
+        trap_surge_duration_ms = max(0, int(template.trap_surge_duration_ms or 0))
 
         if objective_rule == "charge_plates":
             if puzzle_reinforcement_count <= 0:
@@ -622,4 +625,7 @@ class RoomSelector:
             trap_suppress_cooldown_ms=trap_suppress_cooldown_ms,
             trap_safespot_speed_mult=trap_safespot_speed_mult,
             trap_sweeper_knockback_px=trap_sweeper_knockback_px,
+            trap_vent_chilled_duration_ms=trap_vent_chilled_duration_ms,
+            trap_surge_interval_ms=trap_surge_interval_ms,
+            trap_surge_duration_ms=trap_surge_duration_ms,
         )

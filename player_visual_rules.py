@@ -8,6 +8,7 @@ from settings import (
     FLASH_INTERVAL_MS,
     PLAYER_SIZE,
 )
+import status_effects
 
 
 def reset_runtime_visuals(player):
@@ -43,6 +44,14 @@ def update_runtime_visuals(player, now):
         return
 
     player._visible = True
+    if status_effects.has_status(player, status_effects.CHILLED, now):
+        chilled = player._base_image.copy()
+        tint = pygame.Surface(chilled.get_size(), pygame.SRCALPHA)
+        tint.fill((80, 180, 255, 70))
+        chilled.blit(tint, (0, 0))
+        _set_image(player, chilled)
+        return
+
     if now < player.speed_boost_until:
         glow = pygame.Surface((PLAYER_SIZE + 4, PLAYER_SIZE + 4), pygame.SRCALPHA)
         glow.fill((*COLOR_SPEED_GLOW, 80))
