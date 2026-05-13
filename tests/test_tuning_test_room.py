@@ -138,6 +138,8 @@ class TuningTestRoomEnemySpawnTests(unittest.TestCase):
                 self.objective_group = _pg.sprite.Group()
                 self.hitbox_group = _pg.sprite.Group()
                 self.ally_group = _pg.sprite.Group()
+                self._risk_reward_mode = False
+                self.pressure_level = 0
 
         stub = _StubDungeon(room)
         Dungeon._load_room_sprites(stub)

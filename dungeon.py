@@ -16,6 +16,7 @@ from objective_entities import (
     EscortNPC,
     HoldoutStabilizer,
     HoldoutZone,
+    PactShrine,
     PressurePlate,
     PuzzleStabilizer,
     RuneAltar,
@@ -49,7 +50,7 @@ def _in_bounds(x, y, radius=MAX_DUNGEON_RADIUS):
 class Dungeon:
     """Manages the full dungeon graph of Room objects."""
 
-    def __init__(self, dungeon_config=None, difficulty="default"):
+    def __init__(self, dungeon_config=None, difficulty="default", risk_reward_mode=False):
         self.rooms: dict[tuple[int, int], Room] = {}
         self.room_plans = {}
         self.current_pos = (0, 0)
@@ -94,7 +95,11 @@ class Dungeon:
             branch_count_range=self._branch_count_range,
             branch_length_range=self._branch_length_range,
             pacing_profile=self._pacing_profile,
+            risk_reward_mode=risk_reward_mode,
         ).build()
+
+        # Store so risk_reward_mode_enabled property and pressure fields work.
+        self._risk_reward_mode = risk_reward_mode
 
         # pre-seed the planned topology
         self._exit_path = self._topology_plan.main_path
@@ -122,7 +127,7 @@ class Dungeon:
         self._load_room_sprites()
 
     @classmethod
-    def from_room_plan(cls, dungeon_id, room_plan, *, entry_direction=None):
+    def from_room_plan(cls, dungeon_id, room_plan, *, entry_direction=None, door_count: int = 1):
         """Build a deterministic single-room dungeon for room-test mode.
 
         *entry_direction* ("left", "right", "top", or "bottom") opens a door
@@ -146,10 +151,26 @@ class Dungeon:
         dungeon._radius = 1
         dungeon._room_depths = {(0, 0): room_plan.depth}
         dungeon._room_selector = None
+        dungeon._risk_reward_mode = False
+        dungeon.pressure_level = 0
+        dungeon.pressure_room_clean = True
+        dungeon.pressure_room_entry_ticks = 0
+        dungeon.active_pacts = []
+        dungeon.pact_rune_slot_bonus = 0
+        dungeon.danger_mode_bonus_coins = 0
+        dungeon.peak_pressure = 0
 
         doors = {direction: False for direction in _ALL_DIRS}
         if entry_direction in doors:
             doors[entry_direction] = True
+        # Open additional doors for multi-door room tests (e.g. terrain layout preview).
+        # Order: entry → opposite → two perpendicular sides.
+        if door_count > 1 and entry_direction is not None:
+            opp = OPPOSITE_DIR.get(entry_direction)
+            perps = [d for d in _ALL_DIRS if d != entry_direction and d != opp]
+            extras = ([opp] if opp else []) + perps
+            for d in extras[:door_count - 1]:
+                doors[d] = True
 
         topology_room = TopologyRoom(
             position=(0, 0),
@@ -206,6 +227,24 @@ class Dungeon:
         # cleared on room exit. Read by hud_view to surface the boss bar.
         self.boss_controller = None
 
+        # ── Danger Mode run state ────────────────────────────────────────────
+        # These fields track per-run Danger Mode pressure independently of any
+        # persistent PlayerProgress data (which only stores the opt-in flag).
+        self.pressure_level: int = 0
+        # True until the player takes damage in the current room.
+        self.pressure_room_clean: bool = True
+        # pygame.time.get_ticks() snapshot when the current room was entered;
+        # used for the 30-second time-decay check.
+        self.pressure_room_entry_ticks: int = 0
+        # Active pact IDs chosen at Pact Shrines (max 2 per run).
+        self.active_pacts: list[str] = []
+        # Extra rune-slot capacity granted by the hex_of_fragility pact.
+        self.pact_rune_slot_bonus: int = 0
+        # Accumulated bonus coins earned via Danger Mode multipliers.
+        self.danger_mode_bonus_coins: int = 0
+        # Highest pressure level reached this run (shown on results screen).
+        self.peak_pressure: int = 0
+
     # ── public API ──────────────────────────────────────
     @property
     def current_room(self) -> Room:
@@ -214,6 +253,15 @@ class Dungeon:
     @property
     def exit_pos(self):
         return self._exit_pos
+
+    @property
+    def risk_reward_mode_enabled(self) -> bool:
+        """True when Danger Mode was opted-in for the current run.
+
+        Derived from the Dungeon config so it survives between room transitions
+        without needing a reference back to PlayerProgress.
+        """
+        return bool(getattr(self, "_risk_reward_mode", False))
 
     def minimap_snapshot(self, now_ticks=None):
         """Return minimap-ready room state for HUD projection."""
@@ -240,6 +288,7 @@ class Dungeon:
                     "pos": pos,
                     "kind": kind,
                     "path_kind": self._topology_plan.rooms[pos].path_kind,
+                    "is_danger_branch": bool(getattr(self._topology_plan.rooms.get(pos), "is_danger_branch", False)),
                     "objective_marker": objective_marker,
                     "objective_status": objective_status,
                     "door_kinds": {
@@ -393,6 +442,7 @@ class Dungeon:
                 difficulty_band=topology_room.difficulty_band if topology_room is not None else None,
                 is_path_terminal=topology_room.is_path_terminal if topology_room is not None else False,
                 reward_tier=topology_room.reward_tier if topology_room is not None else "standard",
+                danger_variant=topology_room.is_danger_branch if topology_room is not None else False,
             )
         room = Room(
             doors,
@@ -457,6 +507,46 @@ class Dungeon:
                 enemy.attacks_disabled = not attacks_enabled
                 self.enemy_group.add(enemy)
 
+            # Danger Mode: apply pressure HP/damage boost to all spawned enemies.
+            if self._risk_reward_mode and self.pressure_level > 0:
+                from risk_reward_rules import compute_enemy_scale_boost
+                boost = compute_enemy_scale_boost(self.pressure_level)
+                if boost > 0:
+                    for enemy in self.enemy_group:
+                        scaled_hp = max(1, int(round(enemy.max_hp * (1.0 + boost))))
+                        enemy.max_hp = scaled_hp
+                        enemy.current_hp = scaled_hp
+
+            # Danger Mode: Hunter spawn at peak pressure.
+            if (
+                self._risk_reward_mode
+                and self.pressure_level >= 20
+                and self.boss_controller is None
+                and any(not getattr(cls, "immortal", False) for cls, _ in room.enemy_configs)
+            ):
+                from enemies import HunterEnemy
+                from risk_reward_rules import (
+                    HUNTER_SPAWN_CHANCE,
+                    HUNTER_DANGER_BRANCH_COUNT,
+                    PRESSURE_LEVEL_MAX,
+                )
+                if random.random() < HUNTER_SPAWN_CHANCE:
+                    is_danger_branch = (
+                        room.room_plan is not None
+                        and getattr(room.room_plan, "danger_variant", False)
+                    )
+                    hunter_count = HUNTER_DANGER_BRANCH_COUNT if is_danger_branch else 1
+                    cx = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
+                    cy = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
+                    import math as _math
+                    import damage_feedback
+                    for i in range(hunter_count):
+                        angle = (2 * _math.pi * i / hunter_count) if hunter_count > 1 else 0
+                        hx = int(cx + 48 * _math.cos(angle))
+                        hy = int(cy + 48 * _math.sin(angle))
+                        self.enemy_group.add(HunterEnemy(hx, hy))
+                    damage_feedback.report_hunter_detected()
+
         # chest
         if room.chest_pos:
             chest = Chest(room.chest_pos[0], room.chest_pos[1],
@@ -504,6 +594,11 @@ class Dungeon:
                 self.objective_group.add(TrapSpikePanel(config))
             elif config["kind"] == "rune_altar" and not config.get("consumed"):
                 self.objective_group.add(RuneAltar(config))
+            elif config["kind"] == "pact_shrine":
+                self.objective_group.add(PactShrine(
+                    config["pos"][0], config["pos"][1],
+                    consumed=config.get("consumed", False),
+                ))
             elif config["kind"] == "vein_crystal" and not config.get("destroyed"):
                 self.objective_group.add(VeinCrystal(config))
             elif config["kind"] == "tremor_emitter":

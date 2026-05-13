@@ -59,6 +59,7 @@ class HUD:
         self._draw_boss_health_bar(surface, view.boss_health_bar)
         self._draw_boss_intro_banner(surface, view.boss_intro_banner)
         self._draw_status_meter_rail(surface, view.status_meters)
+        self._draw_danger_mode_indicator(surface, getattr(view, "danger_mode", None))
 
     # ── world-space health bars ─────────────────────────
     def _draw_entity_health_bars(self, surface, bar_views):
@@ -188,6 +189,51 @@ class HUD:
         rect = composite.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 3 - rise))
         surface.blit(composite, rect)
 
+    # ── danger mode pressure indicator ─────────────────
+    def _draw_danger_mode_indicator(self, surface, danger_mode):
+        """Draw the Danger Mode pressure flame icon and fill bar at top-right."""
+        if danger_mode is None or not danger_mode.is_active:
+            return
+        # Bar placed at top-right, below the minimap area (top of screen).
+        bar_w = 90
+        bar_h = 10
+        x = SCREEN_WIDTH - bar_w - 10
+        y = 10
+        frac = min(1.0, danger_mode.pressure_level / max(1, danger_mode.pressure_max))
+        # Color transitions orange → red as pressure rises.
+        r = 255
+        g = int(140 * (1.0 - frac))
+        bar_color = (r, g, 0)
+        # Background
+        pygame.draw.rect(surface, (60, 10, 10), (x, y, bar_w, bar_h))
+        pygame.draw.rect(surface, bar_color, (x, y, int(bar_w * frac), bar_h))
+        pygame.draw.rect(surface, COLOR_WHITE, (x, y, bar_w, bar_h), 1)
+        # Flame icon: small polygon left of the bar.
+        flame_cx = x - 7
+        flame_cy = y + bar_h // 2
+        flame_color = (255, max(0, g - 40), 0) if frac > 0 else (80, 80, 80)
+        pygame.draw.polygon(
+            surface, flame_color,
+            [
+                (flame_cx, flame_cy + 5),
+                (flame_cx - 4, flame_cy + 1),
+                (flame_cx - 2, flame_cy - 3),
+                (flame_cx, flame_cy + 0),
+                (flame_cx + 2, flame_cy - 5),
+                (flame_cx + 3, flame_cy - 1),
+                (flame_cx + 4, flame_cy + 1),
+            ],
+        )
+        # Pressure label.
+        lbl = self._small_font.render(
+            f"DANGER {danger_mode.pressure_level}/{danger_mode.pressure_max}", True, COLOR_WHITE
+        )
+        surface.blit(lbl, (x, y + bar_h + 2))
+        # Hunter-alive skull indicator.
+        if danger_mode.hunter_alive:
+            skull = self._small_font.render("[HUNTER]", True, (255, 80, 80))
+            surface.blit(skull, (x, y + bar_h + 14))
+
     # ── health bar ──────────────────────────────────────
     def _draw_health_bar(self, surface, view):
         x, y, w, h = 10, 10, 180, 18
@@ -283,6 +329,11 @@ class HUD:
             py = (ry + rad) * cell + oy
             color = self._minimap_room_color(room.kind)
             pygame.draw.rect(surface, color, (px, py, cell - 1, cell - 1))
+            # Danger-branch overlay: draw a red tint over the room cell.
+            if room.is_danger_branch and room.kind not in ("current",):
+                overlay = pygame.Surface((cell - 1, cell - 1), pygame.SRCALPHA)
+                overlay.fill((200, 40, 40, 90))
+                surface.blit(overlay, (px, py))
             self._draw_minimap_wall_indicators(surface, room, px, py, cell)
             self._draw_minimap_objective_marker(
                 surface,

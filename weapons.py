@@ -194,6 +194,84 @@ WEAPON_CLASS_BY_ID = {
 }
 
 
+# ── Hunter Exclusive Weapons ────────────────────────────
+
+
+class HunterHeavyBlade(Weapon):
+    """Slow, massive cleave.  Primary: wide arc.  Secondary: ground-slam AoE."""
+    name = "Hunter's Heavy Blade"
+    weapon_id = "hunter_heavy_blade"
+    damage_type = "slash"
+    damage = 28
+    cooldown_ms = 800
+
+    def _make_hitbox(self, cx, cy, dx, dy):
+        depth = int(SWORD_RANGE * TILE_SIZE * 1.4)
+        size = max(depth, PLAYER_SIZE + 12)
+        offset = PLAYER_SIZE // 2 + size // 2 + 2
+        directions = [
+            (dy, -dx),
+            (_SQ2 * (dx + dy), _SQ2 * (dy - dx)),
+            (dx, dy),
+            (_SQ2 * (dx - dy), _SQ2 * (dx + dy)),
+            (-dy, dx),
+        ]
+        hitboxes = []
+        for ndx, ndy in directions:
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = (cx + int(ndx * offset), cy + int(ndy * offset))
+            hitboxes.append(self._build_hitbox(rect, (180, 20, 20)))
+        return hitboxes
+
+
+class HunterSpectralBow(Weapon):
+    """Ranged spectral bow.  Fires a single fast bolt with pierce flag."""
+    name = "Hunter's Spectral Bow"
+    weapon_id = "hunter_spectral_bow"
+    damage_type = "pierce"
+    damage = 20
+    cooldown_ms = 600
+
+    def _make_hitbox(self, cx, cy, dx, dy):
+        # A thin, long rectangle pointing in the facing direction.
+        length = int(SPEAR_RANGE * TILE_SIZE * 1.6)
+        width = int(SPEAR_WIDTH * 0.6)
+        rect = pygame.Rect(0, 0, length, width)
+        # Rotate bounding rect — approximate by always using square when not aligned
+        offset = PLAYER_SIZE // 2 + length // 2
+        rect.center = (cx + int(dx * offset // 2), cy + int(dy * offset // 2))
+        hb = self._build_hitbox(rect, (120, 160, 255))
+        hb.piercing = True
+        return hb
+
+
+class HunterVoidBlade(Weapon):
+    """Short-range void blade.  Deals dark damage with a compact hitbox."""
+    name = "Hunter's Void Blade"
+    weapon_id = "hunter_void_blade"
+    damage_type = "dark"
+    damage = 24
+    cooldown_ms = 450
+
+    def _make_hitbox(self, cx, cy, dx, dy):
+        size = TILE_SIZE + 10
+        offset = PLAYER_SIZE // 2 + size // 2 + 2
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (cx + int(dx * offset), cy + int(dy * offset))
+        return self._build_hitbox(rect, (80, 0, 140))
+
+
+WEAPON_CLASS_BY_ID = {
+    "sword": Sword,
+    "spear": Spear,
+    "axe": Axe,
+    "hammer": Hammer,
+    "hunter_heavy_blade": HunterHeavyBlade,
+    "hunter_spectral_bow": HunterSpectralBow,
+    "hunter_void_blade": HunterVoidBlade,
+}
+
+
 def create_weapon(weapon_id):
     weapon_cls = WEAPON_CLASS_BY_ID.get(weapon_id)
     if weapon_cls is None:

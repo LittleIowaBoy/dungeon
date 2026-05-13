@@ -288,6 +288,13 @@ def build_keystone_bonus_banner_view(now_ticks=None):
     return _keystone_bonus_banner_tracker.active(now_ticks)
 
 
+def report_hunter_detected(now_ticks=None):
+    """Queue the 'HUNTER DETECTED' encounter banner for Danger Mode."""
+    if now_ticks is None:
+        now_ticks = pygame.time.get_ticks()
+    _boss_intro_banner_tracker.report("HUNTER DETECTED", now_ticks)
+
+
 def report_boss_intro(name, now_ticks=None):
     """Queue the mini-boss intro banner shown on encounter start."""
     if not name:

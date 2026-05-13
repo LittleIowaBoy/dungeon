@@ -80,6 +80,11 @@ class RoomTemplate:
     trap_surge_interval_ms: int = 0
     trap_surge_duration_ms: int = 0
     notes: str = ""
+    # Terrain layout system (terrain_layouts.py).
+    terrain_layout: str = ""
+    allow_terrain_accent: bool = True
+    min_rows: int = 0
+    min_cols: int = 0
 
     @classmethod
     def from_mapping(cls, row):
@@ -159,6 +164,10 @@ class RoomTemplate:
             trap_surge_interval_ms=row.get("trap_surge_interval_ms", 0),
             trap_surge_duration_ms=row.get("trap_surge_duration_ms", 0),
             notes=row["notes"],
+            terrain_layout=row.get("terrain_layout", "") or "",
+            allow_terrain_accent=bool(row.get("allow_terrain_accent", True)),
+            min_rows=row.get("min_rows", 0) or 0,
+            min_cols=row.get("min_cols", 0) or 0,
         )
 
 
@@ -233,6 +242,13 @@ class RoomPlan:
     trap_vent_chilled_duration_ms: int = 0
     trap_surge_interval_ms: int = 0
     trap_surge_duration_ms: int = 0
+    # Danger Mode: True when this room is a flagged danger branch.
+    danger_variant: bool = False
+    # Terrain layout system (terrain_layouts.py).
+    terrain_layout: str = ""
+    allow_terrain_accent: bool = True
+    min_rows: int = 0
+    min_cols: int = 0
 
     @property
     def room_id(self):

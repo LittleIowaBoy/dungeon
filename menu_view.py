@@ -42,6 +42,7 @@ class DungeonSelectView:
     difficulty_label: str
     back_label: str
     keystone_status_text: str = ""
+    danger_mode_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,20 @@ class RoomTestCategoryView:
     entry_counts: tuple[int, ...]
     footer_hint: str
     tuning_shortcut_label: str = "Tuning Test Room"
+    hunter_shortcut_label: str = "Hunter Test Room"
+    terrain_layout_shortcut_label: str = "Terrain Layout Test"
+
+
+@dataclass(frozen=True)
+class TerrainLayoutTestView:
+    """View data for the terrain layout pattern selector screen."""
+    layout_ids: tuple[str, ...]
+    selected_index: int
+    scroll_offset: int
+    visible_count: int
+    biome_label: str
+    door_count: int
+    footer_hint: str
 
 
 @dataclass(frozen=True)
@@ -233,6 +248,7 @@ def build_dungeon_select_view(screen):
         difficulty_label=diff_label,
         back_label="Back",
         keystone_status_text=keystone_status_text,
+        danger_mode_active=getattr(screen.progress, "risk_reward_mode", False),
     )
 
 
@@ -312,7 +328,24 @@ def build_room_test_category_view(screen):
         categories=ROOM_TEST_CATEGORIES,
         selected_index=screen.selected_index,
         entry_counts=screen._entry_counts,
-        footer_hint="Enter: select category  Esc: back",
+        footer_hint="Enter: select  Esc: back",
+        tuning_shortcut_label="Tuning Test Room",
+        hunter_shortcut_label="Hunter Test Room",
+        terrain_layout_shortcut_label="Terrain Layout Test",
+    )
+
+
+def build_terrain_layout_test_view(screen):
+    """Build a TerrainLayoutTestView for the terrain layout pattern selector."""
+    from room_test_catalog import TERRAIN_LAYOUT_BIOME_LABELS
+    return TerrainLayoutTestView(
+        layout_ids=tuple(screen.layout_ids),
+        selected_index=screen.selected,
+        scroll_offset=screen.scroll_offset,
+        visible_count=screen._visible_count(),
+        biome_label=TERRAIN_LAYOUT_BIOME_LABELS.get(screen.biome, screen.biome or "Plain"),
+        door_count=screen.door_count,
+        footer_hint="↑↓: pattern   ←/→: biome   Tab: doors   Enter: launch   Esc: back",
     )
 
 
@@ -719,4 +752,56 @@ def build_rune_altar_pick_view(screen, progress):
         selected_index=min(screen.selected, max(0, len(cards) - 1)),
         empty_message="No runes available.",
         footer_hint="Left/Right: select  Enter: equip  Esc: cancel",
+    )
+
+
+# ── Pact Shrine pick overlay ─────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PactShrineCardView:
+    pact_id: str
+    display_name: str
+    description: str
+
+
+@dataclass(frozen=True)
+class PactShrinePickView:
+    title: str
+    subtitle: str
+    cards: tuple[PactShrineCardView, ...]
+    selected_index: int
+    footer_hint: str
+
+
+def build_pact_shrine_pick_view(screen, active_pacts=()):
+    """Build the :class:`PactShrinePickView` for *screen*.
+
+    Parameters
+    ----------
+    screen:
+        The :class:`~menu.PactShrinePickScreen` holding ``offered_pact_ids``.
+    active_pacts:
+        Collection of pact ids already active in this run (excluded from cards).
+    """
+    from risk_reward_rules import PACTS
+    cards = []
+    for pact_id in screen.offered_pact_ids:
+        if pact_id in active_pacts:
+            continue
+        pact = PACTS.get(pact_id)
+        if pact is None:
+            continue
+        cards.append(
+            PactShrineCardView(
+                pact_id=pact_id,
+                display_name=pact.get("display_name", pact_id),
+                description=pact.get("description", ""),
+            )
+        )
+    return PactShrinePickView(
+        title="Pact Shrine",
+        subtitle="Bind yourself to a pact — the bargain is permanent for this run.",
+        cards=tuple(cards),
+        selected_index=min(screen.selected, max(0, len(cards) - 1)),
+        footer_hint="Left/Right: select  Enter: commit  Esc: refuse",
     )

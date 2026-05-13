@@ -244,11 +244,12 @@ class RoomTestSelectScreen:
 # ═════════════════════════════════════════════════════════
 class RoomTestCategoryScreen:
     def __init__(self):
-        from room_test_catalog import ROOM_TEST_CATEGORIES, load_room_test_entries_for_category, _build_tuning_test_entry
+        from room_test_catalog import ROOM_TEST_CATEGORIES, load_room_test_entries_for_category, _build_tuning_test_entry, _build_hunter_test_entry
         self.categories = ROOM_TEST_CATEGORIES
         self._tuning_entry = _build_tuning_test_entry()
-        # Index 0 is the tuning shortcut; indices 1..N are the biome/mission categories.
-        self._total_items = 1 + len(self.categories)
+        self._hunter_entry = _build_hunter_test_entry()
+        # Indices 0-2 are shortcuts (tuning, hunter, terrain layout); indices 3..N are categories.
+        self._total_items = 3 + len(self.categories)
         # Cache counts once at init — the catalog doesn't change during a session.
         # This avoids SQLite queries on every render frame (which caused input latency).
         self._entry_counts = tuple(
@@ -270,6 +271,10 @@ class RoomTestCategoryScreen:
 
         When the tuning shortcut (index 0) is confirmed, returns
         (GameState.PLAYING, tuning_entry, "left") for direct room launch.
+        When the hunter shortcut (index 1) is confirmed, returns
+        (GameState.PLAYING, hunter_entry, "left") for direct room launch.
+        When the terrain layout shortcut (index 2) is confirmed, returns
+        (GameState.TERRAIN_LAYOUT_TEST, None, None).
         Otherwise returns (GameState.ROOM_TEST_SELECT, category_name, None).
         """
         for event in events:
@@ -284,8 +289,12 @@ class RoomTestCategoryScreen:
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                 if self.selected_index == 0 and self._tuning_entry is not None:
                     return (GameState.PLAYING, self._tuning_entry, "left")
-                elif self.selected_index > 0:
-                    return (GameState.ROOM_TEST_SELECT, self.categories[self.selected_index - 1], None)
+                elif self.selected_index == 1 and self._hunter_entry is not None:
+                    return (GameState.PLAYING, self._hunter_entry, "left")
+                elif self.selected_index == 2:
+                    return (GameState.TERRAIN_LAYOUT_TEST, None, None)
+                elif self.selected_index > 2:
+                    return (GameState.ROOM_TEST_SELECT, self.categories[self.selected_index - 3], None)
         return None
 
     def draw(self, surface, view):
@@ -310,29 +319,183 @@ class RoomTestCategoryScreen:
                               start_y + tuning_line.get_height() - 2,
                               tuning_line.get_width(), 2))
 
-        # Separator between shortcut and category list
-        sep_y = start_y + spacing - 12
+        # Index 1: hunter test room shortcut
+        hunter_selected = (view.selected_index == 1)
+        hunter_line = self._font.render(
+            view.hunter_shortcut_label + "  [launch]", True, COLOR_WHITE
+        )
+        surface.blit(hunter_line, (SCREEN_WIDTH // 2 - 200, start_y + spacing))
+        if hunter_selected:
+            pygame.draw.rect(surface, COLOR_WHITE,
+                             (SCREEN_WIDTH // 2 - 200,
+                              start_y + spacing + hunter_line.get_height() - 2,
+                              hunter_line.get_width(), 2))
+
+        # Index 2: terrain layout test shortcut
+        layout_selected = (view.selected_index == 2)
+        layout_line = self._font.render(
+            view.terrain_layout_shortcut_label + "  [browse]", True, COLOR_WHITE
+        )
+        surface.blit(layout_line, (SCREEN_WIDTH // 2 - 200, start_y + spacing * 2))
+        if layout_selected:
+            pygame.draw.rect(surface, COLOR_WHITE,
+                             (SCREEN_WIDTH // 2 - 200,
+                              start_y + spacing * 2 + layout_line.get_height() - 2,
+                              layout_line.get_width(), 2))
+
+        # Separator between shortcuts and category list
+        sep_y = start_y + spacing * 3 - 12
         pygame.draw.line(
             surface, COLOR_DARK_GRAY,
             (SCREEN_WIDTH // 2 - 200, sep_y),
             (SCREEN_WIDTH // 2 + 200, sep_y),
         )
 
-        # Indices 1..N: categories
+        # Indices 3..N: categories
         for i, category in enumerate(view.categories):
-            actual_index = i + 1
+            actual_index = i + 3
             selected = (actual_index == view.selected_index)
             count_str = f"  ({view.entry_counts[i]} tests)" if view.entry_counts else ""
             line = self._font.render(category + count_str, True, COLOR_WHITE)
-            surface.blit(line, (SCREEN_WIDTH // 2 - 200, start_y + actual_index * spacing))
+            display_slot = actual_index - 2
+            surface.blit(line, (SCREEN_WIDTH // 2 - 200, start_y + display_slot * spacing + 20))
             if selected:
                 pygame.draw.rect(surface, COLOR_WHITE,
                                  (SCREEN_WIDTH // 2 - 200,
-                                  start_y + actual_index * spacing + line.get_height() - 2,
+                                  start_y + display_slot * spacing + 20 + line.get_height() - 2,
                                   line.get_width(), 2))
 
         hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
+
+
+# ═════════════════════════════════════════════════════════
+#  Terrain Layout Test Select
+# ═════════════════════════════════════════════════════════
+class TerrainLayoutTestScreen:
+    """Browse the 19 terrain layout patterns by name, biome, and door count."""
+
+    _BIOMES = ("", "mud", "ice", "water")
+    _BIOME_LABELS = {"": "Plain", "mud": "Mud", "ice": "Ice", "water": "Water"}
+    _DOOR_COUNTS = (1, 2, 3, 4)
+
+    def __init__(self):
+        import terrain_layouts as _tl
+        self.layout_ids: list[str] = list(_tl.LAYOUT_REGISTRY.keys())
+        self.selected: int = 0
+        self.scroll_offset: int = 0
+        self._biome_index: int = 0
+        self._door_count_index: int = 0
+        self._font = None
+        self._title_font = None
+        self._small_font = None
+
+    @property
+    def biome(self) -> str:
+        return self._BIOMES[self._biome_index]
+
+    @property
+    def door_count(self) -> int:
+        return self._DOOR_COUNTS[self._door_count_index]
+
+    @staticmethod
+    def _row_height() -> int:
+        return 40
+
+    def _visible_count(self) -> int:
+        top_y = 110
+        bottom_padding = 160
+        return max(1, (SCREEN_HEIGHT - top_y - bottom_padding) // self._row_height())
+
+    def _ensure_visible(self):
+        visible = self._visible_count()
+        max_offset = max(0, len(self.layout_ids) - visible)
+        if self.selected < self.scroll_offset:
+            self.scroll_offset = self.selected
+        elif self.selected >= self.scroll_offset + visible:
+            self.scroll_offset = self.selected - visible + 1
+        self.scroll_offset = max(0, min(self.scroll_offset, max_offset))
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 32)
+            self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 16)
+
+    def handle_events(self, events):
+        """Returns (GameState, layout_id, biome, door_count), or (GameState, None, None, None), or None."""
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return (GameState.ROOM_TEST_CATEGORY, None, None, None)
+            elif event.key in (pygame.K_LEFT, pygame.K_a):
+                self._biome_index = (self._biome_index - 1) % len(self._BIOMES)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self._biome_index = (self._biome_index + 1) % len(self._BIOMES)
+            elif event.key == pygame.K_TAB:
+                self._door_count_index = (self._door_count_index + 1) % len(self._DOOR_COUNTS)
+            elif event.key in (pygame.K_UP, pygame.K_w):
+                self.selected = (self.selected - 1) % len(self.layout_ids)
+                self._ensure_visible()
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.selected = (self.selected + 1) % len(self.layout_ids)
+                self._ensure_visible()
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                return (GameState.PLAYING,
+                        self.layout_ids[self.selected],
+                        self.biome,
+                        self.door_count)
+        return None
+
+    def draw(self, surface, view):
+        self._ensure_fonts()
+        surface.fill(COLOR_BLACK)
+
+        title = self._title_font.render("Terrain Layout Test", True, COLOR_WHITE)
+        surface.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 44)))
+
+        # Pattern list
+        top_y = 110
+        row_height = self._row_height()
+        for draw_i, lid in enumerate(
+            view.layout_ids[view.scroll_offset : view.scroll_offset + view.visible_count]
+        ):
+            row_y = top_y + draw_i * row_height
+            selected = (view.scroll_offset + draw_i == view.selected_index)
+            color = COLOR_WHITE if selected else COLOR_GRAY
+            text = self._font.render(lid, True, color)
+            surface.blit(text, (60, row_y))
+            if selected:
+                pygame.draw.rect(surface, color,
+                                 (60, row_y + text.get_height() - 2,
+                                  text.get_width(), 2))
+
+        if view.scroll_offset > 0:
+            up_hint = self._small_font.render("More above...", True, COLOR_GRAY)
+            surface.blit(up_hint, (60, top_y - 20))
+        if view.scroll_offset + view.visible_count < len(view.layout_ids):
+            down_hint = self._small_font.render("More below...", True, COLOR_GRAY)
+            surface.blit(down_hint, (60, top_y + view.visible_count * row_height))
+
+        # Control row: biome + door count
+        ctrl_y = SCREEN_HEIGHT - 130
+        pygame.draw.rect(surface, COLOR_DARK_GRAY, (40, ctrl_y, 720, 80))
+        pygame.draw.rect(surface, COLOR_GRAY, (40, ctrl_y, 720, 80), 1)
+
+        biome_surf = self._font.render(
+            f"Biome (←/→):  {view.biome_label}", True, COLOR_WHITE
+        )
+        surface.blit(biome_surf, (54, ctrl_y + 10))
+
+        door_surf = self._font.render(
+            f"Doors (Tab):  {view.door_count}", True, COLOR_WHITE
+        )
+        surface.blit(door_surf, (54, ctrl_y + 40))
+
+        # Footer hint
+        hint = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
+        surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 22)))
 
 
 # ═════════════════════════════════════════════════════════
@@ -365,6 +528,12 @@ class DungeonSelectScreen:
         idx = (idx + direction) % len(self.DIFFICULTIES)
         self.progress.difficulty_preference = self.DIFFICULTIES[idx]
 
+    def _toggle_danger_mode(self):
+        """Flip the Danger Mode opt-in on the progress object."""
+        self.progress.risk_reward_mode = not getattr(
+            self.progress, "risk_reward_mode", False
+        )
+
     def handle_events(self, events):
         """Returns (GameState, dungeon_id) or (GameState, None) or None."""
         for event in events:
@@ -378,6 +547,8 @@ class DungeonSelectScreen:
                 self._cycle_difficulty(-1)
             elif event.key in (pygame.K_RIGHT, pygame.K_d):
                 self._cycle_difficulty(1)
+            elif event.key == pygame.K_TAB:
+                self._toggle_danger_mode()
             elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                 if self.selected == len(DUNGEONS):
                     return (GameState.MAIN_MENU, None)
@@ -401,6 +572,12 @@ class DungeonSelectScreen:
         )
         surface.blit(diff_txt, diff_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y)))
 
+        # Danger Mode toggle row
+        danger_color = (220, 80, 80) if view.danger_mode_active else COLOR_GRAY
+        danger_label = "[TAB] Danger Mode: ON  (High Risk / High Reward)" if view.danger_mode_active else "[TAB] Danger Mode: OFF"
+        danger_txt = self._small_font.render(danger_label, True, danger_color)
+        surface.blit(danger_txt, danger_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y + 18)))
+
         # T12: keystone meta-progression status (only when player owns 1+).
         if view.keystone_status_text:
             keystone_txt = self._small_font.render(
@@ -408,7 +585,7 @@ class DungeonSelectScreen:
             )
             surface.blit(
                 keystone_txt,
-                keystone_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y + 18)),
+                keystone_txt.get_rect(center=(SCREEN_WIDTH // 2, diff_y + 36)),
             )
 
         card_w, card_h = 220, 120
@@ -459,7 +636,7 @@ class DungeonSelectScreen:
                              (back_rect.x, back_rect.bottom - 2, back_rect.width, 2))
 
         hint = self._small_font.render(
-            "Up/Down: select dungeon  Left/Right: change difficulty  Enter: launch",
+            "Up/Down: select dungeon  Left/Right: change difficulty  Tab: Danger Mode  Enter: launch",
             True, COLOR_GRAY,
         )
         surface.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 24)))
@@ -1510,6 +1687,108 @@ class RuneAltarPickScreen:
         line = ""
         line_y = y
         for word in words:
+            trial = (line + " " + word).strip()
+            if self._small_font.size(trial)[0] <= max_width:
+                line = trial
+            else:
+                if line:
+                    rendered = self._small_font.render(line, True, color)
+                    surface.blit(rendered, (x, line_y))
+                    line_y += 18
+                line = word
+        if line:
+            rendered = self._small_font.render(line, True, color)
+            surface.blit(rendered, (x, line_y))
+
+
+class PactShrinePickScreen:
+    """Modal overlay shown when the player interacts with a Pact Shrine.
+
+    Displays cards for each available pact.  Returns:
+    - ``("pick", pact_id)`` when the player confirms a selection,
+    - ``("cancel", None)`` when the player presses Escape.
+    Otherwise returns ``None``.
+    """
+
+    # Crimson accent colour for this overlay.
+    _ACCENT = (200, 80, 80)
+
+    def __init__(self):
+        self.offered_pact_ids: tuple[str, ...] = ()
+        self.selected = 0
+        self._font = None
+        self._title_font = None
+        self._small_font = None
+
+    def open(self, offered_pact_ids):
+        self.offered_pact_ids = tuple(offered_pact_ids)
+        self.selected = 0
+
+    def _ensure_fonts(self):
+        if self._font is None:
+            self._title_font = pygame.font.SysFont("consolas", 36)
+            self._font = pygame.font.SysFont("consolas", 22)
+            self._small_font = pygame.font.SysFont("consolas", 14)
+
+    def handle_events(self, events):
+        if not self.offered_pact_ids:
+            return ("cancel", None)
+        for event in events:
+            if event.type != pygame.KEYDOWN:
+                continue
+            if event.key == pygame.K_ESCAPE:
+                return ("cancel", None)
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self.selected = (self.selected - 1) % len(self.offered_pact_ids)
+            elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                self.selected = (self.selected + 1) % len(self.offered_pact_ids)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                return ("pick", self.offered_pact_ids[self.selected])
+        return None
+
+    def draw(self, surface, view):
+        self._ensure_fonts()
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 210))
+        surface.blit(overlay, (0, 0))
+
+        title_surf = self._title_font.render(view.title, True, self._ACCENT)
+        surface.blit(title_surf, title_surf.get_rect(center=(SCREEN_WIDTH // 2, 80)))
+
+        sub_surf = self._small_font.render(view.subtitle, True, COLOR_GRAY)
+        surface.blit(sub_surf, sub_surf.get_rect(center=(SCREEN_WIDTH // 2, 116)))
+
+        if not view.cards:
+            empty = self._font.render("No pacts available.", True, COLOR_GRAY)
+            surface.blit(empty, empty.get_rect(center=(SCREEN_WIDTH // 2, 240)))
+            return
+
+        card_w, card_h = 260, 280
+        gap = 30
+        total_w = len(view.cards) * card_w + (len(view.cards) - 1) * gap
+        start_x = (SCREEN_WIDTH - total_w) // 2
+        y = 145
+
+        for i, card in enumerate(view.cards):
+            x = start_x + i * (card_w + gap)
+            border_color = self._ACCENT if i == view.selected_index else COLOR_GRAY
+            pygame.draw.rect(surface, COLOR_DARK_GRAY, (x, y, card_w, card_h))
+            pygame.draw.rect(surface, border_color, (x, y, card_w, card_h), 3)
+
+            name_surf = self._font.render(card.display_name, True, COLOR_WHITE)
+            surface.blit(name_surf, name_surf.get_rect(center=(x + card_w // 2, y + 30)))
+
+            self._draw_wrapped(surface, card.description, x + 12, y + 64,
+                               card_w - 24, COLOR_GRAY)
+
+        hint_surf = self._small_font.render(view.footer_hint, True, COLOR_GRAY)
+        surface.blit(hint_surf, hint_surf.get_rect(center=(SCREEN_WIDTH // 2,
+                                                            y + card_h + 24)))
+
+    def _draw_wrapped(self, surface, text, x, y, max_width, color):
+        line = ""
+        line_y = y
+        for word in text.split():
             trial = (line + " " + word).strip()
             if self._small_font.size(trial)[0] <= max_width:
                 line = trial

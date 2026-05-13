@@ -128,7 +128,8 @@ class Player(pygame.sprite.Sprite):
 
     # ── damage ──────────────────────────────────────────
     def take_damage(self, amount, damage_type=None):
-        combat_rules.take_damage(self, amount, pygame.time.get_ticks(), damage_type=damage_type)
+        dungeon = getattr(self, "_dungeon", None)
+        combat_rules.take_damage(self, amount, pygame.time.get_ticks(), damage_type=damage_type, dungeon=dungeon)
 
     # ── weapon switching ────────────────────────────────
     def switch_weapon(self, index):

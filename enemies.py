@@ -2087,6 +2087,380 @@ class _IceAvalancheBoulder(pygame.sprite.Sprite):
         return False
 
 
+# ── Hunter Enemy — Danger Mode miniboss ─────────────────────────────────────
+
+# State constants
+_HUNTER_STATE_SPAWN       = "spawn"
+_HUNTER_STATE_REPOSITION  = "reposition"
+_HUNTER_STATE_SELECT      = "select"
+_HUNTER_STATE_ATTACKING   = "attacking"
+
+# Attack types
+_HUNTER_ATK_NONE    = "none"
+_HUNTER_ATK_LUNGE   = "lunge"
+_HUNTER_ATK_SWEEP   = "sweep"
+_HUNTER_ATK_BURST   = "burst"
+
+# Tuning
+HUNTER_HP                = 110
+HUNTER_SPEED             = 2.8
+HUNTER_SIZE              = 28
+HUNTER_DAMAGE            = 18
+HUNTER_COLOR             = (35, 20, 50)   # dark silhouette
+HUNTER_OUTLINE_COLOR     = (180, 0, 0)    # red outline
+HUNTER_PREDICT_OUTLINE   = (255, 255, 255)  # white when dodge-predicting
+
+HUNTER_SPAWN_DURATION_MS = 2500
+
+HUNTER_LUNGE_TRIGGER     = 160
+HUNTER_LUNGE_WINDUP_MS   = 400
+HUNTER_LUNGE_STRIKE_MS   = 200
+HUNTER_LUNGE_COOLDOWN_MS = 700
+HUNTER_LUNGE_DASH_SPEED  = 9.0
+
+HUNTER_SWEEP_TRIGGER     = 90
+HUNTER_SWEEP_ARC_DEG     = 140
+HUNTER_SWEEP_WINDUP_MS   = 600
+HUNTER_SWEEP_STRIKE_MS   = 250
+HUNTER_SWEEP_COOLDOWN_MS = 900
+HUNTER_SWEEP_RADIUS      = 72
+
+HUNTER_BURST_MIN_DIST    = 80
+HUNTER_BURST_WINDUP_MS   = 500
+HUNTER_BURST_STRIKE_MS   = 180
+HUNTER_BURST_COOLDOWN_MS = 800
+HUNTER_BURST_SHOTS       = 3
+HUNTER_BURST_SPREAD_DEG  = 18
+
+HUNTER_REPOSITION_MS     = 600   # time to spend repositioning after each attack
+HUNTER_DODGE_PREDICT_DELAY_MS = 300  # extra delay before attack when dodge-predicting
+
+HUNTER_LEAD_MS           = 450   # ms of velocity lead when aiming / lunging
+
+
+class HunterProjectile(pygame.sprite.Sprite):
+    """Fast homing projectile fired in Burst attack."""
+    SIZE = 7
+    SPEED = 5.5
+    RANGE = 260
+    DAMAGE = 12
+
+    def __init__(self, x, y, vx, vy):
+        super().__init__()
+        self.image = make_rect_surface(self.SIZE, self.SIZE, (200, 80, 200))
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+        self._vx = float(vx)
+        self._vy = float(vy)
+        self._traveled = 0.0
+        self.damage = self.DAMAGE
+
+    def update(self, *_args, **_kwargs):
+        self.rect.x += int(round(self._vx))
+        self.rect.y += int(round(self._vy))
+        self._traveled += math.hypot(self._vx, self._vy)
+        if self._traveled >= self.RANGE:
+            self.kill()
+
+    def collide_walls(self, wall_rects):
+        for wall in wall_rects:
+            if self.rect.colliderect(wall):
+                self.kill()
+                return True
+        return False
+
+
+class HunterEnemy(Enemy):
+    """Danger Mode miniboss.  Spawns obscured in smoke for 2.5 s then attacks
+    using three move types:
+
+    * **Lunge** — dash through the player's predicted position (velocity lead).
+    * **Sweep** — wide 140° AoE arc hitbox at close range.
+    * **Burst** — 3 fast projectiles; centre shot is velocity-led, wings angled.
+
+    The Hunter tracks how often the player dodges and gains a delayed-attack
+    window (white outline flash) to punish predictable dodge patterns.
+    """
+
+    hp = HUNTER_HP
+    speed = HUNTER_SPEED
+    damage = 0
+    color = HUNTER_COLOR
+
+    attack_damage     = 0
+    attack_windup_ms  = HUNTER_LUNGE_WINDUP_MS
+    attack_strike_ms  = HUNTER_LUNGE_STRIKE_MS
+    attack_cooldown_ms = HUNTER_LUNGE_COOLDOWN_MS
+    attack_damage_type = "dark"
+
+    def __init__(self, x, y, *, is_frozen=False):
+        super().__init__(x, y, is_frozen=is_frozen)
+        self.image = make_rect_surface(HUNTER_SIZE, HUNTER_SIZE, self.color)
+        self._base_image = self.image
+        self.rect = self.image.get_rect(center=(x, y))
+        # Override HP to use class constant (may be boosted externally after spawn)
+        self.max_hp = HUNTER_HP
+        self.current_hp = HUNTER_HP
+
+        # Hunter-specific FSM on top of Enemy's attack state machine.
+        self._hunter_state = _HUNTER_STATE_SPAWN
+        self._spawn_until = pygame.time.get_ticks() + HUNTER_SPAWN_DURATION_MS
+        # Attacks disabled during smoke spawn
+        self.attacks_disabled = True
+
+        self._pending_attack   = _HUNTER_ATK_NONE
+        self._committed_attack = _HUNTER_ATK_NONE
+
+        # Reposition targeting
+        self._reposition_target: tuple[float, float] | None = None
+        self._reposition_until = 0
+
+        # Lunge
+        self._lunge_dir = (1.0, 0.0)
+        self._lunge_dash_until = 0
+
+        # Burst
+        self._burst_dir = (1.0, 0.0)
+        self.emitted_projectiles: list[HunterProjectile] = []
+
+        # Dodge prediction fields
+        self._dodge_count = 0               # number of player dodges observed
+        self._last_player_dodge_id = 0      # tracks dodge transition edge
+        self._last_dodge_dir: tuple = (0.0, 0.0)
+        self._predicting_dodge = False
+        self._predict_delay_until = 0
+
+        # Visual outline: red normally, white when predicting
+        self._outline_color = HUNTER_OUTLINE_COLOR
+
+        # Attack rotation: cycle through attacks
+        self._attack_rotation = [_HUNTER_ATK_LUNGE, _HUNTER_ATK_SWEEP, _HUNTER_ATK_BURST]
+        self._attack_rotation_idx = 0
+
+    # ── velocity-lead aiming ─────────────────────────────
+    def _project_player_pos(self, player_rect, lead_ms=HUNTER_LEAD_MS):
+        """Return a (px, py) estimate of where the player will be in `lead_ms` ms."""
+        if player_rect is None:
+            return (self.rect.centerx, self.rect.centery)
+        px = player_rect.centerx + getattr(player_rect, "_vx", 0) * lead_ms / 16.67
+        py = player_rect.centery + getattr(player_rect, "_vy", 0) * lead_ms / 16.67
+        return (px, py)
+
+    def _dir_to(self, tx, ty):
+        dx = tx - self.rect.centerx
+        dy = ty - self.rect.centery
+        d = math.hypot(dx, dy) or 1.0
+        return dx / d, dy / d
+
+    def _dist_to_player(self, player_rect):
+        if player_rect is None:
+            return float("inf")
+        return math.hypot(
+            player_rect.centerx - self.rect.centerx,
+            player_rect.centery - self.rect.centery,
+        )
+
+    # ── movement ─────────────────────────────────────────
+    def update_movement(self, player_rect, wall_rects):
+        now = pygame.time.get_ticks()
+
+        # Spawn: drift slightly backward, no real movement.
+        if self._hunter_state == _HUNTER_STATE_SPAWN:
+            if now >= self._spawn_until:
+                self._hunter_state = _HUNTER_STATE_SELECT
+                self.attacks_disabled = False
+            return
+
+        # Lunge dash: charge in locked direction.
+        if (
+            self._committed_attack == _HUNTER_ATK_LUNGE
+            and now < self._lunge_dash_until
+        ):
+            lx, ly = self._lunge_dir
+            self._move_axis(lx * HUNTER_LUNGE_DASH_SPEED, 0, wall_rects)
+            self._move_axis(0, ly * HUNTER_LUNGE_DASH_SPEED, wall_rects)
+            return
+
+        # Repositioning: move toward flanking target.
+        if self._hunter_state == _HUNTER_STATE_REPOSITION:
+            if now >= self._reposition_until or self._reposition_target is None:
+                self._hunter_state = _HUNTER_STATE_SELECT
+            else:
+                tx, ty = self._reposition_target
+                dx, dy = self._dir_to(tx, ty)
+                self._move_axis(dx * self.speed, 0, wall_rects)
+                self._move_axis(0, dy * self.speed, wall_rects)
+            return
+
+        # Default: stalk toward player (slightly offset for unpredictability).
+        if self.is_attacking_blocking_movement():
+            return
+        if player_rect is None:
+            return
+        tx, ty = self._project_player_pos(player_rect, lead_ms=200)
+        dx, dy = self._dir_to(tx, ty)
+        self._move_axis(dx * self.speed, 0, wall_rects)
+        self._move_axis(0, dy * self.speed, wall_rects)
+
+    # ── attack selection ─────────────────────────────────
+    def _pick_attack(self, player_rect):
+        """Select attack based on distance + rotation; returns attack constant."""
+        dist = self._dist_to_player(player_rect)
+        if dist == float("inf"):
+            return _HUNTER_ATK_NONE
+        # Cycle through rotation but gate by distance.
+        attempts = len(self._attack_rotation)
+        for _ in range(attempts):
+            kind = self._attack_rotation[self._attack_rotation_idx % len(self._attack_rotation)]
+            self._attack_rotation_idx += 1
+            if kind == _HUNTER_ATK_SWEEP and dist > HUNTER_SWEEP_TRIGGER:
+                continue  # not in range
+            if kind == _HUNTER_ATK_LUNGE and dist > HUNTER_LUNGE_TRIGGER:
+                continue
+            # Burst always usable at any range > HUNTER_BURST_MIN_DIST
+            if kind == _HUNTER_ATK_BURST and dist < HUNTER_BURST_MIN_DIST:
+                continue
+            return kind
+        return _HUNTER_ATK_LUNGE  # fallback
+
+    def _can_begin_attack(self, player_rect):
+        if self._hunter_state != _HUNTER_STATE_SELECT:
+            return False
+        if self._predicting_dodge:
+            now = pygame.time.get_ticks()
+            if now < self._predict_delay_until:
+                return False
+            self._predicting_dodge = False
+            self._outline_color = HUNTER_OUTLINE_COLOR
+        kind = self._pick_attack(player_rect)
+        if kind == _HUNTER_ATK_NONE:
+            return False
+        self._pending_attack = kind
+        return True
+
+    def _observe_player_dodge(self, player_rect):
+        """Track dodge frequency to activate prediction mode."""
+        if player_rect is None:
+            return
+        dodge_id = getattr(player_rect, "_dodge_id", 0)
+        if dodge_id != self._last_player_dodge_id:
+            self._last_player_dodge_id = dodge_id
+            self._dodge_count += 1
+            # Record dodge direction from velocity if available.
+            vx = getattr(player_rect, "_vx", 0)
+            vy = getattr(player_rect, "_vy", 0)
+            d = math.hypot(vx, vy) or 1.0
+            self._last_dodge_dir = (vx / d, vy / d)
+            # After 2 dodges, enter prediction mode for next attack.
+            if self._dodge_count >= 2 and not self._predicting_dodge:
+                self._dodge_count = 0
+                self._predicting_dodge = True
+                self._predict_delay_until = (
+                    pygame.time.get_ticks() + HUNTER_DODGE_PREDICT_DELAY_MS
+                )
+                self._outline_color = HUNTER_PREDICT_OUTLINE
+
+    # ── attack state machine hooks ───────────────────────
+    def _on_telegraph_start(self, player_rect, now_ticks):
+        kind = self._pending_attack
+        self._committed_attack = kind
+        if kind == _HUNTER_ATK_LUNGE:
+            self.attack_windup_ms   = HUNTER_LUNGE_WINDUP_MS
+            self.attack_strike_ms   = HUNTER_LUNGE_STRIKE_MS
+            self.attack_cooldown_ms = HUNTER_LUNGE_COOLDOWN_MS
+            # Lead aim.
+            tx, ty = self._project_player_pos(player_rect)
+            self._lunge_dir = self._dir_to(tx, ty)
+        elif kind == _HUNTER_ATK_SWEEP:
+            self.attack_windup_ms   = HUNTER_SWEEP_WINDUP_MS
+            self.attack_strike_ms   = HUNTER_SWEEP_STRIKE_MS
+            self.attack_cooldown_ms = HUNTER_SWEEP_COOLDOWN_MS
+            # Keep _lunge_dir pointing at player for arc centre.
+            if player_rect is not None:
+                self._lunge_dir = self._dir_to(
+                    player_rect.centerx, player_rect.centery
+                )
+        elif kind == _HUNTER_ATK_BURST:
+            self.attack_windup_ms   = HUNTER_BURST_WINDUP_MS
+            self.attack_strike_ms   = HUNTER_BURST_STRIKE_MS
+            self.attack_cooldown_ms = HUNTER_BURST_COOLDOWN_MS
+            tx, ty = self._project_player_pos(player_rect)
+            self._burst_dir = self._dir_to(tx, ty)
+        self._attack_state_until = now_ticks + max(1, self.attack_windup_ms)
+        self._hunter_state = _HUNTER_STATE_ATTACKING
+
+    def _on_strike_start(self, player_rect, now_ticks):
+        self._attack_state_until = now_ticks + max(1, self.attack_strike_ms)
+        if self._committed_attack == _HUNTER_ATK_LUNGE:
+            self._lunge_dash_until = now_ticks + max(1, self.attack_strike_ms)
+        elif self._committed_attack == _HUNTER_ATK_BURST:
+            fx, fy = self._burst_dir
+            spread = math.radians(HUNTER_BURST_SPREAD_DEG)
+            base_angle = math.atan2(fy, fx)
+            shots = HUNTER_BURST_SHOTS
+            half = (shots - 1) / 2.0
+            for i in range(shots):
+                angle = base_angle + spread * (i - half)
+                vx = math.cos(angle) * HunterProjectile.SPEED
+                vy = math.sin(angle) * HunterProjectile.SPEED
+                self.emitted_projectiles.append(
+                    HunterProjectile(self.rect.centerx, self.rect.centery, vx, vy)
+                )
+
+    def _on_strike_end(self, now_ticks):
+        self._attack_state_until = now_ticks + max(0, self.attack_cooldown_ms)
+        self._committed_attack = _HUNTER_ATK_NONE
+        self._pending_attack   = _HUNTER_ATK_NONE
+        # Begin reposition phase after attack.
+        self._hunter_state = _HUNTER_STATE_REPOSITION
+        self._reposition_until = now_ticks + HUNTER_REPOSITION_MS
+        self._reposition_target = None   # recalc in next update_movement
+
+    def _hitbox_geometry(self):
+        if self._committed_attack == _HUNTER_ATK_LUNGE:
+            self.attack_damage = HUNTER_DAMAGE
+            return (self.rect.copy(),)
+        if self._committed_attack == _HUNTER_ATK_SWEEP:
+            self.attack_damage = HUNTER_DAMAGE
+            # AoE circle; damage via standard hitbox path.
+            size = HUNTER_SWEEP_RADIUS * 2
+            rect = pygame.Rect(0, 0, size, size)
+            rect.center = self.rect.center
+            return (rect,)
+        return ()
+
+    def consume_emitted_projectiles(self):
+        out = self.emitted_projectiles
+        self.emitted_projectiles = []
+        return out
+
+    # ── loot ─────────────────────────────────────────────
+    def roll_drop(self, progress=None):
+        """Always drop a stat_shard; 25% chance for a Hunter exclusive weapon."""
+        from items import LootDrop, Coin
+        from risk_reward_rules import HUNTER_EXCLUSIVE_WEAPON_DROP_CHANCE, HUNTER_WEAPON_POOL
+        drops = []
+        drops.append(LootDrop(self.rect.centerx, self.rect.centery, "stat_shard"))
+        if random.random() < HUNTER_EXCLUSIVE_WEAPON_DROP_CHANCE:
+            weapon_id = random.choice(HUNTER_WEAPON_POOL)
+            drops.append(LootDrop(self.rect.centerx + 12, self.rect.centery, weapon_id))
+        return drops  # multi-drop; caller must handle list or single
+
+    # ── rendering hook ───────────────────────────────────
+    def draw_outline(self, surface):
+        """Draw a 1-px colored outline around the Hunter sprite.
+
+        Called by rpg.py after drawing the enemy group.  The outline color is
+        red normally and white when in dodge-prediction mode.
+        """
+        r = self.rect
+        pygame.draw.rect(surface, self._outline_color, r.inflate(2, 2), 1)
+
+    # ── smoke spawn rendering ────────────────────────────
+    @property
+    def is_in_spawn(self):
+        return self._hunter_state == _HUNTER_STATE_SPAWN
+
+
 ENEMY_CLASSES = [
     PatrolEnemy,
     RandomEnemy,

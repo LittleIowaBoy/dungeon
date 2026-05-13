@@ -95,6 +95,13 @@ def _get_conn():
             "meta_keystones INTEGER NOT NULL DEFAULT 0"
         )
 
+    # Migrate: Danger Mode opt-in toggle.
+    if "risk_reward_mode" not in player_cols:
+        cur.execute(
+            "ALTER TABLE player ADD COLUMN "
+            "risk_reward_mode INTEGER NOT NULL DEFAULT 0"
+        )
+
     conn.commit()
     return conn
 
@@ -112,16 +119,18 @@ def save_progress(progress: PlayerProgress):
         cur.execute(
             "INSERT INTO player "
             "(id, coins, max_hp, speed_cap, armor_hp, compass_uses, "
-            "difficulty_preference, meta_keystones) "
-            "VALUES (1, ?, ?, ?, ?, ?, ?, ?) "
+            "difficulty_preference, meta_keystones, risk_reward_mode) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET coins=excluded.coins, "
             "max_hp=excluded.max_hp, speed_cap=excluded.speed_cap, "
             "armor_hp=excluded.armor_hp, compass_uses=excluded.compass_uses, "
             "difficulty_preference=excluded.difficulty_preference, "
-            "meta_keystones=excluded.meta_keystones",
+            "meta_keystones=excluded.meta_keystones, "
+            "risk_reward_mode=excluded.risk_reward_mode",
             (progress.coins, progress.max_hp, progress.speed_cap,
              progress.armor_hp, progress.compass_uses,
-             progress.difficulty_preference, progress.meta_keystones),
+             progress.difficulty_preference, progress.meta_keystones,
+             int(progress.risk_reward_mode)),
         )
 
         # dungeon progress (upsert each)
@@ -216,7 +225,8 @@ def load_progress() -> PlayerProgress:
 
         # player
         cur.execute("SELECT coins, max_hp, speed_cap, armor_hp, compass_uses, "
-                    "difficulty_preference, meta_keystones FROM player WHERE id=1")
+                    "difficulty_preference, meta_keystones, risk_reward_mode "
+                    "FROM player WHERE id=1")
         row = cur.fetchone()
         if row:
             progress.coins = row[0]
@@ -226,6 +236,7 @@ def load_progress() -> PlayerProgress:
             progress.compass_uses = row[4]
             progress.difficulty_preference = row[5]
             progress.meta_keystones = row[6]
+            progress.risk_reward_mode = bool(row[7]) if len(row) > 7 else False
 
         # dungeon progress
         cur.execute("SELECT dungeon_id, is_alive, completed FROM dungeon_progress")

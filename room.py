@@ -16,7 +16,7 @@ from settings import (
     COLOR_DOOR, COLOR_PORTAL,
     COLOR_QUICKSAND, COLOR_SPIKE_PATCH, COLOR_PIT_TILE, COLOR_CURRENT,
     COLOR_THIN_ICE, COLOR_HEARTH, COLOR_CART_RAIL, COLOR_GLYPH_TILE,
-    COLOR_SLIDE, COLOR_TRAIL_FREEZE,
+    COLOR_SLIDE, COLOR_TRAIL_FREEZE, COLOR_RUBBLE,
     COLOR_BLACK, COLOR_WHITE,
     ENEMY_MIN_PER_ROOM, ENEMY_MAX_PER_ROOM,
     ENEMY_DOOR_BUFFER_TILES, ROOM_MAX_DISTINCT_ENEMY_TYPES,
@@ -43,6 +43,7 @@ from settings import (
     ICE_SPIRIT_SWARM_COUNT_RANGE, ICE_SPIRIT_SWARM_ALCOVE_BUFFER,
     ICE_AVALANCHE_BOULDER_SIZE, ICE_AVALANCHE_PILLAR_COUNT,
     FROST_WITCH_ARENA_ICE_RADIUS, FROST_WITCH_ARENA_SLIDE_BAND,
+    USE_NEW_TERRAIN_LAYOUTS,
 )
 from enemies import (
     ENEMY_CLASSES, ChaserEnemy, PatrolEnemy, RandomEnemy,
@@ -81,6 +82,10 @@ GLYPH_TILE = "glyph_tile"
 SLIDE        = "slide"          # direction-committing ice surface
 TRAIL_FREEZE = "trail_freeze"   # temporary tile from IceSpirit; collapses to PIT
 
+# Terrain-layout system cover tile (terrain_layouts.py).
+# Blocks movement and projectiles like WALL; visually reads as cracked stone.
+RUBBLE = "rubble"
+
 # Tiles that block player and enemy movement (treated as walls).  Only
 # WALL itself qualifies today; biome-room hazard tiles are walkable.
 WALKABLE_HAZARD_TILES = (
@@ -107,6 +112,7 @@ TERRAIN_COLORS = {
     GLYPH_TILE:   COLOR_GLYPH_TILE,
     SLIDE:        COLOR_SLIDE,
     TRAIL_FREEZE: COLOR_TRAIL_FREEZE,
+    RUBBLE:       COLOR_RUBBLE,
 }
 
 # terrain types that can be randomly placed (default pool)
@@ -131,6 +137,9 @@ HAZARD_ROOM_TERRAIN = {
 # When a room is built from a plan with this room_id, the standard random
 # placement is replaced with a hand-tuned layout (see Room._build_tuning_test_room).
 TUNING_TEST_ROOM_ID = "tuning_test_room"
+
+# Identifier for the Hunter encounter test room (Danger Mode miniboss arena).
+HUNTER_TEST_ROOM_ID = "hunter_test_room"
 
 _TUNING_LABEL_FONT = None
 
@@ -407,6 +416,9 @@ class Room:
         # methods (e.g. _polish_water_spirit_room) can append explicit
         # enemy placements during _place_terrain before _gen_enemy_configs runs.
         self.enemy_configs: list = []
+        # Stores the terrain layout id selected by terrain_layouts.apply().
+        # Empty string when USE_NEW_TERRAIN_LAYOUTS is off or room has no plan.
+        self._active_layout_id: str = ""
         self._place_walls()
         self._place_doors()
         self._place_terrain()
@@ -463,6 +475,8 @@ class Room:
         # _hazard_last_tick_ms.
         if self.room_plan and self.room_plan.room_id == TUNING_TEST_ROOM_ID:
             self._build_tuning_test_room()
+        elif self.room_plan and self.room_plan.room_id == HUNTER_TEST_ROOM_ID:
+            self._build_hunter_test_room()
 
         # chest
         self.chest_pos = None  # (px, py) or None
@@ -478,6 +492,8 @@ class Room:
             if should_spawn_chest:
                 self.chest_pos = self._trap_reward_position()
         elif self.room_plan and self.room_plan.room_id == TUNING_TEST_ROOM_ID:
+            self.chest_pos = None
+        elif self.room_plan and self.room_plan.room_id == HUNTER_TEST_ROOM_ID:
             self.chest_pos = None
         elif self.room_plan and self.room_plan.room_id == "water_waterfall_room" and self._waterfall_chest_tile is not None:
             cc, rr = self._waterfall_chest_tile
@@ -680,6 +696,51 @@ class Room:
             and self.room_plan.room_id == "water_tide_lord_arena"
         ):
             self._polish_tide_lord_arena()
+            return
+
+        # ── Terrain layout system ────────────────────────────────────────────
+        if USE_NEW_TERRAIN_LAYOUTS:
+            import terrain_layouts as _tl
+            _rp_tmpl = getattr(self.room_plan, "template", None) if self.room_plan else None
+            layout_id = (
+                self.room_plan.terrain_layout
+                if self.room_plan and self.room_plan.terrain_layout
+                else _tl.terrain_layout_for_plan(
+                    self.room_plan,
+                    random.Random(
+                        hash((
+                            getattr(_rp_tmpl, "room_id", ""),
+                            tuple(sorted(self.doors.items())),
+                        )) & 0xFFFFFFFF
+                    ),
+                    biome_terrain=self._terrain_type or "",
+                    door_count=sum(1 for v in self.doors.values() if v),
+                )
+            )
+            # RoomPlan carries the actual depth; min/max_depth live on the template.
+            if self.room_plan:
+                tmpl = getattr(self.room_plan, "template", None)
+                depth_lo = getattr(tmpl, "min_depth", None) if tmpl else None
+                if depth_lo is None:
+                    depth_lo = self.room_plan.depth
+                depth_hi_raw = getattr(tmpl, "max_depth", None) if tmpl else None
+                depth_hi = max(depth_lo + 1, depth_hi_raw) if depth_hi_raw is not None else depth_lo + 1
+            else:
+                depth_lo, depth_hi = 0, 1
+            depth_density = _tl._density_for_depth(depth_lo, depth_hi)
+            local_seed = hash((
+                getattr(getattr(self.room_plan, "template", None), "room_id", ""),
+                getattr(self.room_plan, "position", ()),
+                tuple(sorted(self.doors.items())),
+                layout_id,
+            )) & 0xFFFFFFFF
+            _tl.apply(
+                layout_id, self.grid, self.doors,
+                self._terrain_type or "", random.Random(local_seed), depth_density,
+            )
+            self._active_layout_id = layout_id
+            if self.room_plan and self.room_plan.clear_center:
+                self._clear_center_arena()
             return
 
         if self.room_plan and self.room_plan.terrain_patch_count_range:
@@ -2394,9 +2455,10 @@ class Room:
         if self.room_plan is None:
             return {"visible": False, "title": "", "detail": ""}
 
+        layout_suffix = f"  [{self._active_layout_id}]" if self._active_layout_id else ""
         return {
             "visible": True,
-            "title": f"Room: {self.room_plan.display_name}",
+            "title": f"Room: {self.room_plan.display_name}{layout_suffix}",
             "detail": self._playtest_identifier_detail(now_ticks),
         }
 
@@ -3412,6 +3474,8 @@ class Room:
             ]
         elif self.room_plan.objective_rule == "rune_altar":
             self.objective_entity_configs = self._build_rune_altar_configs()
+        elif self.room_plan.objective_rule == "pact_shrine":
+            self.objective_entity_configs = self._build_pact_shrine_configs()
         elif self.room_plan.room_id == "earth_crystal_vein":
             self.objective_entity_configs = self._build_crystal_vein_configs()
         elif self.room_plan.room_id == "earth_tremor_chamber":
@@ -3780,6 +3844,55 @@ class Room:
     def snooze_rune_altar(self, altar_config):
         """Mark *altar_config* as snoozed until the player leaves interaction range."""
         altar_config["snoozed"] = True
+
+    # ── Pact Shrine API ──────────────────────────────────
+    def _build_pact_shrine_configs(self):
+        """Generate a single centred Pact Shrine that offers all available pacts."""
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        return [
+            {
+                "kind": "pact_shrine",
+                "label": self.room_plan.objective_label or "Pact Shrine",
+                "pos": (cx, cy),
+                "consumed": False,
+            }
+        ]
+
+    def pending_pact_shrine(self, player):
+        """Return the first non-consumed shrine config the player overlaps, or ``None``.
+
+        Tracks a per-shrine ``snoozed`` flag so cancelling the pick prompt does
+        not immediately re-trigger.  The flag clears once the player steps out of
+        interaction range.
+        """
+        if self.room_plan is None or self.room_plan.objective_rule != "pact_shrine":
+            return None
+        result = None
+        for config in self.objective_entity_configs:
+            if config.get("kind") != "pact_shrine":
+                continue
+            if config.get("consumed"):
+                continue
+            sx, sy = config["pos"]
+            px, py = player.rect.center
+            in_range = (px - sx) ** 2 + (py - sy) ** 2 <= 36 ** 2
+            if not in_range:
+                config["snoozed"] = False
+                continue
+            if config.get("snoozed"):
+                continue
+            if result is None:
+                result = config
+        return result
+
+    def consume_pact_shrine(self, shrine_config):
+        """Mark *shrine_config* as consumed and update the sprite."""
+        shrine_config["consumed"] = True
+
+    def snooze_pact_shrine(self, shrine_config):
+        """Mark *shrine_config* as snoozed until the player leaves range."""
+        shrine_config["snoozed"] = True
 
     def _build_trap_gauntlet_configs(self):
         trap_variant = self.room_plan.objective_variant or "sweeper_lanes"
@@ -5390,6 +5503,73 @@ class Room:
         # No chest in the test room: keep visual focus on the sections.
         self.chest_pos = None
 
+    def _build_hunter_test_room(self):
+        """Bespoke layout for the Hunter encounter test room.
+
+        The room is a clean open arena:
+        * WALL border + all interior tiles reset to FLOOR.
+        * The Hunter is summoned by stepping on the red pressure platform
+          near the left (player entry) wall.  The platform can be re-activated
+          after a 2-second cooldown once the current Hunter is dead.
+        * A PORTAL is placed in the top-right corner so the room can be
+          exited normally once testing is done.
+        * Labels are shown via ``tuning_test_labels`` (same mechanism as the
+          tuning room) so existing label-render code reuses without changes.
+        * The platform is drawn by ``draw_overlay_labels`` as a red rect
+          that turns grey during its cooldown.
+        * No objective, no chest — this is a pure combat sandbox.
+        """
+        # Reset interior to FLOOR.
+        for r in range(1, ROOM_ROWS - 1):
+            for c in range(1, ROOM_COLS - 1):
+                if self.grid[r][c] != DOOR:
+                    self.grid[r][c] = FLOOR
+        self._portal_cells = []
+
+        # PORTAL top-right corner.
+        portal_row, portal_col = 2, ROOM_COLS - 3
+        self.grid[portal_row][portal_col] = PORTAL
+        self._portal_cells = [(portal_row, portal_col)]
+        self._portal_active = True
+
+        # Hunter spawns at the room centre when the trigger platform is stepped on.
+        cx = (ROOM_COLS // 2) * TILE_SIZE + TILE_SIZE // 2
+        cy = (ROOM_ROWS // 2) * TILE_SIZE + TILE_SIZE // 2
+        # No auto-spawn; the trigger platform controls spawning.
+        self.enemy_configs = []
+        self.frozen_enemies = False
+        self.enemy_attacks_enabled = True
+        self.respawn_enemies_after_ms = None
+
+        # Pressure platform near the player entry point (left wall).
+        # Stepping on it summons the Hunter; can be re-activated after cooldown.
+        plat_col, plat_row = 3, ROOM_ROWS // 2
+        plat_cx = plat_col * TILE_SIZE + TILE_SIZE // 2
+        plat_cy = plat_row * TILE_SIZE + TILE_SIZE // 2
+        plat_size = TILE_SIZE * 2
+        self._hunter_trigger_rect = pygame.Rect(
+            plat_cx - plat_size // 2,
+            plat_cy - plat_size // 2,
+            plat_size,
+            plat_size,
+        )
+        self._hunter_spawn_pos = (cx, cy)
+        self._hunter_trigger_last_ms: int = -99999
+        self._hunter_trigger_cooldown_ms: int = 2000
+
+        def _cell_center(c, r):
+            return (c * TILE_SIZE + TILE_SIZE // 2, r * TILE_SIZE + TILE_SIZE // 2)
+
+        self.tuning_test_labels = [
+            ("HUNTER TEST ARENA", _cell_center(ROOM_COLS // 2, 1)),
+            ("Step on red platform to summon Hunter", _cell_center(plat_col, plat_row - 2)),
+            ("Can re-trigger after 2s", _cell_center(plat_col, plat_row + 3)),
+            ("Hunter spawns at centre", _cell_center(ROOM_COLS // 2, ROOM_ROWS // 2 + 2)),
+            ("EXIT PORTAL", _cell_center(portal_col, portal_row - 1)),
+        ]
+        self.objective_entity_configs = []
+        self.chest_pos = None
+
     def toggle_enemy_attacks(self, enemy_group=None):
         """Flip ``enemy_attacks_enabled`` and propagate to live enemies.
 
@@ -5458,6 +5638,22 @@ class Room:
         """Render world-space labels for the tuning test room (no-op otherwise)."""
         if not self.tuning_test_labels:
             return
+
+        # Draw the Hunter trigger platform if present.
+        trigger_rect = getattr(self, "_hunter_trigger_rect", None)
+        if trigger_rect is not None:
+            cooldown = getattr(self, "_hunter_trigger_cooldown_ms", 2000)
+            last = getattr(self, "_hunter_trigger_last_ms", -99999)
+            now = pygame.time.get_ticks()
+            ready = (now - last) >= cooldown
+            # Red when ready to trigger, dark grey when on cooldown.
+            fill_color = (160, 20, 20, 140) if ready else (60, 60, 60, 100)
+            border_color = (255, 60, 60) if ready else (100, 100, 100)
+            fill_surf = pygame.Surface(trigger_rect.size, pygame.SRCALPHA)
+            fill_surf.fill(fill_color)
+            surface.blit(fill_surf, trigger_rect.topleft)
+            pygame.draw.rect(surface, border_color, trigger_rect, width=3)
+
         font = _tuning_label_font()
         if font is None:
             return

@@ -141,6 +141,7 @@ class RoomContentBootstrapTests(unittest.TestCase):
             "stealth_passage",
             "timed_extraction",
             "rune_altar_chamber",
+            "pact_shrine_chamber",
             "earth_stalagmite_field",
             "earth_quicksand_trap",
             "earth_crystal_vein",

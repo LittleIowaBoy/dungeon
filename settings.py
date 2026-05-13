@@ -99,6 +99,10 @@ COLOR_DOOR_ONE_WAY = (235, 215, 70)
 COLOR_DOOR_NONE    = (210, 70, 70)
 COLOR_DOOR_SEALED  = (180, 90, 30)
 
+# layout-system cover tile (terrain_layouts.py RUBBLE pattern family)
+COLOR_RUBBLE        = (95, 88, 78)    # warm desaturated brown-grey
+_COLOR_RUBBLE_CRACK = (64, 58, 50)    # darker specks for procedural crack overlay
+
 # biome-room hazard tiles (Phase 1 of biome room expansion)
 COLOR_QUICKSAND  = (155, 130, 80)   # earth: drowning patch
 COLOR_SPIKE_PATCH = (130, 110, 90)  # earth: stalagmites / water: coral (re-tinted in render)
@@ -117,6 +121,7 @@ COLOR_SPEED_BOOST   = (40, 220, 220)
 # chests
 COLOR_CHEST         = (140, 90, 30)
 COLOR_CHEST_LOOTED  = (80, 50, 20)
+COLOR_CHEST_GAMBLE  = (200, 160, 40)   # gold tint while gamble is pending
 
 # attack hitbox
 COLOR_SWORD_HIT  = (255, 255, 200, 120)
@@ -501,6 +506,7 @@ CHEST_SPAWN_CHANCE = 0.30
 CHEST_MIN_ITEMS = 1
 CHEST_MAX_ITEMS = 3
 CHEST_INTERACT_DIST = 1.5 * TILE_SIZE
+CHEST_GAMBLE_WIN_CHANCE = 0.55   # 55 % chance gamble elevates tier
 
 # ── Terrain speed multipliers ───────────────────────────
 TERRAIN_SPEED = {
@@ -876,6 +882,12 @@ TERRAIN_PATCH_MIN = 2
 TERRAIN_PATCH_MAX = 4
 TERRAIN_PATCH_SIZE_MIN = 3
 TERRAIN_PATCH_SIZE_MAX = 6
+
+# ── Terrain layout system (terrain_layouts.py) ───────────
+# False = legacy random-rectangle scatter.  Flip True once Phase 2 lands.
+USE_NEW_TERRAIN_LAYOUTS = True
+# Minimum tile gap between layout-placed features and any open door cell.
+TERRAIN_LAYOUT_DOOR_BUFFER = 2
 
 # ── Directions mapping ──────────────────────────────────
 DIR_OFFSETS = {

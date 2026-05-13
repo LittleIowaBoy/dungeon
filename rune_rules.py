@@ -88,9 +88,13 @@ def equipped_rune_ids(holder):
             yield rune_id
 
 
-def slot_is_full(holder, category):
-    """Return True if *category* on *holder* is at capacity."""
-    capacity = RUNE_SLOT_CAPACITY.get(category, 0)
+def slot_is_full(holder, category, extra_slots: int = 0):
+    """Return True if *category* on *holder* is at capacity.
+
+    *extra_slots* increases the effective capacity beyond the catalog default
+    (used by the hex_of_fragility pact which grants +1 slot).
+    """
+    capacity = RUNE_SLOT_CAPACITY.get(category, 0) + extra_slots
     loadout = equipped_runes(holder)
     return len(loadout.get(category, ())) >= capacity
 
@@ -236,18 +240,32 @@ def generate_altar_offer(rng, *, exclude_ids=(), category_order=_DEFAULT_OFFER_C
     return tuple(chosen)
 
 
-def equip_altar_pick(player, progress, rune_id):
+def equip_altar_pick(player, progress, rune_id, extra_slots: int = 0):
     """Equip *rune_id* from an altar pick onto both player and progress.
 
-    If the target category is full, the rune at index 0 is replaced
-    (FIFO).  Returns ``True`` on success.
+    If the target category is full (accounting for *extra_slots* from pacts),
+    the rune at index 0 is replaced (FIFO).  Returns ``True`` on success.
     """
     rune = get_rune(rune_id)
     if rune is None:
         return False
 
-    replace_index = 0 if slot_is_full(progress, rune.category) else None
-    if not equip_rune(progress, rune_id, replace_index=replace_index):
-        return False
+    if slot_is_full(progress, rune.category, extra_slots=extra_slots):
+        # Slot is full even with pact bonus — displace oldest entry.
+        replace_index = 0
+        if not equip_rune(progress, rune_id, replace_index=replace_index):
+            return False
+    else:
+        # There is room (possibly due to extra_slots) — try a direct append.
+        capacity = RUNE_SLOT_CAPACITY.get(rune.category, 0) + extra_slots
+        loadout = equipped_runes(progress)
+        category_runes = loadout.setdefault(rune.category, [])
+        if rune_id in category_runes:
+            return False
+        if len(category_runes) < capacity:
+            category_runes.append(rune_id)
+            setattr(progress, "equipped_runes", loadout)
+        else:
+            return False
     sync_runtime_to_progress(player, progress)
     return True

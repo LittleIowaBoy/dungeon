@@ -3,12 +3,20 @@ import random
 import pygame
 from sprites import make_rect_surface
 from settings import (
-    COLOR_CHEST, COLOR_CHEST_LOOTED,
+    COLOR_CHEST, COLOR_CHEST_LOOTED, COLOR_CHEST_GAMBLE,
     CHEST_MIN_ITEMS, CHEST_MAX_ITEMS, CHEST_INTERACT_DIST,
+    CHEST_GAMBLE_WIN_CHANCE,
 )
 from item_catalog import CHEST_CONTENT_ENTRIES, CHEST_CONTENT_WEIGHTS
 from items import Coin, LootDrop
 
+
+# Ordered progression used by the gamble mechanic to elevate a chest's tier.
+_TIER_PROGRESSION = {
+    "standard":     "branch_bonus",
+    "branch_bonus": "finale_bonus",
+    "finale_bonus": "finale_bonus",  # already maximum
+}
 
 _CHEST_BONUS_ITEMS_BY_TIER = {
     "standard": 0,
@@ -37,6 +45,7 @@ class Chest(pygame.sprite.Sprite):
         self.looted = looted
         self.reward_tier = reward_tier
         self.reward_kind = reward_kind
+        self.gamble_pending = False
         self._set_image()
         self.rect = self.image.get_rect(center=(x, y))
         # Pre-generate contents (only used if not looted)
@@ -47,8 +56,66 @@ class Chest(pygame.sprite.Sprite):
 
     # ── visuals ─────────────────────────────────────────
     def _set_image(self):
-        color = COLOR_CHEST_LOOTED if self.looted else COLOR_CHEST
+        if self.looted:
+            color = COLOR_CHEST_LOOTED
+        elif self.gamble_pending:
+            color = COLOR_CHEST_GAMBLE
+        else:
+            color = COLOR_CHEST
         self.image = make_rect_surface(self.SIZE, self.SIZE, color)
+
+    # ── gamble ──────────────────────────────────────────
+    def try_gamble(self, player_rect) -> bool:
+        """Enter gamble-pending state if the player is within interact range.
+
+        Returns True if the state was entered; False if the chest is already
+        looted, already pending, or the player is too far away.
+        """
+        if self.looted or self.gamble_pending:
+            return False
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        if (dx * dx + dy * dy) ** 0.5 > CHEST_INTERACT_DIST:
+            return False
+        self.gamble_pending = True
+        self._set_image()
+        return True
+
+    def cancel_gamble(self):
+        """Abort a pending gamble without any side-effects."""
+        if not self.gamble_pending:
+            return
+        self.gamble_pending = False
+        self._set_image()
+
+    def confirm_gamble(self, rng) -> str:
+        """Resolve the pending gamble.  Returns 'win', 'lose', or 'idle'.
+
+        Win (55 % by default): elevates reward tier and rerolls contents.
+        Lose: forfeits the chest (marks it looted without yielding items).
+        """
+        if not self.gamble_pending:
+            return "idle"
+        self.gamble_pending = False
+        if rng.random() < CHEST_GAMBLE_WIN_CHANCE:
+            self.try_elevate_tier()
+            self._set_image()
+            return "win"
+        self.mark_looted()
+        return "lose"
+
+    def try_elevate_tier(self) -> bool:
+        """Bump the reward tier one step up the _TIER_PROGRESSION ladder.
+
+        Rerolls contents immediately.  Returns False if already at maximum.
+        """
+        next_tier = _TIER_PROGRESSION.get(self.reward_tier, self.reward_tier)
+        if next_tier == self.reward_tier:
+            return False
+        self.reward_tier = next_tier
+        if not self.looted:
+            self.contents = self._roll_contents()
+        return True
 
     def mark_looted(self):
         self.looted = True

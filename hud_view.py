@@ -32,6 +32,7 @@ class MinimapRoomHUDView:
     objective_marker: tuple[str, str] | None
     door_kinds: dict[str, str]
     objective_status: str | None = None
+    is_danger_branch: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,15 @@ class StatusMetersHUDView:
 
 
 @dataclass(frozen=True)
+class DangerModeHUDView:
+    """Danger Mode pressure indicator shown when Danger Mode is active."""
+    pressure_level: int
+    pressure_max: int
+    is_active: bool
+    hunter_alive: bool = False
+
+
+@dataclass(frozen=True)
 class HUDView:
     current_hp: int
     max_hp: int
@@ -219,6 +229,7 @@ class HUDView:
     boss_health_bar: BossHealthBarHUDView | None = None
     boss_intro_banner: BossIntroBannerHUDView | None = None
     status_meters: StatusMetersHUDView | None = None
+    danger_mode: DangerModeHUDView | None = None
 
 
 def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
@@ -276,6 +287,23 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         else None
     )
 
+    # Danger Mode pressure indicator.
+    danger_mode = None
+    if getattr(dungeon, "risk_reward_mode_enabled", False):
+        from risk_reward_rules import PRESSURE_LEVEL_MAX
+        from enemies import HunterEnemy
+        enemy_group = getattr(dungeon, "enemy_group", None)
+        hunter_alive = (
+            enemy_group is not None
+            and any(isinstance(e, HunterEnemy) for e in enemy_group)
+        )
+        danger_mode = DangerModeHUDView(
+            pressure_level=int(getattr(dungeon, "pressure_level", 0)),
+            pressure_max=PRESSURE_LEVEL_MAX,
+            is_active=True,
+            hunter_alive=hunter_alive,
+        )
+
     return HUDView(
         current_hp=player.current_hp,
         max_hp=player.max_hp,
@@ -303,6 +331,7 @@ def build_hud_view(player, dungeon, now_ticks=None, show_room_identifier=False):
         boss_health_bar=boss_health_bar,
         boss_intro_banner=boss_intro_banner,
         status_meters=_build_status_meters_view(player),
+        danger_mode=danger_mode,
     )
 
 
@@ -317,11 +346,19 @@ def build_game_over_overlay_view():
     )
 
 
-def build_victory_overlay_view(coins_collected):
+def build_victory_overlay_view(coins_collected, dungeon=None):
+    detail = f"Coins collected: {coins_collected}"
+    if dungeon is not None and getattr(dungeon, "risk_reward_mode_enabled", False):
+        peak = getattr(dungeon, "peak_pressure", 0)
+        from risk_reward_rules import PRESSURE_LEVEL_MAX
+        detail += f"  |  Peak Pressure: {peak}/{PRESSURE_LEVEL_MAX}"
+        bonus = getattr(dungeon, "danger_mode_bonus_coins", 0)
+        if bonus > 0:
+            detail += f"  |  Danger Bonus: +{bonus}"
     return OverlayHUDView(
         title="DUNGEON CLEARED!",
         title_color=COLOR_PORTAL,
-        detail_text=f"Coins collected: {coins_collected}",
+        detail_text=detail,
         detail_color=COLOR_COIN,
         prompt_text="Press R to return to menu",
         prompt_color=COLOR_WHITE,
@@ -352,6 +389,7 @@ def _build_minimap_view(dungeon, now_ticks=None):
             objective_marker=room.get("objective_marker"),
             door_kinds=dict(room["door_kinds"]),
             objective_status=room.get("objective_status"),
+            is_danger_branch=bool(room.get("is_danger_branch", False)),
         )
         for room in snapshot["rooms"]
     )

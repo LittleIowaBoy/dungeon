@@ -335,6 +335,7 @@ class GameRuntimeTests(unittest.TestCase):
         dummy_chest = SimpleNamespace(
             rect=chest_rect,
             try_open=Mock(return_value=True),
+            gamble_pending=False,
         )
         chest_group = [dummy_chest]
         room = SimpleNamespace(
@@ -347,6 +348,7 @@ class GameRuntimeTests(unittest.TestCase):
             chest_group=chest_group,
             item_group=spawned_items,
             current_room=room,
+            active_pacts=[],
         )
         game.player = SimpleNamespace(rect=SimpleNamespace())
         event = SimpleNamespace(key=rpg.pygame.K_e)
@@ -367,6 +369,7 @@ class GameRuntimeTests(unittest.TestCase):
         dummy_chest = SimpleNamespace(
             rect=chest_rect,
             try_open=Mock(return_value=True),
+            gamble_pending=False,
         )
         room = SimpleNamespace(
             allows_chest_open=Mock(return_value=True),
@@ -378,6 +381,7 @@ class GameRuntimeTests(unittest.TestCase):
             chest_group=[dummy_chest],
             item_group=spawned_items,
             current_room=room,
+            active_pacts=[],
         )
         game.player = SimpleNamespace(rect=SimpleNamespace())
         event = SimpleNamespace(key=rpg.pygame.K_e)

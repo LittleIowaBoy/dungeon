@@ -51,6 +51,7 @@ class TopologyRoom:
     distance_from_start: int
     distance_to_exit: int
     is_boss_slot: bool = False  # True for main_path[-2]; always receives a boss template
+    is_danger_branch: bool = False  # True for Danger Mode flagged branch rooms
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,7 @@ class TopologyPlanner:
         branch_length_range=None,
         pacing_profile="balanced",
         rng=None,
+        risk_reward_mode=False,
     ):
         self._grid_size = grid_size
         self._radius = grid_size // 2
@@ -93,6 +95,7 @@ class TopologyPlanner:
         self._branch_length_range = branch_length_range
         self._pacing_profile = pacing_profile
         self._rng = rng or random.Random()
+        self._risk_reward_mode = risk_reward_mode
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -155,6 +158,13 @@ class TopologyPlanner:
         for branch_index, branch_path in enumerate(branch_paths, start=1):
             anchor_depth = room_entries[branch_path[0]].depth
             branch_path_length = max(1, len(branch_path) - 1)
+            # Danger Mode: flag this entire branch if risk_reward_mode is on.
+            # Probability scales linearly from 10% at depth 0 to 50% near end.
+            is_danger_branch = False
+            if self._risk_reward_mode and main_path_length > 1:
+                anchor_ratio = anchor_depth / (main_path_length - 1)
+                danger_prob = 0.10 + 0.40 * anchor_ratio
+                is_danger_branch = self._rng.random() < danger_prob
             for step, pos in enumerate(branch_path[1:], start=1):
                 path_index = step - 1
                 path_progress = self._path_progress(path_index, branch_path_length)
@@ -176,6 +186,7 @@ class TopologyPlanner:
                     doors=self._door_map(pos, connections),
                     distance_from_start=d_s,
                     distance_to_exit=d_e,
+                    is_danger_branch=is_danger_branch,
                 )
 
         return TopologyPlan(

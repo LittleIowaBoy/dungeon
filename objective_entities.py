@@ -2730,3 +2730,37 @@ class SentryBlocker(pygame.sprite.Sprite):
 
     def update(self, now_ticks=None):
         pass
+
+
+# ── Pact Shrine ──────────────────────────────────────────────────────────────
+_PACT_SHRINE_COLOR = (160, 40, 80)           # deep crimson
+_PACT_SHRINE_CONSUMED_COLOR = (70, 50, 60)   # spent / ash grey
+
+
+class PactShrine(pygame.sprite.Sprite):
+    """An interactive shrine that lets the player choose and commit a Pact.
+
+    Visual: a 26×26 crimson square drawn in the objective layer.  Turns
+    grey once the pact has been consumed.  Registered via a
+    ``"pact_shrine"`` config entry and tracked in ``dungeon.objective_group``.
+    """
+
+    SIZE = 26
+
+    def __init__(self, x, y, consumed=False):
+        super().__init__()
+        self.consumed = consumed
+        self._render()
+        self.rect = self.image.get_rect(center=(int(x), int(y)))
+
+    def _render(self):
+        color = _PACT_SHRINE_CONSUMED_COLOR if self.consumed else _PACT_SHRINE_COLOR
+        self.image = make_rect_surface(self.SIZE, self.SIZE, color)
+
+    def mark_consumed(self):
+        if not self.consumed:
+            self.consumed = True
+            self._render()
+
+    def update(self, now_ticks=None):
+        pass

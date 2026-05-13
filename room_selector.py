@@ -251,6 +251,7 @@ class RoomSelector:
         difficulty_band=None,
         is_path_terminal=False,
         reward_tier="standard",
+        danger_variant=False,
     ):
         path_context_provided = any(
             value is not None
@@ -268,6 +269,10 @@ class RoomSelector:
             difficulty_band = 0
         if reward_tier == "standard" and is_path_terminal:
             reward_tier = "finale_bonus" if is_exit or path_kind == "main_path" else "branch_bonus"
+
+        # Danger Mode: danger branches always get at least branch_bonus reward.
+        if danger_variant and reward_tier == "standard":
+            reward_tier = "branch_bonus"
 
         template = self._select_template(
             depth,
@@ -296,6 +301,7 @@ class RoomSelector:
             difficulty_band=difficulty_band,
             is_path_terminal=is_path_terminal,
             reward_tier=reward_tier,
+            danger_variant=danger_variant,
         )
 
     def _select_template(
@@ -445,6 +451,7 @@ class RoomSelector:
         difficulty_band,
         is_path_terminal,
         reward_tier,
+        danger_variant=False,
     ):
         enemy_count_range = self._enemy_count_range
         objective_rule = template.objective_rule or "immediate"
@@ -516,6 +523,17 @@ class RoomSelector:
                 minimum_bonus=template.enemy_minimum_bonus,
                 factor=template.enemy_scale_factor,
             )
+
+        # Danger Mode: danger branches use 1.5× enemy scale and elite pool.
+        if danger_variant and enemy_count_range is not None:
+            enemy_count_range = _scale_enemy_count_range(
+                enemy_count_range,
+                factor=1.5,
+            )
+            # Elevate reward tier to finale_bonus if not already higher.
+            from risk_reward_rules import _TIER_ORDER, _tier_index
+            if _tier_index(reward_tier) < _tier_index("finale_bonus"):
+                reward_tier = "finale_bonus"
 
         if objective_rule == "holdout_timer":
             if not scripted_wave_sizes:
@@ -628,4 +646,6 @@ class RoomSelector:
             trap_vent_chilled_duration_ms=trap_vent_chilled_duration_ms,
             trap_surge_interval_ms=trap_surge_interval_ms,
             trap_surge_duration_ms=trap_surge_duration_ms,
+            danger_variant=danger_variant,
+            terrain_layout=template.terrain_layout or "",
         )

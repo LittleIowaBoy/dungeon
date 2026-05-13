@@ -28,7 +28,7 @@ def is_alive(player):
     return player.current_hp > 0
 
 
-def take_damage(player, amount, now_ticks, damage_type=None):
+def take_damage(player, amount, now_ticks, damage_type=None, dungeon=None):
     if is_invincible(player, now_ticks):
         return
 
@@ -39,6 +39,16 @@ def take_damage(player, amount, now_ticks, damage_type=None):
     if absorbed_iframe:
         player._invincible_until = iframe_until
         return
+
+    # Hex of Fragility: +25% enemy damage when pact is active.
+    if dungeon is not None and dungeon.risk_reward_mode_enabled:
+        from risk_reward_rules import PACTS
+        for pact_id in dungeon.active_pacts:
+            pact = PACTS.get(pact_id, {})
+            mult = pact.get("enemy_damage_mult", 1.0)
+            if mult != 1.0:
+                amount = int(round(amount * mult))
+                break  # only apply the first damage-mult pact
 
     amount = stat_runes.modify_incoming_damage(player, amount)
     amount = armor_rules.apply_incoming_damage_multiplier(player, amount, damage_type)
@@ -59,3 +69,7 @@ def take_damage(player, amount, now_ticks, damage_type=None):
     total_taken = pre_total - (player.armor_hp + player.current_hp)
     if total_taken > 0:
         damage_feedback.report_damage(player, total_taken, damage_type=damage_type)
+        # Danger Mode: any real HP loss marks the room as "not clean" so the
+        # pressure increment on room clear is reduced.
+        if dungeon is not None and dungeon.risk_reward_mode_enabled:
+            dungeon.pressure_room_clean = False

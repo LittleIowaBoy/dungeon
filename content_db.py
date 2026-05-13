@@ -92,6 +92,10 @@ ROOM_TEMPLATE_COLUMNS = (
     "trap_vent_chilled_duration_ms",
     "trap_surge_interval_ms",
     "trap_surge_duration_ms",
+    "terrain_layout",
+    "allow_terrain_accent",
+    "min_rows",
+    "min_cols",
     "notes",
 )
 
@@ -154,6 +158,10 @@ def _plan_shape(
     trap_vent_chilled_duration_ms=0,
     trap_surge_interval_ms=0,
     trap_surge_duration_ms=0,
+    terrain_layout="",
+    allow_terrain_accent=True,
+    min_rows=0,
+    min_cols=0,
 ):
     return {
         "objective_rule": objective_rule,
@@ -212,6 +220,10 @@ def _plan_shape(
         "trap_vent_chilled_duration_ms": trap_vent_chilled_duration_ms,
         "trap_surge_interval_ms": trap_surge_interval_ms,
         "trap_surge_duration_ms": trap_surge_duration_ms,
+        "terrain_layout": terrain_layout,
+        "allow_terrain_accent": int(bool(allow_terrain_accent)),
+        "min_rows": min_rows,
+        "min_cols": min_cols,
     }
 
 BASE_ROOM_TEMPLATES = (
@@ -584,6 +596,36 @@ BASE_ROOM_TEMPLATES = (
             objective_label="Rune Altar",
         ),
         "notes": "A chamber housing a rune altar that offers three rune choices, one per slot category.",
+    },
+    {
+        "room_id": "pact_shrine_chamber",
+        "display_name": "Pact Shrine Chamber",
+        "objective_kind": "boon",
+        "combat_pressure": "none",
+        "decision_complexity": "high",
+        "topology_role": "branch",
+        "min_depth": 2,
+        "max_depth": None,
+        "branch_preference": "branch",
+        "generation_weight": 1,
+        "enabled": 1,
+        "implementation_status": "implemented",
+        "objective_variant": "",
+        "path_stage_min": 0,
+        "path_stage_max": 4,
+        "terminal_preference": "any",
+        "repeat_cooldown": 99,
+        "reward_affinity": "branch",
+        **_plan_shape(
+            objective_rule="pact_shrine",
+            enemy_scale_factor=0.0,
+            terrain_patch_count_range="0,1",
+            terrain_patch_size_range="2,3",
+            clear_center=True,
+            objective_entity_count=1,
+            objective_label="Pact Shrine",
+        ),
+        "notes": "A foreboding shrine that lets the player commit to a Pact, trading safety for power.",
     },
     # ── Biome-room expansion: Earth (Mud Caverns) ─────────────────────
     # These rooms reuse standard combat pacing but swap the biome's default
@@ -1656,6 +1698,10 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     trap_vent_chilled_duration_ms INTEGER NOT NULL DEFAULT 0,
     trap_surge_interval_ms INTEGER NOT NULL DEFAULT 0,
     trap_surge_duration_ms INTEGER NOT NULL DEFAULT 0,
+    terrain_layout TEXT NOT NULL DEFAULT '',
+    allow_terrain_accent INTEGER NOT NULL DEFAULT 1,
+    min_rows INTEGER NOT NULL DEFAULT 0,
+    min_cols INTEGER NOT NULL DEFAULT 0,
     notes TEXT NOT NULL DEFAULT ''
 );
 """
@@ -1823,6 +1869,10 @@ def _ensure_schema_columns(conn):
         "trap_vent_chilled_duration_ms": "INTEGER NOT NULL DEFAULT 0",
         "trap_surge_interval_ms": "INTEGER NOT NULL DEFAULT 0",
         "trap_surge_duration_ms": "INTEGER NOT NULL DEFAULT 0",
+        "terrain_layout": "TEXT NOT NULL DEFAULT ''",
+        "allow_terrain_accent": "INTEGER NOT NULL DEFAULT 1",
+        "min_rows": "INTEGER NOT NULL DEFAULT 0",
+        "min_cols": "INTEGER NOT NULL DEFAULT 0",
     }
     for table_name in (BASE_ROOM_TEMPLATE_TABLE, *DUNGEON_ROOM_TEMPLATE_TABLES.values()):
         existing = {

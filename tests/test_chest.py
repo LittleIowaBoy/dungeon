@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import patch
+import random
+from unittest.mock import patch, MagicMock
 
 from chest import Chest
 
@@ -77,6 +78,125 @@ class ChestRewardKindTests(unittest.TestCase):
 
         self.assertEqual(chest.reward_kind, "chest_upgrade")
         self.assertEqual(chest.contents, [])
+
+
+class GambleStateTests(unittest.TestCase):
+    """Tests for Chest.try_gamble / cancel_gamble / confirm_gamble."""
+
+    def _make_chest_at(self, cx=100, cy=100, **kw):
+        return Chest(cx, cy, **kw)
+
+    def _near_rect(self, cx=100, cy=100):
+        rect = MagicMock()
+        rect.centerx = cx
+        rect.centery = cy
+        return rect
+
+    def _far_rect(self):
+        rect = MagicMock()
+        rect.centerx = 9999
+        rect.centery = 9999
+        return rect
+
+    # ── try_gamble ───────────────────────────────────────
+
+    def test_try_gamble_enters_pending_when_near(self):
+        chest = self._make_chest_at()
+        result = chest.try_gamble(self._near_rect())
+        self.assertTrue(result)
+        self.assertTrue(chest.gamble_pending)
+
+    def test_try_gamble_returns_false_when_far(self):
+        chest = self._make_chest_at()
+        result = chest.try_gamble(self._far_rect())
+        self.assertFalse(result)
+        self.assertFalse(chest.gamble_pending)
+
+    def test_try_gamble_noop_on_looted_chest(self):
+        chest = self._make_chest_at(looted=True)
+        result = chest.try_gamble(self._near_rect())
+        self.assertFalse(result)
+        self.assertFalse(chest.gamble_pending)
+
+    def test_try_gamble_noop_when_already_pending(self):
+        chest = self._make_chest_at()
+        chest.try_gamble(self._near_rect())
+        result = chest.try_gamble(self._near_rect())
+        self.assertFalse(result)
+        self.assertTrue(chest.gamble_pending)
+
+    # ── cancel_gamble ────────────────────────────────────
+
+    def test_cancel_gamble_clears_pending(self):
+        chest = self._make_chest_at()
+        chest.try_gamble(self._near_rect())
+        chest.cancel_gamble()
+        self.assertFalse(chest.gamble_pending)
+        self.assertFalse(chest.looted)
+
+    def test_cancel_gamble_noop_when_not_pending(self):
+        chest = self._make_chest_at()
+        chest.cancel_gamble()  # Should not raise.
+        self.assertFalse(chest.gamble_pending)
+
+    # ── confirm_gamble ───────────────────────────────────
+
+    @patch("chest.random.choices", return_value=[("coin",)])
+    @patch("chest.random.randint", return_value=1)
+    def test_confirm_gamble_win_elevates_tier(self, _ri, _rc):
+        chest = self._make_chest_at(reward_tier="standard")
+        chest.try_gamble(self._near_rect())
+        rng = MagicMock()
+        rng.random.return_value = 0.0   # always win
+        result = chest.confirm_gamble(rng)
+        self.assertEqual(result, "win")
+        self.assertEqual(chest.reward_tier, "branch_bonus")
+        self.assertFalse(chest.gamble_pending)
+
+    @patch("chest.random.choices", return_value=[("coin",)])
+    @patch("chest.random.randint", return_value=1)
+    def test_confirm_gamble_lose_marks_looted(self, _ri, _rc):
+        chest = self._make_chest_at()
+        chest.try_gamble(self._near_rect())
+        rng = MagicMock()
+        rng.random.return_value = 1.0   # always lose
+        result = chest.confirm_gamble(rng)
+        self.assertEqual(result, "lose")
+        self.assertTrue(chest.looted)
+        self.assertFalse(chest.gamble_pending)
+
+    @patch("chest.random.choices", return_value=[("coin",)])
+    @patch("chest.random.randint", return_value=1)
+    def test_confirm_gamble_idle_when_not_pending(self, _ri, _rc):
+        chest = self._make_chest_at()
+        result = chest.confirm_gamble(MagicMock())
+        self.assertEqual(result, "idle")
+
+    # ── try_elevate_tier ─────────────────────────────────
+
+    @patch("chest.random.choices", return_value=[("coin",)])
+    @patch("chest.random.randint", return_value=1)
+    def test_try_elevate_tier_standard_to_branch(self, _ri, _rc):
+        chest = self._make_chest_at(reward_tier="standard")
+        elevated = chest.try_elevate_tier()
+        self.assertTrue(elevated)
+        self.assertEqual(chest.reward_tier, "branch_bonus")
+
+    @patch("chest.random.choices", return_value=[("coin",)])
+    @patch("chest.random.randint", return_value=1)
+    def test_try_elevate_tier_branch_to_finale(self, _ri, _rc):
+        chest = self._make_chest_at(reward_tier="branch_bonus")
+        elevated = chest.try_elevate_tier()
+        self.assertTrue(elevated)
+        self.assertEqual(chest.reward_tier, "finale_bonus")
+
+    @patch("chest.random.choices", return_value=[("coin",)])
+    @patch("chest.random.randint", return_value=1)
+    def test_try_elevate_tier_returns_false_at_max(self, _ri, _rc):
+        chest = self._make_chest_at(reward_tier="finale_bonus")
+        elevated = chest.try_elevate_tier()
+        self.assertFalse(elevated)
+        self.assertEqual(chest.reward_tier, "finale_bonus")
 
 
 if __name__ == "__main__":

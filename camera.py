@@ -5,7 +5,8 @@ from settings import (
     COLOR_DOOR_ONE_WAY,
     THIN_ICE_CRACK_COLORS,
 )
-from room import TERRAIN_COLORS, THIN_ICE
+from room import TERRAIN_COLORS, THIN_ICE, RUBBLE
+from settings import _COLOR_RUBBLE_CRACK
 from terrain_effects import thin_ice_crack_stage
 
 
@@ -71,6 +72,8 @@ class Camera:
                         self._draw_thin_ice_cracks(
                             surface, c, r, stage, crack_color
                         )
+                elif tile == RUBBLE:
+                    self._draw_rubble_cracks(surface, c, r)
 
         # sprites
         overlay_sprites = []
@@ -288,4 +291,18 @@ class Camera:
 
         surface.blit(overlay, (x0, y0))
 
+    # ------------------------------------------------------------------
+    def _draw_rubble_cracks(self, surface, c, r):
+        """Overlay deterministic crack specks on a RUBBLE tile.
+
+        Uses only hash arithmetic so no RNG call is made per-frame and each
+        tile always shows the same speck pattern regardless of render order.
+        """
+        x0 = c * TILE_SIZE
+        y0 = r * TILE_SIZE
+        seed = hash((c, r, "rubble")) & 0xFFFFFFFF
+        for i in range(4):
+            sx = x0 + (seed >> (i * 8)) % (TILE_SIZE - 2) + 1
+            sy = y0 + (seed >> (i * 4 + 2)) % (TILE_SIZE - 2) + 1
+            pygame.draw.rect(surface, _COLOR_RUBBLE_CRACK, (sx, sy, 2, 1))
 

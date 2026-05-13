@@ -13,6 +13,18 @@ _BASE_CONTEXT_LABEL = "Base Layout"
 # ── Room-test category constants ───────────────────────
 # Each category matches the context_label on RoomTestEntry so routing is a
 # simple equality check rather than a room_id prefix scan.
+
+# ── Terrain layout test constants ─────────────────────
+# Biome options for the terrain layout preview screen.
+# The empty string means "plain" (no biome accent tiles).
+TERRAIN_LAYOUT_TEST_BIOMES: tuple[str, ...] = ("", "mud", "ice", "water")
+TERRAIN_LAYOUT_BIOME_LABELS: dict[str, str] = {
+    "":      "Plain",
+    "mud":   "Mud",
+    "ice":   "Ice",
+    "water": "Water",
+}
+TERRAIN_LAYOUT_TEST_DOOR_COUNTS: tuple[int, ...] = (1, 2, 3, 4)
 ROOM_TEST_CATEGORY_BASE_LAYOUT   = "Base Layout"
 ROOM_TEST_CATEGORY_MUD_CAVERNS   = "Mud Caverns"
 ROOM_TEST_CATEGORY_FROZEN_DEPTHS = "Frozen Depths"
@@ -27,8 +39,8 @@ ROOM_TEST_CATEGORIES = (
 
 def _category_for_entry(entry):
     """Return the category string for a RoomTestEntry, or None for the tuning shortcut."""
-    if entry.room_id == TUNING_TEST_ROOM_ID:
-        return None  # top-level shortcut; not listed in any category
+    if entry.room_id in (TUNING_TEST_ROOM_ID, HUNTER_TEST_ROOM_ID):
+        return None  # top-level shortcuts; not listed in any category
     label = entry.context_label
     if label in ROOM_TEST_CATEGORIES:
         return label
@@ -47,6 +59,7 @@ def load_room_test_entries_for_category(category):
 # real entry to BASE_ROOM_TEMPLATES; instead we synthesise a template_row
 # off the standard_combat shape and prepend a synthetic RoomTestEntry.
 TUNING_TEST_ROOM_ID = "tuning_test_room"
+HUNTER_TEST_ROOM_ID = "hunter_test_room"
 
 
 def _build_tuning_test_template_row():
@@ -81,6 +94,50 @@ def _build_tuning_test_entry():
         room_id=TUNING_TEST_ROOM_ID,
         display_name="Tuning Test Room",
         base_display_name="Tuning Test Room",
+        context_label="Tuning",
+        profile_dungeon_id=default_dungeon["id"],
+        profile_dungeon_name=default_dungeon["name"],
+        terrain_type=default_dungeon["terrain_type"],
+        objective_kind=template_row["objective_kind"],
+        objective_variant="",
+        implementation_status="implemented",
+        is_biome_variant=False,
+        template_row=template_row,
+    )
+
+
+def _build_hunter_test_template_row():
+    """Clone the standard_combat template_row with overrides for the Hunter test room."""
+    base = next(
+        (dict(t) for t in BASE_ROOM_TEMPLATES if t["room_id"] == "standard_combat"),
+        None,
+    )
+    if base is None:
+        return None
+    base.update({
+        "room_id": HUNTER_TEST_ROOM_ID,
+        "display_name": "Hunter Test Room",
+        "topology_role": "opener",
+        "min_depth": 0,
+        "max_depth": 0,
+        "enabled": 1,
+        "implementation_status": "implemented",
+        "objective_variant": "",
+        "notes": "Danger Mode Hunter miniboss encounter sandbox.",
+    })
+    return base
+
+
+def _build_hunter_test_entry():
+    template_row = _build_hunter_test_template_row()
+    if template_row is None or not DUNGEONS:
+        return None
+    default_dungeon = DUNGEONS[0]
+    return RoomTestEntry(
+        entry_id=f"base:{HUNTER_TEST_ROOM_ID}",
+        room_id=HUNTER_TEST_ROOM_ID,
+        display_name="Hunter Test Room",
+        base_display_name="Hunter Test Room",
         context_label="Tuning",
         profile_dungeon_id=default_dungeon["id"],
         profile_dungeon_name=default_dungeon["name"],
@@ -134,6 +191,12 @@ def load_room_test_entries():
     tuning_entry = _build_tuning_test_entry()
     if tuning_entry is not None:
         entries.append(tuning_entry)
+    hunter_entry = _build_hunter_test_entry()
+    if hunter_entry is not None:
+        entries.append(hunter_entry)
+    hunter_entry = _build_hunter_test_entry()
+    if hunter_entry is not None:
+        entries.append(hunter_entry)
 
     # Track which room_ids have already been emitted so biome-only rooms
     # (disabled in BASE_ROOM_TEMPLATES but enabled via a dungeon override)
@@ -265,6 +328,77 @@ def _representative_depth(template_row, depth_scale=5):
 
 def _representative_level_index(template_row, total_levels):
     return _representative_depth(template_row, total_levels)
+
+
+def build_terrain_layout_test_plan(layout_id: str, biome: str) -> "tuple[str, object]":
+    """Build a no-enemy, no-objective RoomPlan for a terrain layout preview.
+
+    Returns ``(dungeon_id, RoomPlan)``.  The plan has ``enemy_count_range=(0,0)``
+    and ``objective_rule="immediate"`` so the room spawns empty and the portal
+    opens immediately.  The ``terrain_layout`` field pins the specific pattern.
+
+    *biome* is one of ``""``, ``"mud"``, ``"ice"``, ``"water"``; an empty string
+    produces a plain room with no biome accent tiles.
+    """
+    if not DUNGEONS:
+        return None, None
+
+    # Pick the dungeon whose terrain_type matches the requested biome so the
+    # Room inherits the correct biome colour palette.  Plain ("") falls back to
+    # the first available dungeon with terrain_type forced to None.
+    dungeon = None
+    if biome:
+        dungeon = next((d for d in DUNGEONS if d.get("terrain_type") == biome), None)
+    if dungeon is None:
+        dungeon = DUNGEONS[0]
+
+    terrain_type = biome or None  # None → Room._terrain_type = None → plain floor
+
+    base = next(
+        (dict(t) for t in BASE_ROOM_TEMPLATES if t["room_id"] == "standard_combat"),
+        None,
+    )
+    if base is None:
+        return dungeon["id"], None
+
+    template_row = dict(base)
+    template_row.update({
+        "room_id":          "terrain_layout_test",
+        "display_name":     layout_id.replace("_", " ").title(),
+        "objective_rule":   "immediate",
+        "terrain_layout":   layout_id,
+        "notes":            f"Terrain layout test: {layout_id}",
+        "topology_role":    "opener",
+        "min_depth":        0,
+        "max_depth":        0,
+        # No chest or enemies needed for pattern inspection.
+        "guaranteed_chest": False,
+        "chest_spawn_chance": 0.0,
+    })
+
+    selector = RoomSelector(
+        dungeon["id"],
+        terrain_type,   # None = plain, or "mud"/"ice"/"water"
+        (0, 0),         # enemy_count_range = no enemies
+        None,           # enemy_type_weights
+        catalog=(),
+    )
+    template = RoomTemplate.from_mapping(template_row)
+    plan = selector.build_room_plan_for_template(
+        template,
+        pos=(0, 0),
+        depth=0,
+        path_kind="main_path",
+        is_exit=True,
+        path_id="terrain_layout_test",
+        path_index=0,
+        path_length=1,
+        path_progress=1.0,
+        difficulty_band=0,
+        is_path_terminal=True,
+        reward_tier="standard",
+    )
+    return dungeon["id"], plan
 
 
 def _path_kind(template_row):

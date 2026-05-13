@@ -80,6 +80,11 @@ class PlayerProgress:
         # Persisted across sessions.  Drives grid size during dungeon generation.
         self.difficulty_preference: str = "default"
 
+        # Danger Mode opt-in: when True, Pressure Meter + danger branches are
+        # active for the next run.  Persisted so the player's choice survives
+        # sessions.  The actual per-run pressure state lives on Dungeon.
+        self.risk_reward_mode: bool = False
+
         # Permanent meta-progression: prismatic keystones earned by crafting
         # at the shop.  Never wiped on death, abandon, or completion.  Each
         # keystone grants +KEYSTONE_STARTING_COIN_BONUS coins at the start

@@ -1,5 +1,6 @@
 """Top-Down Dungeon Crawler RPG — entry point."""
 import os
+import random
 import sys
 from typing import Optional
 import pygame
@@ -34,6 +35,7 @@ from menu import (
     MainMenuScreen,
     RoomTestSelectScreen,
     RoomTestCategoryScreen,
+    TerrainLayoutTestScreen,
     DungeonSelectScreen,
     CharacterCustomizeScreen,
     ShopScreen,
@@ -41,6 +43,7 @@ from menu import (
     PauseScreen,
     LevelCompleteScreen,
     RuneAltarPickScreen,
+    PactShrinePickScreen,
     AllItemsPauseScreen,
     AllRunesPauseScreen,
 )
@@ -53,10 +56,12 @@ from menu_view import (
     build_records_view,
     build_room_test_select_view,
     build_room_test_category_view,
+    build_terrain_layout_test_view,
     build_rune_altar_pick_view,
+    build_pact_shrine_pick_view,
     build_shop_view,
 )
-from room_test_catalog import build_room_test_plan, load_room_test_entries, load_room_test_entries_for_category
+from room_test_catalog import build_room_test_plan, build_terrain_layout_test_plan, load_room_test_entries, load_room_test_entries_for_category
 from shop import Shop
 import ability_rules
 import allies
@@ -131,6 +136,7 @@ class Game:
         self._main_menu = MainMenuScreen(self.progress)
         self._room_test_category = RoomTestCategoryScreen()
         self._room_test_select = RoomTestSelectScreen(load_room_test_entries())
+        self._terrain_layout_test = TerrainLayoutTestScreen()
         self._dungeon_select = DungeonSelectScreen(self.progress)
         self._character_screen = CharacterCustomizeScreen(self.progress)
         self._shop_screen = ShopScreen(self.progress, self.shop)
@@ -141,6 +147,8 @@ class Game:
         )
         self._rune_altar_pick = RuneAltarPickScreen()
         self._pending_rune_altar = None  # config dict of altar awaiting pick
+        self._pact_shrine_pick = PactShrinePickScreen()
+        self._pending_pact_shrine = None  # config dict of shrine awaiting pick
 
         # Test-room pause sub-screens (lazy-built when entering a room test).
         self._all_items_screen = None
@@ -172,12 +180,18 @@ class Game:
         bonus = self.progress.keystone_starting_coin_bonus()
         if bonus:
             damage_feedback.report_keystone_starting_bonus(bonus)
-        self.dungeon = Dungeon(dungeon_config=config, difficulty=difficulty)
+        self.dungeon = Dungeon(
+            dungeon_config=config,
+            difficulty=difficulty,
+            risk_reward_mode=getattr(self.progress, "risk_reward_mode", False),
+        )
+        self.dungeon.pressure_room_entry_ticks = pygame.time.get_ticks()
 
         start_x = ROOM_COLS // 2 * TILE_SIZE + TILE_SIZE // 2
         start_y = ROOM_ROWS // 2 * TILE_SIZE + TILE_SIZE // 2
         self.player = Player(start_x, start_y)
         self.player.reset_for_dungeon(self.progress)
+        self.player._dungeon = self.dungeon
         self.player_group = pygame.sprite.GroupSingle(self.player)
         self._enter_current_room()
         self.state = GameState.PLAYING
@@ -300,6 +314,9 @@ class Game:
                 player_position=player_position,
                 room_test=self._is_room_test_active(),
             )
+            # Reset pressure room state on each new room entry.
+            self.dungeon.pressure_room_clean = True
+            self.dungeon.pressure_room_entry_ticks = pygame.time.get_ticks()
 
     def _toggle_room_identifier(self):
         self._show_room_identifier = not self._show_room_identifier
@@ -449,6 +466,40 @@ class Game:
                 name = ITEM_DATABASE.get(item_id, {}).get("name", item_id)
                 damage_feedback.report_boss_loot(name)
 
+    def _on_pressure_room_clear(self, room):
+        """Update Danger Mode pressure after a combat room is cleared."""
+        dungeon = self.dungeon
+        if dungeon is None or not dungeon.risk_reward_mode_enabled:
+            return
+        import risk_reward_rules as _rrr
+        was_clean = dungeon.pressure_room_clean
+        inc = (
+            _rrr.pressure_increment_on_clean_room()
+            if was_clean
+            else _rrr.pressure_increment_on_damaged_room()
+        )
+        dungeon.pressure_level = min(
+            dungeon.pressure_level + inc, _rrr.PRESSURE_LEVEL_MAX
+        )
+        dungeon.peak_pressure = max(dungeon.peak_pressure, dungeon.pressure_level)
+        # Reset clean-room flag for the next room.
+        dungeon.pressure_room_clean = True
+        dungeon.pressure_room_entry_ticks = pygame.time.get_ticks()
+
+    def _tick_pressure_time_decay(self, now_ticks):
+        """Check 30-second time-decay rule and decrement pressure if triggered."""
+        dungeon = self.dungeon
+        if dungeon is None or not dungeon.risk_reward_mode_enabled:
+            return
+        if dungeon.pressure_level <= 0:
+            return
+        import risk_reward_rules as _rrr
+        elapsed = now_ticks - dungeon.pressure_room_entry_ticks
+        if elapsed >= _rrr.PRESSURE_TIME_DECAY_INTERVAL_MS:
+            dungeon.pressure_level = max(0, dungeon.pressure_level - 1)
+            # Reset timer so decay fires again after another full interval.
+            dungeon.pressure_room_entry_ticks = now_ticks
+
     def _update_boss_controller(self):
         """Drive the active room's BossController and react to its events.
 
@@ -548,6 +599,8 @@ class Game:
             self._handle_room_test_category(events)
         elif self.state == GameState.ROOM_TEST_SELECT:
             self._handle_room_test_select(events)
+        elif self.state == GameState.TERRAIN_LAYOUT_TEST:
+            self._handle_terrain_layout_test(events)
         elif self.state == GameState.DUNGEON_SELECT:
             self._handle_dungeon_select(events)
         elif self.state == GameState.CHARACTER_CUSTOMIZE:
@@ -567,6 +620,8 @@ class Game:
             self._handle_pause_all_runes(events)
         elif self.state == GameState.RUNE_ALTAR_PICK:
             self._handle_rune_altar_pick(events)
+        elif self.state == GameState.PACT_SHRINE_PICK:
+            self._handle_pact_shrine_pick(events)
         elif self.state == GameState.LEVEL_COMPLETE:
             self._handle_level_complete(events)
         elif self.state == GameState.GAME_OVER:
@@ -610,14 +665,49 @@ class Game:
             return
         next_state, item, extra = result
         if next_state == GameState.PLAYING and item is not None:
-            # Tuning test shortcut — launch directly from the category screen.
+            # Tuning/hunter test shortcut — launch directly from the category screen.
             self._start_room_test(item, extra or "left")
+        elif next_state == GameState.TERRAIN_LAYOUT_TEST:
+            self.state = GameState.TERRAIN_LAYOUT_TEST
         elif next_state == GameState.ROOM_TEST_SELECT and item is not None:
             entries = load_room_test_entries_for_category(item)
             self._room_test_select.set_entries(entries)
             self.state = next_state
         else:
             self.state = next_state
+
+    def _handle_terrain_layout_test(self, events):
+        result = self._terrain_layout_test.handle_events(events)
+        if result is None:
+            return
+        next_state, layout_id, biome, door_count = result
+        if next_state == GameState.PLAYING and layout_id is not None:
+            self._start_terrain_layout_test(layout_id, biome, door_count)
+        else:
+            self.state = next_state
+
+    def _start_terrain_layout_test(self, layout_id, biome, door_count):
+        dungeon_id, room_plan = build_terrain_layout_test_plan(layout_id, biome)
+        if room_plan is None:
+            return
+        self._room_test_entry = "terrain_layout_test"   # sentinel for _is_room_test_active()
+        self._current_dungeon_id = dungeon_id
+        self._pre_level_progress_snapshot = None
+        self._room_test_loadout_snapshot = self._snapshot_room_test_loadout()
+        self._pause_screen.room_test_mode = True
+        self._all_items_screen = AllItemsPauseScreen(self.progress)
+        self._all_runes_screen = AllRunesPauseScreen(self.progress)
+        damage_feedback.reset_all()
+        self.dungeon = Dungeon.from_room_plan(
+            dungeon_id, room_plan, entry_direction="left", door_count=door_count
+        )
+        start_x, start_y = self._room_test_spawn_position("left")
+        self.player = Player(start_x, start_y)
+        self.player.reset_for_dungeon(self.progress)
+        self.player_group = pygame.sprite.GroupSingle(self.player)
+        self._level_complete = None
+        self._enter_current_room(entry_direction="left")
+        self.state = GameState.PLAYING
 
     def _handle_room_test_select(self, events):
         result = self._room_test_select.handle_events(events)
@@ -703,11 +793,29 @@ class Game:
     def _handle_playing_chest(self, event):
         assert self.dungeon is not None
         assert self.player is not None
-        if event.key == pygame.K_e:
+        if event.key == pygame.K_g:
+            for chest in self.dungeon.chest_group:
+                chest.try_gamble(self.player.rect)
+        elif event.key == pygame.K_e:
             now_ticks = pygame.time.get_ticks()
+            # Confirm any pending gamble before attempting a normal open.
+            for chest in self.dungeon.chest_group:
+                if chest.gamble_pending:
+                    chest.confirm_gamble(random.Random())
+                    return
             for chest in self.dungeon.chest_group:
                 if not self.dungeon.current_room.allows_chest_open(now_ticks):
                     continue
+                # Apply chest_tier_floor pact before opening.
+                if self.dungeon is not None:
+                    from risk_reward_rules import PACTS, _TIER_ORDER
+                    for pid in self.dungeon.active_pacts:
+                        floor_tier = PACTS.get(pid, {}).get("chest_tier_floor")
+                        if floor_tier and floor_tier in _TIER_ORDER:
+                            cur = chest.reward_tier
+                            if cur in _TIER_ORDER and _TIER_ORDER.index(cur) < _TIER_ORDER.index(floor_tier):
+                                chest.set_reward_tier(floor_tier)
+                            break
                 if chest.try_open(self.player.rect, self.dungeon.item_group):
                     self.dungeon.current_room.notify_chest_opened(now_ticks)
                     flawless_loot_id = self.dungeon.current_room.trap_challenge_flawless_bonus_loot_id()
@@ -737,6 +845,8 @@ class Game:
             if room is not None and hasattr(room, "toggle_enemy_attacks"):
                 room.toggle_enemy_attacks(self.dungeon.enemy_group)
         if event.key == pygame.K_ESCAPE:
+            for chest in self.dungeon.chest_group:
+                chest.cancel_gamble()
             self._pause_screen.selected = 0
             self.state = GameState.PAUSED
 
@@ -779,7 +889,12 @@ class Game:
                 self.player.take_damage(self_dmg)
         drop = enemy.roll_drop(self.progress)
         if drop:
-            self.dungeon.item_group.add(drop)
+            if isinstance(drop, list):
+                for d in drop:
+                    if d:
+                        self.dungeon.item_group.add(d)
+            else:
+                self.dungeon.item_group.add(drop)
 
     def _apply_player_hit(self, hitbox, enemy):
         """Apply a single player→enemy hit through all rune pipelines."""
@@ -1045,6 +1160,9 @@ class Game:
             self._apply_freeze_aura_chill(enemy, now_ticks, dt_sec)
             self._apply_ice_spirit_hooks(enemy, room, now_ticks)
             self._apply_frost_witch_nova_chill(enemy, now_ticks)
+            # Hunter: observe player dodge state for prediction logic.
+            if hasattr(enemy, "_observe_player_dodge"):
+                enemy._observe_player_dodge(self.player.rect)
 
         self._spawn_avalanche_boulders(room, walls)
 
@@ -1151,6 +1269,13 @@ class Game:
                 if inv.get(item.item_id, 0) >= item.max_owned:
                     continue
             item.collect(self.player)
+            if isinstance(item, Coin) and self.dungeon is not None:
+                from risk_reward_rules import PACTS
+                for pid in self.dungeon.active_pacts:
+                    mult = PACTS.get(pid, {}).get("coin_mult", 1.0)
+                    if mult != 1.0:
+                        self.player.coins += int(mult - 1.0)
+                        break
             if isinstance(item, LootDrop):
                 item_data = ITEM_DATABASE.get(item.item_id, {})
                 if item_data.get("category") == "weapon":
@@ -1173,6 +1298,18 @@ class Game:
             self._rune_altar_pick.open(altar_config["offered_rune_ids"])
             self.state = GameState.RUNE_ALTAR_PICK
             return True
+        shrine_config = room.pending_pact_shrine(self.player)
+        if shrine_config is not None:
+            from risk_reward_rules import PACTS, MAX_PACTS_PER_RUN
+            active = self.dungeon.active_pacts
+            offered = [pid for pid in PACTS if pid not in active]
+            if offered and len(active) < MAX_PACTS_PER_RUN:
+                self._pending_pact_shrine = shrine_config
+                self._pact_shrine_pick.open(offered)
+                self.state = GameState.PACT_SHRINE_PICK
+                return True
+            # No pacts to offer — consume silently.
+            room.consume_pact_shrine(shrine_config)
         if not self.player.alive:
             self._on_death()
             return True
@@ -1190,6 +1327,7 @@ class Game:
             and room.respawn_enemies_after_ms is None
         ):
             room.enemies_cleared = True
+            self._on_pressure_room_clear(room)
         return False
 
     def _update_items_objectives_and_endstate(self, room, hp_at_frame_start, now_ticks):
@@ -1274,6 +1412,31 @@ class Game:
         self._update_enemy_ai(walls, now_ticks, enemy_focus_rect, room)
         self._update_attacks_and_hits(walls, now_ticks)
         self._update_items_objectives_and_endstate(room, hp_at_frame_start, now_ticks)
+        self._tick_pressure_time_decay(now_ticks)
+        self._tick_hunter_trigger(room, now_ticks)
+
+    def _tick_hunter_trigger(self, room, now_ticks):
+        """Spawn the Hunter when the player steps on the Hunter test room trigger platform."""
+        trigger_rect = getattr(room, "_hunter_trigger_rect", None)
+        if trigger_rect is None:
+            return
+        cooldown = getattr(room, "_hunter_trigger_cooldown_ms", 2000)
+        last = getattr(room, "_hunter_trigger_last_ms", -99999)
+        if now_ticks - last < cooldown:
+            return
+        if not self.player.rect.colliderect(trigger_rect):
+            return
+        from enemies import HunterEnemy
+        hunter_alive = any(
+            isinstance(e, HunterEnemy) for e in self.dungeon.enemy_group
+        )
+        if hunter_alive:
+            return
+        room._hunter_trigger_last_ms = now_ticks
+        sx, sy = room._hunter_spawn_pos
+        hunter = HunterEnemy(sx, sy, is_frozen=False)
+        hunter.attacks_disabled = False
+        self.dungeon.enemy_group.add(hunter)
 
     def _on_level_complete(self):
         """Player reached the portal — dungeon complete."""
@@ -1384,7 +1547,9 @@ class Game:
         action, rune_id = result
         room = self.dungeon.current_room
         if action == "pick" and rune_id is not None:
-            if rune_rules.equip_altar_pick(self.player, self.progress, rune_id):
+            extra = getattr(self.dungeon, "pact_rune_slot_bonus", 0)
+            if rune_rules.equip_altar_pick(self.player, self.progress, rune_id,
+                                           extra_slots=extra):
                 if self._pending_rune_altar is not None:
                     room.consume_rune_altar(self._pending_rune_altar)
         elif action == "cancel" and self._pending_rune_altar is not None:
@@ -1393,6 +1558,49 @@ class Game:
         self.state = GameState.PLAYING
         # Reload sprites so a consumed altar disappears immediately
         self.dungeon._load_room_sprites()
+
+    # ── pact shrine pick handler ────────────────────────
+    def _handle_pact_shrine_pick(self, events):
+        assert self.dungeon is not None
+        result = self._pact_shrine_pick.handle_events(events)
+        if result is None:
+            return
+        action, pact_id = result
+        room = self.dungeon.current_room
+        if action == "pick" and pact_id is not None:
+            self._apply_pact_effects(pact_id)
+            if self._pending_pact_shrine is not None:
+                room.consume_pact_shrine(self._pending_pact_shrine)
+        elif action == "cancel" and self._pending_pact_shrine is not None:
+            room.snooze_pact_shrine(self._pending_pact_shrine)
+        self._pending_pact_shrine = None
+        self.state = GameState.PLAYING
+        self.dungeon._load_room_sprites()
+
+    def _apply_pact_effects(self, pact_id: str):
+        """Commit *pact_id* and apply its immediate gameplay effects."""
+        from risk_reward_rules import PACTS, MAX_PACTS_PER_RUN
+        if pact_id in self.dungeon.active_pacts:
+            return
+        if len(self.dungeon.active_pacts) >= MAX_PACTS_PER_RUN:
+            return
+        self.dungeon.active_pacts.append(pact_id)
+        pact = PACTS.get(pact_id, {})
+        # Blood Pact: reduce max HP immediately.
+        if "max_hp_mult" in pact:
+            mult = pact["max_hp_mult"]
+            new_max = max(1, int(self.player.max_hp * mult))
+            self.player.max_hp = new_max
+            if self.player.current_hp > new_max:
+                self.player.current_hp = new_max
+        # Hex of Fragility: grant an extra rune-equip slot.
+        if "rune_slot_bonus" in pact:
+            self.dungeon.pact_rune_slot_bonus = (
+                getattr(self.dungeon, "pact_rune_slot_bonus", 0)
+                + pact["rune_slot_bonus"]
+            )
+
+
 
     def _quit_level(self):
         """Quit the current level — revert progress to pre-level snapshot."""
@@ -1444,7 +1652,7 @@ class Game:
             if self.player is not None:
                 self.hud.draw_victory(
                     self.screen,
-                    build_victory_overlay_view(self.player.coins),
+                    build_victory_overlay_view(self.player.coins, dungeon=self.dungeon),
                 )
         elif self.state == GameState.LEVEL_COMPLETE:
             if self._level_complete is not None:
@@ -1456,6 +1664,12 @@ class Game:
             self._rune_altar_pick.draw(
                 self.screen,
                 build_rune_altar_pick_view(self._rune_altar_pick, self.progress),
+            )
+        elif self.state == GameState.PACT_SHRINE_PICK:
+            active = getattr(self.dungeon, "active_pacts", []) if self.dungeon else []
+            self._pact_shrine_pick.draw(
+                self.screen,
+                build_pact_shrine_pick_view(self._pact_shrine_pick, active_pacts=active),
             )
 
     def _draw_gameplay_layer(self):
@@ -1483,6 +1697,12 @@ class Game:
                 show_room_identifier=self._show_room_identifier,
             )
             self.hud.draw(self.screen, hud_view)
+            # Hunter: draw outline and smoke-spawn overlay.
+            if self.dungeon.risk_reward_mode_enabled:
+                from enemies import HunterEnemy
+                for enemy in self.dungeon.enemy_group:
+                    if isinstance(enemy, HunterEnemy):
+                        enemy.draw_outline(self.screen)
 
         self._draw_gameplay_overlay()
 
@@ -1500,6 +1720,11 @@ class Game:
             self._room_test_select.draw(
                 self.screen,
                 build_room_test_select_view(self._room_test_select),
+            )
+        elif self.state == GameState.TERRAIN_LAYOUT_TEST:
+            self._terrain_layout_test.draw(
+                self.screen,
+                build_terrain_layout_test_view(self._terrain_layout_test),
             )
         elif self.state == GameState.DUNGEON_SELECT:
             self._dungeon_select.draw(
