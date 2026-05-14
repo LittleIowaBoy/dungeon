@@ -27,20 +27,20 @@ Sketches default to **left + right doors** unless otherwise noted.
 | 3 | centre_pool_round     | centre_pool    | speed_safety   | [x] fixed         |
 | 4 | centre_pool_oblong    | centre_pool    | speed_safety   | [x] fixed         |
 | 5 | choke_bridge_2gap     | choke_bridge   | lane           | [x] fixed         |
-| 6 | choke_bridge_winding  | choke_bridge   | lane           | [ ] needs fix     |
-| 7 | parallel_lanes        | lane_split     | lane           | [ ] needs review  |
-| 8 | fork_split            | lane_split     | lane           | [ ] needs fix     |
-| 9 | column_hall_grid      | column_hall    | cover_los      | [ ] needs fix     |
-|10 | column_hall_offset    | column_hall    | cover_los      | [ ] needs fix     |
-|11 | alcove_pockets        | alcove         | mobility_tax   | [ ] needs fix     |
-|12 | fortress_courtyard    | alcove         | mobility_tax   | [ ] needs fix     |
-|13 | mire_carpet           | hazard_field   | mobility_tax   | [ ] needs review  |
-|14 | terrain_minefield     | hazard_field   | mobility_tax   | [ ] needs review  |
-|15 | island_cluster_dense  | island         | kiting         | [ ] needs review  |
-|16 | island_cluster_sparse | island         | kiting         | [ ] needs review  |
-|17 | river_with_pillars    | river          | fusion         | [ ] needs fix     |
-|18 | ringed_columns        | column_hall    | cover_los      | [ ] needs fix     |
-|19 | island_alcoves        | island         | fusion         | [ ] needs review  |
+| 6 | choke_bridge_winding  | choke_bridge   | lane           | [x] fixed         |
+| 7 | parallel_lanes        | lane_split     | lane           | [x] fixed         |
+| 8 | fork_split            | lane_split     | lane           | [x] fixed         |
+| 9 | column_hall_grid      | column_hall    | cover_los      | [x] fixed         |
+|10 | column_hall_offset    | column_hall    | cover_los      | [x] fixed         |
+|11 | alcove_pockets        | alcove         | mobility_tax   | [x] fixed         |
+|12 | fortress_courtyard    | alcove         | mobility_tax   | [x] fixed         |
+|13 | mire_carpet           | hazard_field   | mobility_tax   | [x] fixed         |
+|14 | terrain_minefield     | hazard_field   | mobility_tax   | [x] fixed         |
+|15 | island_cluster_dense  | island         | kiting         | [x] fixed         |
+|16 | island_cluster_sparse | island         | kiting         | [x] fixed         |
+|17 | river_with_pillars    | river          | fusion         | [x] fixed         |
+|18 | ringed_columns        | column_hall    | cover_los      | [x] fixed         |
+|19 | island_alcoves        | island         | fusion         | [x] fixed         |
 
 ---
 
@@ -289,8 +289,13 @@ see the full route before committing.*
 - The winding path `c_pos += rng.choice([-1, 1])` every 3 rows can drift
   outside the pool bounds, making the bridge invisible (the "carved" cell
   was never hazard to begin with).
-- **Fix:** Increase pool radius, clamp `c_pos` to the pool interior column
-  range so every carved cell is guaranteed to have been hazard.
+- **Fix:** Increase pool radius using same formula as `centre_pool_round`
+  (`max(4, min(rows,cols)//3 + int(density*0.5))`). Clamp `c_pos` to the
+  **pool interior column range** `[cx - radius + 1, cx + radius - 1]`, not
+  just the room walls `[2, cols-3]`. Clamping to room walls still allows the
+  path to exit the pool boundary, making carved cells that were never hazard
+  (the bridge becomes invisible). Pool-interior clamping guarantees every
+  cleared cell was a hazard tile.
 
 ---
 
@@ -330,6 +335,11 @@ wide, at cols 6–7 and 13–14. Three clear lanes of ~4 tiles width each.*
 `2*cols//3` = 13, which is correct. The strips stop 2 rows from top/bottom
 walls (`range(2, rows-2)`), leaving thin floor gaps at the ends. The strips
 should extend to 1 row from each wall edge for a clean look.
+
+**Fix:** Change vertical strip loop from `range(2, rows - 2)` to
+`range(1, rows - 1)` (and horizontal equivalent). This extends each strip
+to flush with the interior wall row/column while still staying inside the
+wall tile itself.
 
 ---
 
@@ -373,7 +383,9 @@ way across.*
   placed near the entry (col 3–4) so the fork spans most of the room.
 - **Fix:** Start arm placement at `c = 3` (near entry), set `spread` to grow
   from 0 to `rows//2 - 3` linearly across `cols//2` steps, so arms fan out
-  from a true point.
+  from a true point. Concretely: `arm_steps = cols//2 - 2`; iterate
+  `step in range(arm_steps)` with `c = 3 + step`; `spread = (step * (rows//2 - 3)) // max(1, arm_steps - 1)`.
+  Mirror logic applies for top/bottom door orientation using `r = 3 + step`.
 
 ---
 
@@ -582,6 +594,13 @@ narrow. With 1-tile paths the player has almost no room to manoeuvre on the
 path and tiny offset causes hazard contact. Consider widening paths to 2 tiles
 and adding a small (~3×3) cleared zone at the path intersection.
 
+**Fix:** After carving the BFS path, make a second pass over each path cell
+and clear one additional neighbour perpendicular to the dominant travel
+direction (horizontal paths: also clear `(pc, pr+1)`; vertical paths: also
+clear `(pc+1, pr)`). Then clear a 3×3 area centred on the room centre
+`(cols//2, rows//2)` after all paths are carved. This keeps the hazard-
+dominant feel while giving the player a genuine lane width to dodge within.
+
 ---
 
 ### 14. terrain_minefield
@@ -619,7 +638,14 @@ never adjacent to another hazard tile.*
 **Issues:** Current code uses `rng.shuffle(interior)` which is seeded from
 door configuration, so the same door layout always produces the same scattered
 pattern. The shuffle is consistent (good for soak tests) but visually uniform.
-No serious functional issue — needs in-game visual review.
+Additionally, the intent states tiles should be "never adjacent to another
+hazard tile" but the code places tiles purely by count with no adjacency check.
+
+**Fix:** After selecting the tile list, add a placement guard: skip any tile
+`(c, r)` whose four orthogonal neighbours already contain a hazard tile.
+This enforces the no-clusters intent. The seeded RNG is already correct;
+adjacency enforcement may reduce the placed count slightly below `count` but
+the visual effect is cleaner.
 
 ---
 
@@ -658,8 +684,14 @@ the full interior — not clustered in one quadrant.*
 **Issues:** Placement range `range(3, cols-4-island_sz)` = `range(3, 14)` ×
 `range(3, rows-4-island_sz)` = `range(3, 9)`. This restricts islands to a
 14×9 sub-area — they never appear in the lower half or right side of the room.
-The minimum separation check `island_sz+2 = 4` is sufficient. **Fix:** Expand
-placement range to full interior: `range(2, cols-3)` × `range(2, rows-3)`.
+The minimum separation check `island_sz+2 = 4` is sufficient.
+
+**Fix:** Expand placement range to full interior: `range(2, cols-3)` ×
+`range(2, rows-3)` (keeping a 2-tile margin from walls). Additionally,
+consider a **quadrant-seeded** placement strategy: divide the interior into
+5 sub-zones (NW, NE, SW, SE, and a centre band) and seed one island attempt
+per zone before falling back to random retries. This guarantees islands are
+distributed across the room rather than clustering in a random region.
 
 ---
 
@@ -695,8 +727,14 @@ D..........XXX....D
 Each separated by 6+ tiles so crossing between them is a significant decision.*
 
 **Issues:** Placement range `range(3, 13)` × `range(3, 8)` restricts islands
-to a 10×5 sub-area — they can never be in the lower half. Same fix as
-island_cluster_dense: expand range to full interior.
+to a 10×5 sub-area — they can never be in the lower half.
+
+**Fix:** Same range expansion as `island_cluster_dense`: `range(2, cols-3)` ×
+`range(2, rows-3)`. For sparse islands a diagonal seeding strategy works
+well: seed one attempt each near the top-left corner, room centre, and
+bottom-right corner, then fall back to random retries. This matches the
+target layout sketch (top-left / centre / bottom-right island positions)
+without requiring hundreds of random retries to land in spread positions.
 
 ---
 
@@ -786,9 +824,12 @@ approx 20–28 sparse tiles. Every other tile around each ring is placed
   cols 7–13), a large fraction of the inner ring is masked away.
 - Result: inner ring has only corner tiles visible; the concentric ring effect
   is nearly invisible.
-- **Fix:** Use `radius=1` buffer for this pattern, or use only the outer ring
-  for inner tiles (place inner ring at radius 3 without buffer, outer at radius
-  6 with radius=1 buffer).
+- **Fix:** Use `_door_buffer_mask(grid, doors, 1)` (radius=1) for this
+  pattern specifically. A 1-tile buffer clears only the 3 door opening tiles
+  themselves, leaving the inner ring intact at all non-door positions. The
+  soak test's door-buffer-clear detector uses a 1-tile margin so this still
+  passes. Alternatively, skip the buffer entirely and rely on
+  `_ensure_connectivity` to verify path connectivity after ring placement.
 
 ---
 

@@ -291,6 +291,45 @@ Three core exploits identified before this slice: (1) a permanent safe lane that
 
 - *(none planned — all trap gauntlet slices complete)*
 
+## Possible Next Directions
+
+### Terrain Layout Refinements
+
+Fourteen of the nineteen terrain layout patterns in `terrain_layouts.py` are marked as needing fixes or review in [terrain_layout_plan.md](terrain_layout_plan.md). Patterns 1–5 (`open_arena` through `choke_bridge_2gap`) are verified correct; the following still need work:
+
+- **choke_bridge_winding**: Pool radius is still undersized (`max(3, …//4)` vs the corrected `max(4, …//3)` used by the sibling pool patterns); the zigzag path's column bounds must be clamped to the pool interior, not just the room walls, so every carved cell is guaranteed to have been a hazard tile.
+- **parallel_lanes**: Strips stop 2 rows from each wall edge (`range(2, rows-2)`); should extend to 1 row from the wall for a clean, flush look.
+- **fork_split**: Arm apex starts at the room centre (`cx`/`cy`) instead of near the entry door; arms spread from width 1 to 2 only rather than fanning from a true point across most of the room.
+- **column_hall_grid / column_hall_offset**: `col_step=4, row_step=3` places up to 16 clusters (too dense); changing to `col_step=5, row_step=4` yields a 3×3 grid with clear aisles.
+- **alcove_pockets**: Pockets are placed at quarter-wall positions rather than true corners; the better design is 4 corner pockets flush with the walls.
+- **fortress_courtyard**: `_door_buffer_mask(radius=2)` punches 5-tile-wide holes in the ring; gaps should be carved manually at exactly door width (3 tiles) with no buffer mask used on the ring itself.
+- **mire_carpet**: BFS paths are 1 tile wide; widening to 2 tiles and adding a ~3×3 cleared zone at the centre join would improve navigability without altering the hazard-dominant feel.
+- **terrain_minefield**: No adjacency enforcement — a placement check to skip tiles adjacent to already-placed hazards would match the stated intent ("individual tiles, no clusters of 2+").
+- **island_cluster_dense / island_cluster_sparse**: Placement range is restricted to a sub-area (islands never appear in the lower half or right side); expand to the full interior and consider seeding one island per quadrant for reliable spread.
+- **river_with_pillars**: Pillars at `cx±3` hug the river edge; should move to `cx±5`. The centre-row pillar pair always falls inside the door buffer zone and gets skipped; use only rows 3 and 11 (2 pairs, 4 pillars total).
+- **ringed_columns**: `_door_buffer_mask(radius=2)` masks most of the inner ring (Chebyshev radius 3) near door passages; using `radius=1` buffer for this pattern preserves ring visibility.
+- **island_alcoves**: Corner alcoves at `(row 2–3, col 2–3)` may be clipped by the left/right door buffer; shift inward by 1 tile to `(row 2–3, col 3–4)` and mirror.
+
+### Objective Room Deepening (Deferred)
+
+These were explicitly deferred after the breadth-first roadmap sweep and are the highest-priority room-family follow-ups:
+
+- **Stealth S4**: Broader biome-specific failure gimmicks beyond the current escape and delayed seal-release variants.
+- **Timed Extraction T2/T3**: Stronger scripted pursuit wave behaviour and richer clean-vs-overtime reward differentiation.
+- **Puzzle P1**: Anti-camping pressure and alternate-solve variants beyond the current ordered/staggered/paired set.
+
+### Boss Encounter Depth
+
+All three biome bosses (Stone Golem, Frost Witch, Tide Lord) are playable, but multi-phase scripting is shallow. Possible directions: additional phase-2 attack patterns, arena hazards that activate at HP thresholds, or a flawless-phase clear bonus drop (mirroring the trap gauntlet T21 pattern).
+
+### Enemy Variety
+
+The existing enemy archetypes (sentry, patrol, ice spirit, golem shard, water spirit) could be extended — new types per biome, ranged variants, enemies that react to the current terrain layout type, or mini-elite designations that reinforce a layout's decision type (e.g. a fast flanker in lane-split rooms).
+
+### 4th Biome
+
+A fire/volcanic biome is a natural extension; `ember_pendant` already exists in the pendant catalog. A full implementation would add terrain tiles, room families, a biome boss, and a new dungeon progression profile alongside the three existing dungeons.
+
 ## Project Layout
 
 Important files and directories:

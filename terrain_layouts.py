@@ -162,15 +162,22 @@ def _bfs_path_game(grid, start: tuple, goal: tuple) -> list:
 
 
 def _bfs_path(grid, start: tuple, goal: tuple,
-              extra_passable: str = None) -> list:
+              extra_passable=None) -> list:
     """BFS from *start* to *goal* treating _FLOOR (and *extra_passable*) as
-    traversable.  Returns list of (col, row) inclusive, or None if unreachable.
+    traversable.  *extra_passable* may be a single tile string or a tuple of
+    tile strings.  Returns list of (col, row) inclusive, or None if unreachable.
     """
     if start == goal:
         return [start]
     from collections import deque
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
+    if extra_passable is None:
+        _passable = frozenset()
+    elif isinstance(extra_passable, str):
+        _passable = frozenset({extra_passable})
+    else:
+        _passable = frozenset(extra_passable)
     visited = {start}
     parents = {start: None}
     queue = deque([start])
@@ -191,7 +198,7 @@ def _bfs_path(grid, start: tuple, goal: tuple,
             if not (0 < nr < rows - 1 and 0 < nc < cols - 1):
                 continue
             tile = grid[nr][nc]
-            if tile == _FLOOR or tile == extra_passable:
+            if tile == _FLOOR or tile in _passable:
                 visited.add((nc, nr))
                 parents[(nc, nr)] = (c, r)
                 queue.append((nc, nr))
@@ -199,26 +206,44 @@ def _bfs_path(grid, start: tuple, goal: tuple,
 
 
 def _ensure_connectivity(grid, doors: dict) -> None:
-    """Carve _RUBBLE back to _FLOOR if any door entry cannot reach the room
-    centre via game-walkable tiles (FLOOR or _WALKABLE_HAZARDS).
-    Patterns that use only walkable hazards are already inherently connected;
-    this only carves when genuine RUBBLE disconnection occurs.
+    """Carve solid interior tiles back to _FLOOR if any door entry cannot reach
+    the room interior via game-walkable tiles (FLOOR or _WALKABLE_HAZARDS).
+    Uses the nearest walkable cell to the room centre as the reachability goal
+    so layouts that place cover at the exact centre cell still work correctly.
     """
+    from collections import deque as _deque
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
-    center = (cols // 2, rows // 2)
+    # Find nearest walkable interior cell to room centre as goal.
+    cx, cy = cols // 2, rows // 2
+    goal = None
+    _walkable = frozenset((_FLOOR,) + _WALKABLE_HAZARDS)
+    gq = _deque([(cx, cy)])
+    gvisited = {(cx, cy)}
+    while gq:
+        gc, gr = gq.popleft()
+        if grid[gr][gc] in _walkable:
+            goal = (gc, gr)
+            break
+        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nc, nr = gc + dc, gr + dr
+            if (nc, nr) not in gvisited and 0 < nr < rows - 1 and 0 < nc < cols - 1:
+                gvisited.add((nc, nr))
+                gq.append((nc, nr))
+    if goal is None:
+        return  # No walkable interior cell — nothing to do.
     for entry in _door_interior_entry(grid, doors):
-        if entry == center:
+        if entry == goal:
             continue
         # Game-accurate check first: floor + walkable hazards both count.
-        if _bfs_path_game(grid, entry, center) is not None:
+        if _bfs_path_game(grid, entry, goal) is not None:
             continue
-        # Must carve through RUBBLE — genuine disconnect.
-        path = _bfs_path(grid, entry, center, extra_passable=_RUBBLE)
+        # Must carve through solid interior tiles (RUBBLE or interior WALL).
+        path = _bfs_path(grid, entry, goal, extra_passable=(_RUBBLE, _WALL))
         if path is None:
             continue
         for pc, pr in path:
-            if grid[pr][pc] == _RUBBLE:
+            if grid[pr][pc] in (_RUBBLE, _WALL) and 0 < pr < rows - 1 and 0 < pc < cols - 1:
                 grid[pr][pc] = _FLOOR
 
 
@@ -249,8 +274,10 @@ def _fill_rect(grid, r1: int, c1: int, r2: int, c2: int,
 
 
 def _cover_tile(_biome_terrain) -> str:
-    """Always returns _RUBBLE — solid non-walkable cover tile."""
-    return _RUBBLE
+    """Returns _WALL — a solid non-walkable cover tile that integrates visually
+    with the room's wall structure and is included in collision rects.
+    """
+    return _WALL
 
 
 def _hazard_tile(biome_terrain) -> str:
@@ -441,39 +468,47 @@ def _pattern_choke_bridge_2gap(grid, doors, biome_terrain, rng, density):
 def _pattern_choke_bridge_winding(grid, doors, biome_terrain, rng, density):
     """Large centre pool with a single narrow winding bridge; taking the
     winding path is slow but the only way across — speed vs safety trade-off.
+    Pool radius matches choke_bridge_2gap.  Path position is clamped to the
+    pool interior column/row range so every carved cell is guaranteed to have
+    been a hazard tile (preventing invisible-bridge artefacts).
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
     buf = _door_buffer_mask(grid, doors, 2)
     tile = _hazard_tile(biome_terrain)
     cx, cy = cols // 2, rows // 2
-    radius = max(3, min(rows, cols) // 4 + int(0.3 * density))
+    radius = max(4, min(rows, cols) // 3 + int(density * 0.5))
     # Place pool.
     for r in range(1, rows - 1):
         for c in range(1, cols - 1):
             if (c - cx) ** 2 + (r - cy) ** 2 <= radius * radius:
                 _place_tile(grid, c, r, tile, buf)
     # Carve a zigzag 1-tile path through the pool.
+    # Clamp to pool interior bounds so every carved cell was a hazard tile.
     h_doors = int(bool(doors.get("left"))) + int(bool(doors.get("right")))
     v_doors = int(bool(doors.get("top"))) + int(bool(doors.get("bottom")))
     if h_doors >= v_doors:
-        # Winding V path (zigzag through cols)
-        c_pos = cx + rng.choice([-1, 0, 1])
-        for r in range(1, rows - 1):
-            c_pos = max(2, min(cols - 3, c_pos))
-            if grid[r][c_pos] == tile:
-                grid[r][c_pos] = _FLOOR
-            if r % 3 == 0:
-                c_pos += rng.choice([-1, 1])
-    else:
-        # Winding H path (zigzag through rows)
+        # H doors (L/R travel) → winding horizontal path spans pool left-to-right
+        r_lo = cy - radius + 1
+        r_hi = cy + radius - 1
         r_pos = cy + rng.choice([-1, 0, 1])
         for c in range(1, cols - 1):
-            r_pos = max(2, min(rows - 3, r_pos))
+            r_pos = max(r_lo, min(r_hi, r_pos))
             if grid[r_pos][c] == tile:
                 grid[r_pos][c] = _FLOOR
             if c % 3 == 0:
                 r_pos += rng.choice([-1, 1])
+    else:
+        # V doors (T/B travel) → winding vertical path spans pool top-to-bottom
+        c_lo = cx - radius + 1
+        c_hi = cx + radius - 1
+        c_pos = cx + rng.choice([-1, 0, 1])
+        for r in range(1, rows - 1):
+            c_pos = max(c_lo, min(c_hi, c_pos))
+            if grid[r][c_pos] == tile:
+                grid[r][c_pos] = _FLOOR
+            if r % 3 == 0:
+                c_pos += rng.choice([-1, 1])
     if tile == _RUBBLE:
         _ensure_connectivity(grid, doors)
 
@@ -489,25 +524,26 @@ def _pattern_parallel_lanes(grid, doors, biome_terrain, rng, density):
     h_doors = int(bool(doors.get("left"))) + int(bool(doors.get("right")))
     v_doors = int(bool(doors.get("top"))) + int(bool(doors.get("bottom")))
     if v_doors > h_doors:
-        # top/bottom travel → horizontal strips at 1/3 and 2/3 height
+        # T/B travel → vertical strips create left / centre / right parallel lanes
         for t in range(2):
-            for c in range(2, cols - 2):
-                _place_tile(grid, c, rows // 3 + t, tile, buf)
-                _place_tile(grid, c, 2 * rows // 3 + t, tile, buf)
-    else:
-        # left/right travel (or neutral) → vertical strips at 1/3 and 2/3 width
-        for t in range(2):
-            for r in range(2, rows - 2):
+            for r in range(1, rows - 1):
                 _place_tile(grid, cols // 3 + t, r, tile, buf)
                 _place_tile(grid, 2 * cols // 3 + t, r, tile, buf)
+    else:
+        # L/R travel (or neutral) → horizontal strips create top / mid / bottom parallel lanes
+        for t in range(2):
+            for c in range(1, cols - 1):
+                _place_tile(grid, c, rows // 3 + t, tile, buf)
+                _place_tile(grid, c, 2 * rows // 3 + t, tile, buf)
     if tile == _RUBBLE:
         _ensure_connectivity(grid, doors)
 
 
 def _pattern_fork_split(grid, doors, biome_terrain, rng, density):
-    """V-shaped RUBBLE wedge whose apex faces the entry door and arms spread
-    toward the far end.  Players see an open approach that funnels into two
-    distinct lanes as they advance.
+    """V-shaped RUBBLE wedge whose apex starts near the entry door (row/col 3)
+    and arms fan out as a solid filled wedge toward the far end.  The centre
+    row (or column) remains clear at all times, creating a visible open lane
+    through the apex that forks into two lanes as the player advances.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
@@ -517,24 +553,28 @@ def _pattern_fork_split(grid, doors, biome_terrain, rng, density):
     h_doors = int(bool(doors.get("left"))) + int(bool(doors.get("right")))
     v_doors = int(bool(doors.get("top"))) + int(bool(doors.get("bottom")))
     if v_doors >= h_doors:
-        # V opens toward top entry, arms spread toward bottom.
-        arm_steps = max(1, rows - 2 - cy)
+        arm_steps = max(1, rows // 2 - 2)
+        max_spread = max(1, cols // 2 - 3)
+        # Apex faces entry: flip so narrow end is near the only open door.
+        flip = bool(doors.get("bottom")) and not bool(doors.get("top"))
         for step in range(arm_steps):
-            r = cy + step
-            spread = 1 + (step * 2) // max(1, arm_steps)
-            for c in range(cx - spread - 1, cx - spread + 2):
+            r = (rows - 4 - step) if flip else (3 + step)
+            spread = (step * max_spread) // max(1, arm_steps - 1)
+            for c in range(cx - spread, cx):
                 _place_tile(grid, c, r, tile, buf)
-            for c in range(cx + spread - 1, cx + spread + 2):
+            for c in range(cx + 1, cx + spread + 1):
                 _place_tile(grid, c, r, tile, buf)
     else:
-        # V opens toward left entry, arms spread toward right.
-        arm_steps = max(1, cols - 2 - cx)
+        arm_steps = max(1, cols // 2 - 2)
+        max_spread = max(1, rows // 2 - 3)
+        # Apex faces entry: flip so narrow end is near the only open door.
+        flip = bool(doors.get("right")) and not bool(doors.get("left"))
         for step in range(arm_steps):
-            c = cx + step
-            spread = 1 + (step * 2) // max(1, arm_steps)
-            for r in range(cy - spread - 1, cy - spread + 2):
+            c = (cols - 4 - step) if flip else (3 + step)
+            spread = (step * max_spread) // max(1, arm_steps - 1)
+            for r in range(cy - spread, cy):
                 _place_tile(grid, c, r, tile, buf)
-            for r in range(cy + spread - 1, cy + spread + 2):
+            for r in range(cy + 1, cy + spread + 1):
                 _place_tile(grid, c, r, tile, buf)
     _ensure_connectivity(grid, doors)
 
@@ -542,13 +582,15 @@ def _pattern_fork_split(grid, doors, biome_terrain, rng, density):
 def _pattern_column_hall_grid(grid, doors, biome_terrain, rng, density):
     """Regular grid of 2×2 RUBBLE column clusters.  Provides even cover
     distribution with consistent sightline breaks in all directions.
+    3×3 cluster layout (col_step=5, row_step=4) gives clear 3-tile aisles
+    between every cluster in a 20×15 room.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
     buf = _door_buffer_mask(grid, doors, 2)
     tile = _cover_tile(biome_terrain)
-    col_step = 4
-    row_step = 3
+    col_step = 5
+    row_step = 4
     for r in range(3, rows - 2, row_step):
         for c in range(3, cols - 2, col_step):
             _place_tile(grid, c,     r,     tile, buf)
@@ -561,13 +603,15 @@ def _pattern_column_hall_grid(grid, doors, biome_terrain, rng, density):
 def _pattern_column_hall_offset(grid, doors, biome_terrain, rng, density):
     """Staggered 2×2 RUBBLE column clusters (alternating rows offset by half
     the column period).  Creates diagonal sightlines with no clear straight hall.
+    Matches column_hall_grid spacing (col_step=5, row_step=4) so density is
+    consistent between the two column-hall variants.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
     buf = _door_buffer_mask(grid, doors, 2)
     tile = _cover_tile(biome_terrain)
-    col_step = 4
-    row_step = 3
+    col_step = 5
+    row_step = 4
     for i, r in enumerate(range(3, rows - 2, row_step)):
         c_start = 3 + (col_step // 2 if i % 2 == 1 else 0)
         for c in range(c_start, cols - 2, col_step):
@@ -579,24 +623,20 @@ def _pattern_column_hall_offset(grid, doors, biome_terrain, rng, density):
 
 
 def _pattern_alcove_pockets(grid, doors, biome_terrain, rng, density):
-    """Small 2×3 RUBBLE pockets along each wall (two per wall side) at
-    quarter positions.  Natural kiting spots and retreat corners.
+    """Four 2×3 RUBBLE corner pockets (2 rows × 3 cols) flush against each
+    corner of the room interior.  All four pockets sit outside every door
+    buffer zone, giving reliable retreat spots near the corners.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
     buf = _door_buffer_mask(grid, doors, 2)
     tile = _cover_tile(biome_terrain)
-    q1c, q2c = cols // 4, 3 * cols // 4
-    q1r, q2r = rows // 4, 3 * rows // 4
+    # Each entry: (r1, c1, r2, c2) — 2 rows × 3 cols, one per corner.
     pockets = [
-        (2,         q1c - 1,  3,         q1c + 1),   # top-left
-        (2,         q2c - 1,  3,         q2c + 1),   # top-right
-        (rows - 4,  q1c - 1,  rows - 3,  q1c + 1),   # bottom-left
-        (rows - 4,  q2c - 1,  rows - 3,  q2c + 1),   # bottom-right
-        (q1r - 1,  2,         q1r + 1,  3),           # left-top
-        (q2r - 1,  2,         q2r + 1,  3),           # left-bottom
-        (q1r - 1,  cols - 4,  q1r + 1,  cols - 3),   # right-top
-        (q2r - 1,  cols - 4,  q2r + 1,  cols - 3),   # right-bottom
+        (2,        2,        3,        4        ),  # top-left
+        (2,        cols - 5, 3,        cols - 3 ),  # top-right
+        (rows - 4, 2,        rows - 3, 4        ),  # bottom-left
+        (rows - 4, cols - 5, rows - 3, cols - 3 ),  # bottom-right
     ]
     for r1, c1, r2, c2 in pockets:
         _fill_rect(grid, r1, c1, r2, c2, tile, buf)
@@ -604,15 +644,15 @@ def _pattern_alcove_pockets(grid, doors, biome_terrain, rng, density):
 
 
 def _pattern_fortress_courtyard(grid, doors, biome_terrain, rng, density):
-    """Thick 2-tile RUBBLE ring set 2 tiles inset from outer walls with gaps
-    only at door buffer zones — creates a 'fortress' feel with an exposed
-    courtyard in the centre.
+    """Thick 2-tile RUBBLE ring set 3 tiles inset from outer walls (fully
+    outside the radius-2 door buffer zone) with exactly 3-tile-wide gaps
+    carved at each open door for a clean corridor entry into the courtyard.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
     buf = _door_buffer_mask(grid, doors, 2)
     tile = _cover_tile(biome_terrain)
-    outer = 2           # ring starts this many tiles from wall
+    outer = 3           # ring starts 3 tiles from wall — outside radius-2 buffer
     thickness = 2       # ring is this many tiles thick
     inner = outer + thickness
     for r in range(outer, rows - outer):
@@ -621,6 +661,22 @@ def _pattern_fortress_courtyard(grid, doors, biome_terrain, rng, density):
             if inner <= r < rows - inner and inner <= c < cols - inner:
                 continue
             _place_tile(grid, c, r, tile, buf)
+    # Carve exactly 3-tile-wide door gaps (matching door width) at each open
+    # door so the approach corridor aligns cleanly with the doorway.
+    mid_col = cols // 2
+    mid_row = rows // 2
+    for ro in range(outer, inner):      # each row/col band of the ring
+        for dc in (-1, 0, 1):           # 3-tile gap centred on mid
+            if doors.get("top"):
+                grid[ro][mid_col + dc] = _FLOOR
+            if doors.get("bottom"):
+                grid[rows - 1 - ro][mid_col + dc] = _FLOOR
+    for co in range(outer, inner):
+        for dr in (-1, 0, 1):
+            if doors.get("left"):
+                grid[mid_row + dr][co] = _FLOOR
+            if doors.get("right"):
+                grid[mid_row + dr][cols - 1 - co] = _FLOOR
     _ensure_connectivity(grid, doors)
 
 
@@ -642,14 +698,39 @@ def _pattern_mire_carpet(grid, doors, biome_terrain, rng, density):
             if (c, r) not in buf and grid[r][c] == _FLOOR:
                 if local_rng.random() < fill_chance:
                     grid[r][c] = hazard
-    # Carve stepping-stone corridors from each door entry to room centre.
+    # Carve 2-tile-wide corridors from each door entry to room centre.
     center = (cols // 2, rows // 2)
+    paths = []
     for entry in _door_interior_entry(grid, doors):
         path = _bfs_path(grid, entry, center, extra_passable=hazard)
-        if path is None:
-            continue
+        if path is not None:
+            paths.append(path)
+    # First pass: carve primary path spine.
+    for path in paths:
         for pc, pr in path:
-            grid[pr][pc] = _FLOOR   # restore exactly the path — keep 1 tile wide
+            grid[pr][pc] = _FLOOR
+    # Second pass: widen each path by 1 tile perpendicular to travel direction
+    # (horizontal segments gain a row below; vertical segments gain a col right).
+    for path in paths:
+        for i, (pc, pr) in enumerate(path):
+            if i + 1 < len(path):
+                nc, nr = path[i + 1]
+            elif i > 0:
+                nc, nr = path[i - 1]
+            else:
+                continue
+            if nc == pc:    # vertical step → widen right
+                wc, wr = pc + 1, pr
+            else:           # horizontal step → widen downward
+                wc, wr = pc, pr + 1
+            if 1 <= wr < rows - 1 and 1 <= wc < cols - 1 and grid[wr][wc] == hazard:
+                grid[wr][wc] = _FLOOR
+    # Clear a 3×3 zone at the path junction (room centre) for navigability.
+    cc, cr = cols // 2, rows // 2
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if 1 <= cr + dr < rows - 1 and 1 <= cc + dc < cols - 1:
+                grid[cr + dr][cc + dc] = _FLOOR
 
 
 def _pattern_terrain_minefield(grid, doors, biome_terrain, rng, density):
@@ -672,12 +753,21 @@ def _pattern_terrain_minefield(grid, doors, biome_terrain, rng, density):
     )
     local_rng.shuffle(interior)
     for c, r in interior[:count]:
+        # Skip if any orthogonal neighbour already holds a hazard tile —
+        # prevents wall-to-wall clumps that force players into dead-ends.
+        if any(
+            0 <= r + dr < rows and 0 <= c + dc < cols
+            and grid[r + dr][c + dc] == hazard
+            for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0))
+        ):
+            continue
         grid[r][c] = hazard
 
 
 def _pattern_island_cluster_dense(grid, doors, biome_terrain, rng, density):
-    """Five 2×2 RUBBLE islands distributed through the interior with ~2-tile
-    separation.  Creates leap-frog kiting opportunities at close range.
+    """Five 2×2 RUBBLE islands distributed through the full interior.  One
+    island is seeded per room quadrant to guarantee spread; a fifth attempt
+    can fall anywhere in the interior as a tiebreaker.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
@@ -687,29 +777,48 @@ def _pattern_island_cluster_dense(grid, doors, biome_terrain, rng, density):
         hash((tuple(sorted(doors.items())), "dense")) & 0xFFFFFFFF
     )
     island_sz = 2
-    target = 5
+    min_sep = island_sz + 2
+    max_c = cols - island_sz - 2   # max top-left col so island fits in interior
+    max_r = rows - island_sz - 2   # max top-left row
+    if max_c < 2 or max_r < 2:
+        _ensure_connectivity(grid, doors)
+        return
+    half_c = cols // 2
+    half_r = rows // 2
     placed = []
-    for _ in range(100):
-        if len(placed) >= target:
+    # One island per quadrant (NW, NE, SW, SE), then one free-range attempt.
+    zones = [
+        (2,      2,      min(max_r, half_r - 1), min(max_c, half_c - 1)),  # NW
+        (2,      half_c, min(max_r, half_r - 1), max_c                 ),  # NE
+        (half_r, 2,      max_r,                  min(max_c, half_c - 1)),  # SW
+        (half_r, half_c, max_r,                  max_c                 ),  # SE
+        (2,      2,      max_r,                  max_c                 ),  # anywhere
+    ]
+    for r_lo, c_lo, r_hi, c_hi in zones:
+        if len(placed) >= 5:
             break
-        c = local_rng.randint(3, cols - 4 - island_sz)
-        r = local_rng.randint(3, rows - 4 - island_sz)
-        cells = [(c + dc, r + dr) for dc in range(island_sz) for dr in range(island_sz)]
-        if any((cc, rr) in buf for cc, rr in cells):
+        if r_hi < r_lo or c_hi < c_lo:
             continue
-        if any(abs(c - pc) < island_sz + 2 and abs(r - pr) < island_sz + 2
-               for pc, pr in placed):
-            continue
-        for cc, rr in cells:
-            if grid[rr][cc] == _FLOOR:
-                grid[rr][cc] = tile
-        placed.append((c, r))
+        for _ in range(30):
+            c = local_rng.randint(c_lo, c_hi)
+            r = local_rng.randint(r_lo, r_hi)
+            cells = [(c + dc, r + dr) for dc in range(island_sz) for dr in range(island_sz)]
+            if any((cc, rr) in buf for cc, rr in cells):
+                continue
+            if any(abs(c - pc) < min_sep and abs(r - pr) < min_sep for pc, pr in placed):
+                continue
+            for cc, rr in cells:
+                if grid[rr][cc] == _FLOOR:
+                    grid[rr][cc] = tile
+            placed.append((c, r))
+            break
     _ensure_connectivity(grid, doors)
 
 
 def _pattern_island_cluster_sparse(grid, doors, biome_terrain, rng, density):
-    """Three 3×4 RUBBLE islands spread far apart.  Long exposed dashes
-    between cover create high-risk decision moments.
+    """Three 3×4 RUBBLE islands seeded along the NW→SE diagonal so one
+    island anchors each corner zone and one sits near centre.  Long exposed
+    lanes between cover create high-risk decision moments.
     """
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
@@ -720,22 +829,42 @@ def _pattern_island_cluster_sparse(grid, doors, biome_terrain, rng, density):
     )
     iw, ih = 3, 4
     target = 3
+    min_sep_c = iw + 3
+    min_sep_r = ih + 3
+    max_c = cols - iw - 2
+    max_r = rows - ih - 2
+    if max_c < 2 or max_r < 2:
+        _ensure_connectivity(grid, doors)
+        return
     placed = []
-    for _ in range(100):
+    third_c = max(1, max_c // 3)
+    third_r = max(1, max_r // 3)
+    zones = [
+        (2,                   2,                   third_r + 2,         third_c + 2),
+        (third_r,             third_c,             2 * third_r + 2,     2 * third_c + 2),
+        (max(2, 2*third_r),   max(2, 2*third_c),   max_r,               max_c),
+    ]
+    for r_lo, c_lo, r_hi, c_hi in zones:
         if len(placed) >= target:
             break
-        c = local_rng.randint(3, cols - 4 - iw)
-        r = local_rng.randint(3, rows - 4 - ih)
-        cells = [(c + dc, r + dr) for dc in range(iw) for dr in range(ih)]
-        if any((cc, rr) in buf for cc, rr in cells):
+        r_hi = min(r_hi, max_r)
+        c_hi = min(c_hi, max_c)
+        if r_hi < r_lo or c_hi < c_lo:
             continue
-        if any(abs(c - pc) < iw + 3 and abs(r - pr) < ih + 3
-               for pc, pr in placed):
-            continue
-        for cc, rr in cells:
-            if grid[rr][cc] == _FLOOR:
-                grid[rr][cc] = tile
-        placed.append((c, r))
+        for _ in range(30):
+            c = local_rng.randint(c_lo, c_hi)
+            r = local_rng.randint(r_lo, r_hi)
+            cells = [(c + dc, r + dr) for dc in range(iw) for dr in range(ih)]
+            if any((cc, rr) in buf for cc, rr in cells):
+                continue
+            if any(abs(c - pc) < min_sep_c and abs(r - pr) < min_sep_r
+                   for pc, pr in placed):
+                continue
+            for cc, rr in cells:
+                if grid[rr][cc] == _FLOOR:
+                    grid[rr][cc] = tile
+            placed.append((c, r))
+            break
     _ensure_connectivity(grid, doors)
 
 
@@ -748,7 +877,7 @@ def _pattern_river_with_pillars(grid, doors, biome_terrain, rng, density):
     cols = len(grid[0]) if rows else 0
     buf = _door_buffer_mask(grid, doors, 2)
     river_tile = biome_terrain if biome_terrain in _WALKABLE_HAZARDS else _WATER
-    pillar_tile = _RUBBLE
+    pillar_tile = _cover_tile(biome_terrain)
     cx, cy = cols // 2, rows // 2
     h_doors = int(bool(doors.get("left"))) + int(bool(doors.get("right")))
     v_doors = int(bool(doors.get("top"))) + int(bool(doors.get("bottom")))
@@ -757,19 +886,19 @@ def _pattern_river_with_pillars(grid, doors, biome_terrain, rng, density):
         for r in range(1, rows - 1):
             for c in range(cx - 1, cx + 2):
                 _place_tile(grid, c, r, river_tile, buf)
-        # Pillars flanking the river
-        for pr in (rows // 4, rows // 2, 3 * rows // 4):
-            _place_tile(grid, cx - 3, pr, pillar_tile, buf)
-            _place_tile(grid, cx + 3, pr, pillar_tile, buf)
+        # Two pillar pairs at quarter-row positions, cx±5 (clear of river)
+        for pr in (rows // 4, 3 * rows // 4):
+            _place_tile(grid, cx - 5, pr, pillar_tile, buf)
+            _place_tile(grid, cx + 5, pr, pillar_tile, buf)
     else:
         # V doors (or neutral) → H river (horizontal strip crossing middle rows)
         for r in range(cy - 1, cy + 2):
             for c in range(1, cols - 1):
                 _place_tile(grid, c, r, river_tile, buf)
-        # Pillars above and below river
-        for pc in (cols // 4, cx, 3 * cols // 4):
-            _place_tile(grid, pc, cy - 3, pillar_tile, buf)
-            _place_tile(grid, pc, cy + 3, pillar_tile, buf)
+        # Two pillar pairs at quarter-col positions, cy±4 (clear of river)
+        for pc in (cols // 4, 3 * cols // 4):
+            _place_tile(grid, pc, cy - 4, pillar_tile, buf)
+            _place_tile(grid, pc, cy + 4, pillar_tile, buf)
     _ensure_connectivity(grid, doors)
 
 
@@ -804,11 +933,11 @@ def _pattern_island_alcoves(grid, doors, biome_terrain, rng, density):
     cx, cy = cols // 2, rows // 2
     # Central island
     _fill_rect(grid, cy - 2, cx - 2, cy + 1, cx + 1, tile, buf)
-    # Corner alcoves
-    _fill_rect(grid, 2,         2,         3,         3,         tile, buf)
-    _fill_rect(grid, 2,         cols - 4,  3,         cols - 3,  tile, buf)
-    _fill_rect(grid, rows - 4,  2,         rows - 3,  3,         tile, buf)
-    _fill_rect(grid, rows - 4,  cols - 4,  rows - 3,  cols - 3,  tile, buf)
+    # Corner alcoves — shifted 1 tile inward from walls to stay outside radius-2 buffer
+    _fill_rect(grid, 2,         3,         3,         4,         tile, buf)
+    _fill_rect(grid, 2,         cols - 5,  3,         cols - 4,  tile, buf)
+    _fill_rect(grid, rows - 4,  3,         rows - 3,  4,         tile, buf)
+    _fill_rect(grid, rows - 4,  cols - 5,  rows - 3,  cols - 4,  tile, buf)
     _ensure_connectivity(grid, doors)
 
 
@@ -995,8 +1124,8 @@ LAYOUT_REGISTRY: dict[str, LayoutSpec] = {
         family="column_hall",
         decision_type="cover_los",
         supported_door_counts=(1, 2, 3, 4),
-        min_rows=11,
-        min_cols=11,
+        min_rows=13,
+        min_cols=13,
         biome_affinities={"": 5, "mud": 3, "ice": 6, "water": 3},
         fn=_pattern_ringed_columns,
     ),
