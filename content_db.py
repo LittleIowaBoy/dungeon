@@ -675,8 +675,7 @@ BASE_ROOM_TEMPLATES = (
         "repeat_cooldown": 1,
         "reward_affinity": "any",
         **_plan_shape(
-            terrain_patch_count_range="2,4",
-            terrain_patch_size_range="2,3",
+            terrain_layout="mire_carpet",
             objective_label="Quicksand Trap",
         ),
         "notes": "Combat room where quicksand patches drown the player after a few seconds.",

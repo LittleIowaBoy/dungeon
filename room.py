@@ -419,6 +419,8 @@ class Room:
         # Stores the terrain layout id selected by terrain_layouts.apply().
         # Empty string when USE_NEW_TERRAIN_LAYOUTS is off or room has no plan.
         self._active_layout_id: str = ""
+        # True once on_enter has oriented the chest for the actual entry door.
+        self._chest_repositioned: bool = False
         self._place_walls()
         self._place_doors()
         self._place_terrain()
@@ -741,6 +743,32 @@ class Room:
             self._active_layout_id = layout_id
             if self.room_plan and self.room_plan.clear_center:
                 self._clear_center_arena()
+            # Per-room polish still runs after the terrain layout so
+            # biome-specific hazard tiles (quicksand, thin ice, etc.) are
+            # layered on top of the WALL-based obstacle layout.
+            if self.room_plan is not None:
+                if self.room_plan.room_id == "earth_stalagmite_field":
+                    self._polish_stalagmite_field()
+                elif self.room_plan.room_id == "earth_quicksand_trap":
+                    self._polish_quicksand_trap()
+                elif self.room_plan.room_id == "earth_tremor_chamber":
+                    self._polish_tremor_chamber()
+                elif self.room_plan.room_id == "water_river_room":
+                    self._polish_river_room()
+                elif self.room_plan.room_id == "water_spirit_room":
+                    self._polish_water_spirit_room()
+                elif self.room_plan.room_id == "ice_thin_ice_field":
+                    self._polish_thin_ice_field()
+                elif self.room_plan.room_id == "ice_crystal_room":
+                    self._polish_ice_crystal_room()
+                elif self.room_plan.room_id == "ice_freeze_aura_room":
+                    self._polish_freeze_aura_room()
+                elif self.room_plan.room_id == "ice_spirit_swarm_room":
+                    self._polish_ice_spirit_swarm_room()
+                elif self.room_plan.room_id == "ice_avalanche_run":
+                    self._polish_ice_avalanche_run()
+                elif self.room_plan.room_id == "ice_frost_witch_arena":
+                    self._polish_frost_witch_arena()
             return
 
         if self.room_plan and self.room_plan.terrain_patch_count_range:
@@ -878,6 +906,41 @@ class Room:
         """Backward-compat wrapper: BFS treating SPIKE_PATCH as passable."""
         return self._bfs_path_through_hazard(start, goal, SPIKE_PATCH)
 
+    def _bfs_path_carve_any(self, start, goal):
+        """BFS treating all interior tiles (FLOOR, hazards, and WALL) as
+        passable — used as a fallback to guarantee door-to-center connectivity
+        even when the terrain layout placed WALLs that block the normal path.
+        Returns a list of (col, row) tiles or None if goal is unreachable.
+        """
+        if start == goal:
+            return [start]
+        from collections import deque
+        visited = {start}
+        parents = {start: None}
+        queue = deque([start])
+        while queue:
+            c, r = queue.popleft()
+            if (c, r) == goal:
+                path = []
+                cur = (c, r)
+                while cur is not None:
+                    path.append(cur)
+                    cur = parents[cur]
+                path.reverse()
+                return path
+            for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nc, nr = c + dc, r + dr
+                if not (0 < nc < ROOM_COLS - 1 and 0 < nr < ROOM_ROWS - 1):
+                    continue
+                if (nc, nr) in visited:
+                    continue
+                if self.grid[nr][nc] == DOOR:
+                    continue
+                visited.add((nc, nr))
+                parents[(nc, nr)] = (c, r)
+                queue.append((nc, nr))
+        return None
+
     def _bfs_path_through_hazard(self, start, goal, hazard_tile):
         """BFS treating ``hazard_tile`` (and FLOOR) as passable.
 
@@ -918,19 +981,51 @@ class Room:
     def _polish_quicksand_trap(self):
         """Refine the QUICKSAND grid for the Quicksand Trap room.
 
-        Two-pass cleanup mirroring the Stalagmite Field polish:
+        Pass 0: place QUICKSAND patches if none were laid by the terrain
+        layout (e.g. open_arena).  Uses the same rectangular-cluster
+        approach as the legacy random-patch system so the room always
+        has hazard zones regardless of which layout was selected.
 
-        1. Clear any QUICKSAND tile within
-           :data:`QUICKSAND_TRAP_DOOR_BUFFER` chebyshev distance of an
-           open door, so the player never spawns into a pull zone.
-        2. BFS from each open-door interior tile to the room centre and
-           carve any blocking quicksand tiles back to floor, guaranteeing
-           an entrance->exit walkable corridor.
+        Pass 1: Clear any QUICKSAND tile within
+        :data:`QUICKSAND_TRAP_DOOR_BUFFER` chebyshev distance of an
+        open door, so the player never spawns into a pull zone.
+
+        Pass 2: BFS from each open-door interior tile to the room centre
+        and carve any blocking quicksand tiles back to floor, guaranteeing
+        an entrance->exit walkable corridor.
 
         No singleton-sprinkle pass: quicksand patches are designed to be
         large pull zones, so peppering lone tiles would dilute the
         mechanic.
         """
+        door_tiles = self._door_tile_set()
+        buffer_radius = QUICKSAND_TRAP_DOOR_BUFFER
+
+        # Pass 0: populate if no QUICKSAND exists yet.
+        if not any(QUICKSAND in row for row in self.grid):
+            if self.room_plan and self.room_plan.terrain_patch_count_range:
+                count_lo, count_hi = self.room_plan.terrain_patch_count_range
+            else:
+                count_lo, count_hi = 2, 4
+            if self.room_plan and self.room_plan.terrain_patch_size_range:
+                size_lo, size_hi = self.room_plan.terrain_patch_size_range
+            else:
+                size_lo, size_hi = 2, 3
+            local_seed = hash((
+                tuple(sorted(door_tiles)),
+                "quicksand_populate",
+            )) & 0xFFFFFFFF
+            local_rng = random.Random(local_seed)
+            count = local_rng.randint(count_lo, count_hi)
+            for _ in range(count):
+                w = local_rng.randint(size_lo, size_hi)
+                h = local_rng.randint(size_lo, size_hi)
+                sc = local_rng.randint(2, max(2, ROOM_COLS - 2 - w))
+                sr = local_rng.randint(2, max(2, ROOM_ROWS - 2 - h))
+                for r in range(sr, min(sr + h, ROOM_ROWS - 1)):
+                    for c in range(sc, min(sc + w, ROOM_COLS - 1)):
+                        if self.grid[r][c] == FLOOR:
+                            self.grid[r][c] = QUICKSAND
         door_tiles = self._door_tile_set()
         buffer_radius = QUICKSAND_TRAP_DOOR_BUFFER
 
@@ -943,7 +1038,9 @@ class Room:
                     self.grid[r][c] = FLOOR
 
         # Pass 2: guarantee connectivity from each entrance to the
-        # room centre via a quicksand-passable BFS.
+        # room centre via a quicksand-passable BFS.  If WALL tiles
+        # (placed by the terrain layout) obstruct the path, treat them
+        # as carveable so the door→center corridor is always walkable.
         center = (ROOM_COLS // 2, ROOM_ROWS // 2)
         for door_col, door_row in door_tiles:
             entry = self._interior_neighbor(door_col, door_row)
@@ -951,10 +1048,46 @@ class Room:
                 continue
             path = self._bfs_path_through_hazard(entry, center, QUICKSAND)
             if path is None:
+                # Fallback: allow carving through WALL too so layout
+                # obstacles never permanently seal a door→center route.
+                path = self._bfs_path_carve_any(entry, center)
+            if path is None:
                 continue
             for c, r in path:
-                if self.grid[r][c] == QUICKSAND:
+                if self.grid[r][c] in (QUICKSAND, WALL):
                     self.grid[r][c] = FLOOR
+
+    def _polish_tremor_chamber(self):
+        """Place HEARTH tiles for the Tremor Chamber room.
+
+        The terrain layout system places WALL obstacles only; this pass
+        scatters rectangular HEARTH patches over remaining FLOOR cells so
+        players have safe spots during tremor strikes.
+        """
+        if self.room_plan and self.room_plan.terrain_patch_count_range:
+            count_lo, count_hi = self.room_plan.terrain_patch_count_range
+        else:
+            count_lo, count_hi = 3, 4
+        if self.room_plan and self.room_plan.terrain_patch_size_range:
+            size_lo, size_hi = self.room_plan.terrain_patch_size_range
+        else:
+            size_lo, size_hi = 2, 2
+        door_tiles = self._door_tile_set()
+        local_seed = hash((
+            tuple(sorted(door_tiles)),
+            "hearth_populate",
+        )) & 0xFFFFFFFF
+        local_rng = random.Random(local_seed)
+        count = local_rng.randint(count_lo, count_hi)
+        for _ in range(count):
+            w = local_rng.randint(size_lo, size_hi)
+            h = local_rng.randint(size_lo, size_hi)
+            sc = local_rng.randint(2, max(2, ROOM_COLS - 2 - w))
+            sr = local_rng.randint(2, max(2, ROOM_ROWS - 2 - h))
+            for r in range(sr, min(sr + h, ROOM_ROWS - 1)):
+                for c in range(sc, min(sc + w, ROOM_COLS - 1)):
+                    if self.grid[r][c] == FLOOR:
+                        self.grid[r][c] = HEARTH
 
     def _polish_thin_ice_field(self):
         """Refine the THIN_ICE grid for the Thin Ice Field room.
@@ -1594,6 +1727,22 @@ class Room:
         return False
 
     def on_enter(self, now_ticks, *, entry_direction=None, player_position=None, room_test=False):
+        # Reposition the chest to the far side of the room on first entry so
+        # the player always has to cross the hazard/obstacle terrain to reach
+        # it.  This runs for *all* room types (exit and non-exit) before the
+        # is_exit guard so rooms without an objective also benefit.
+        if not self._chest_repositioned and entry_direction is not None:
+            rid = getattr(self.room_plan, "room_id", None)
+            if (
+                self._active_layout_id
+                and self.chest_pos is not None
+                and rid not in ("trap_gauntlet", "water_waterfall_room")
+            ):
+                far_pos = self._escort_goal_on_far_side(entry_direction)
+                if far_pos is not None:
+                    self.chest_pos = far_pos
+            self._chest_repositioned = True
+
         if not self.is_exit or self.room_plan is None:
             return
 

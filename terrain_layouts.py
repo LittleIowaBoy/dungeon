@@ -37,12 +37,16 @@ class LayoutSpec:
 # must stay in sync with room.py tile definitions).
 # ---------------------------------------------------------------------------
 _FLOOR  = "floor"
-_WALL   = "wall"
-_RUBBLE = "rubble"
-_MUD    = "mud"
-_ICE    = "ice"
-_WATER  = "water"
-_WALKABLE_HAZARDS = (_MUD, _ICE, _WATER)
+_WALL      = "wall"
+_RUBBLE    = "rubble"
+_MUD       = "mud"
+_ICE       = "ice"
+_WATER     = "water"
+_QUICKSAND = "quicksand"
+_THIN_ICE  = "thin_ice"
+# All tile strings the player can walk on (used for BFS traversal and
+# _hazard_tile() dispatch).  Pits / walls are NOT included.
+_WALKABLE_HAZARDS = (_MUD, _ICE, _WATER, _QUICKSAND, _THIN_ICE)
 
 # ---------------------------------------------------------------------------
 # Biome accent pool (Step 4)
