@@ -334,7 +334,8 @@ class Game:
         kind = update_result.get("kind")
         if kind == "forfeit_chest":
             for chest in self.dungeon.chest_group:
-                chest.mark_looted()
+                if not getattr(chest, "is_split_cache", False):
+                    chest.mark_looted()
         elif kind == "restore_chest":
             for chest in self.dungeon.chest_group:
                 chest.restore_for_reclaim()
@@ -405,6 +406,18 @@ class Game:
             self._objective_update_chest(update_result)
         elif kind == "despawn_escort":
             self._objective_update_despawn_escort(update_result)
+        elif kind == "blast_damage":
+            if self.player is not None:
+                damage = int(update_result.get("damage") or 0)
+                if damage > 0:
+                    self.player.take_damage(damage, damage_type="blast")
+        elif kind == "spawn_blast_vault":
+            pos = update_result.get("position")
+            if pos is not None and self.dungeon is not None:
+                tier = update_result.get("reward_tier", "gold")
+                self.dungeon.chest_group.add(
+                    Chest(pos[0], pos[1], looted=False, reward_tier=tier, reward_kind="chest_upgrade")
+                )
         elif kind == "spawn_heartstone":
             self._objective_update_spawn_heartstone(update_result)
 
@@ -817,7 +830,10 @@ class Game:
                                 chest.set_reward_tier(floor_tier)
                             break
                 if chest.try_open(self.player.rect, self.dungeon.item_group):
-                    self.dungeon.current_room.notify_chest_opened(now_ticks)
+                    self.dungeon.current_room.notify_chest_opened(
+                        now_ticks,
+                        is_split_cache=getattr(chest, "is_split_cache", False),
+                    )
                     flawless_loot_id = self.dungeon.current_room.trap_challenge_flawless_bonus_loot_id()
                     if flawless_loot_id:
                         self.dungeon.item_group.add(
@@ -1113,9 +1129,11 @@ class Game:
                     boulder = _IceAvalancheBoulder(bx, by, vx=vx)
                     self.dungeon.enemy_projectile_group.add(boulder)
 
-    def _update_single_enemy(self, enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale):
+    def _update_single_enemy(self, enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale, escort_rect=None):
         if hasattr(enemy, "update_attack_state"):
-            enemy.update_attack_state(enemy_focus_rect, now_ticks)
+            # E3: harasser enemies attack the escort; everyone else attacks the player.
+            attack_target = escort_rect if (getattr(enemy, "harasses_escort", False) and escort_rect is not None) else enemy_focus_rect
+            enemy.update_attack_state(attack_target, now_ticks)
         if hasattr(enemy, "update_anchor_cycle"):
             enemy.update_anchor_cycle(now_ticks)
         if getattr(enemy, "is_frozen", False):
@@ -1123,11 +1141,11 @@ class Game:
             return
         if status_effects.is_immobilized(enemy, now_ticks):
             return
-        # Always use player_rect for movement so proximity-triggered enemies
-        # (chasers, launchers) activate on player approach, not on escort NPC
-        # approach.  attack_state already has the correct target via
-        # enemy_focus_rect above.
-        movement_target = player_rect
+        # E3: harasser enemies move toward the escort NPC; others toward the player.
+        if getattr(enemy, "harasses_escort", False) and escort_rect is not None:
+            movement_target = escort_rect
+        else:
+            movement_target = player_rect
         if time_scale != 1:
             original_speed = enemy.speed
             enemy.speed = original_speed * time_scale
@@ -1153,10 +1171,12 @@ class Game:
             obj.rect for obj in self.dungeon.objective_group
             if isinstance(obj, SentryBlocker)
         ]
+        # E3: resolve escort position once per frame for harasser enemies.
+        escort_rect = room.get_escort_rect() if room is not None else None
         for enemy in self.dungeon.enemy_group:
             if isinstance(enemy, SentryEnemy):
                 enemy._blocker_rects = _sentry_blocker_rects
-            self._update_single_enemy(enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale)
+            self._update_single_enemy(enemy, enemy_focus_rect, player_rect, walls, now_ticks, time_scale, escort_rect)
             self._apply_freeze_aura_chill(enemy, now_ticks, dt_sec)
             self._apply_ice_spirit_hooks(enemy, room, now_ticks)
             self._apply_frost_witch_nova_chill(enemy, now_ticks)
@@ -1461,6 +1481,10 @@ class Game:
                 and room.objective_status == "overtime"
             ):
                 detail_lines = ("Overtime escape: clean extraction bonus lost",)
+            split_cache_coins = room.claim_resource_race_split_cache_bonus()
+            if split_cache_coins:
+                self.player.coins += split_cache_coins
+                detail_lines = detail_lines + (f"Split cache fallback: +{split_cache_coins} coins",)
 
         self.progress.complete_dungeon_from_runtime(self._current_dungeon_id, self.player)
         detail_lines = detail_lines + _build_trophy_tally_lines(self.progress)

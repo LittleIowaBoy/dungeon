@@ -473,11 +473,25 @@ Single source of truth for forward work. Older per-snapshot "Recommended Next Sl
 
 ### Room mechanic depth (per Part 1 plan, ordered)
 
-1. **Puzzle-Gated Doors — P1 follow-up.** Stronger anti-camping reactions and alternate solve routes on top of the existing ordered / staggered / paired variants (P2 camp pulses + P3 stabilizer skips already shipped; this slice pushes P1 deeper).
-2. **Survival Holdout — H1–H4 are complete** (shrink, migration, stabilizer-anchor, minimap telegraphs). No outstanding holdout work.
-3. **Ritual Disruption — timing-window / tether variants.** R1 link modes, R2 role chain, R3 wrong-strike punishment, R4 in-world role glyph, and R5 minimap role halo are shipped. Next push: per-altar disruption windows or inter-altar tethers that punish destroying the wrong link first.
-4. **Escort & Bomb Carrier — reward grading + branch archetype specialization.** E2 (escort-preservation reward scaling), B-series carrier blast-point variants, and per-biome E4 / B4 overrides are still open.
-5. **Per-biome `*_4` content slices** for room families that lack biome variants beyond their base template (e.g. trap G4 biome packs, stealth S4 gimmicks, extraction T4 complications). Defer until 1–4 reach parity.
+**Completed families:**
+- **Trap Gauntlet T1–T25** (biome theming, rewards, timed suppression, surge events, spike panels, chilled status).
+- **Puzzle-Gated Doors P1–P4** (ordered / staggered / paired variants, camp pulses, stabilizer skips, per-biome tuning).
+- **Survival Holdout H1–H4** (zone shrink, zone migration, stabilizer-anchor side-action, minimap wave telegraphs).
+- **Ritual Disruption R1–R5 + timing windows** (altar roles, role chain, wrong-strike punishment, role glyph, minimap halo, pulse_gates_damage windows).
+- **Resource Race C1–C3** (visible claim progress, steal-back reclaim, split-cache mini-chest).
+- **Stealth Passage S1–S4** (patrol cones, partial detection, bonus cache, escape / release variants).
+- **Timed Extraction T1–T4** (route collapse, pursuit waves, reward grading, biome complications).
+- **Escort Protection E1–E2** (checkpoint waypoints, preservation bonus).
+- **Escort Bomb Carrier B1–B2** (multi-stage blast points, detonation warning + damage).
+
+**Open work (ordered by priority):**
+
+1. **Escort Bomb Carrier — B3 blast vault (current — Phase 7).** Spawn a gold reward chest when all blast points are cleared, before the carrier routes to the exit.
+2. **Escort & Bomb Carrier — E3/E4 and B4.** E3: enemy archetype overrides that deliberately target the escort rather than the player. E4: biome-specific escort behaviors (patrol escort in frozen, submerged escort hazard in water). B4: per-biome carrier specialization beyond metadata overrides.
+3. **Ritual Disruption — inter-altar tether variants.** Timing windows (pulse_gates_damage) are done. Next: inter-altar tethers that impose a required kill order — destroying the wrong altar first spawns a punishment wave or resets progress.
+4. **Resource Race — C4 biome artifacts.** C1–C3 are done. C4 adds biome-specific contested artifact labels and in-room behavior overrides.
+5. **Puzzle-Gated Doors — P1 follow-up.** Stronger anti-camping reactions and alternate solve routes beyond the existing ordered / staggered / paired variants (P2 camp pulses + P3 stabilizer skips already shipped).
+6. ~~**Per-biome `*_4` content slices** for room families that lack biome variants beyond their base template.~~ ✅ Done — `rune_altar_chamber` and `pact_shrine_chamber` now have per-biome display names, labels, terrain layouts, and notes in all three biome overrides.
 
 ### Notes for future slices
 

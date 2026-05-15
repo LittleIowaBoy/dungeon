@@ -478,6 +478,10 @@ class RoomSelector:
         ritual_payoff_kind = template.ritual_payoff_kind or ""
         ritual_payoff_label = template.ritual_payoff_label or ""
         ritual_wrong_strike_spawn_count = max(0, int(template.ritual_wrong_strike_spawn_count or 0))
+        ritual_tether_regen_ms = max(0, int(template.ritual_tether_regen_ms or 0))
+        ritual_tether_regen_hp = max(0, int(template.ritual_tether_regen_hp or 0))
+        resource_race_rival_label = (template.resource_race_rival_label or "").strip()
+        resource_race_reclaim_window_ms = max(0, int(template.resource_race_reclaim_window_ms or 0))
         objective_label = template.objective_label or ""
         objective_layout_offsets = _parse_offset_script(template.objective_layout_offsets)
         objective_spawn_offset = _parse_optional_offset(template.objective_spawn_offset)
@@ -490,6 +494,18 @@ class RoomSelector:
         objective_guide_radius = max(0, int(template.objective_guide_radius or 0))
         objective_exit_radius = max(0, int(template.objective_exit_radius or 0))
         objective_damage_cooldown_ms = max(0, int(template.objective_damage_cooldown_ms or 0))
+        escort_checkpoints = _parse_offset_script(template.escort_checkpoints)
+        escort_blast_points = _parse_offset_script(template.escort_blast_points)
+        escort_blast_duration_ms = max(0, int(template.escort_blast_duration_ms or 0))
+        escort_blast_radius = max(0, int(template.escort_blast_radius or 0))
+        escort_blast_damage = max(0, int(template.escort_blast_damage or 0))
+        escort_carrier_stall_interval_ms = max(0, int(template.escort_carrier_stall_interval_ms or 0))
+        escort_carrier_stall_duration_ms = max(0, int(template.escort_carrier_stall_duration_ms or 0))
+        escort_harasser_count = max(0, int(template.escort_harasser_count or 0))
+        escort_stagger_interval_ms = max(0, int(template.escort_stagger_interval_ms or 0))
+        escort_stagger_duration_ms = max(0, int(template.escort_stagger_duration_ms or 0))
+        escort_hazard_interval_ms = max(0, int(template.escort_hazard_interval_ms or 0))
+        escort_hazard_damage = max(0, int(template.escort_hazard_damage or 0))
         puzzle_reinforcement_count = max(0, int(template.puzzle_reinforcement_count or 0))
         puzzle_stall_duration_ms = max(0, int(template.puzzle_stall_duration_ms or 0))
         puzzle_stabilizer_count = max(0, int(template.puzzle_stabilizer_count or 0))
@@ -498,6 +514,7 @@ class RoomSelector:
         puzzle_camp_pulse_interval_ms = max(0, int(template.puzzle_camp_pulse_interval_ms or 0))
         puzzle_camp_pulse_grace_ms = max(0, int(template.puzzle_camp_pulse_grace_ms or 0))
         puzzle_camp_pulse_radius = max(0, int(template.puzzle_camp_pulse_radius or 0))
+        puzzle_decay_interval_ms = max(0, int(template.puzzle_decay_interval_ms or 0))
         trap_intensity_scale = max(0.0, float(template.trap_intensity_scale or 1.0))
         trap_speed_scale = max(0.0, float(template.trap_speed_scale or 1.0))
         trap_challenge_reward_kind = str(template.trap_challenge_reward_kind or "chest_upgrade")
@@ -616,6 +633,10 @@ class RoomSelector:
             ritual_payoff_kind=ritual_payoff_kind,
             ritual_payoff_label=ritual_payoff_label,
             ritual_wrong_strike_spawn_count=ritual_wrong_strike_spawn_count,
+            ritual_tether_regen_ms=ritual_tether_regen_ms,
+            ritual_tether_regen_hp=ritual_tether_regen_hp,
+            resource_race_rival_label=resource_race_rival_label,
+            resource_race_reclaim_window_ms=resource_race_reclaim_window_ms,
             objective_label=objective_label,
             objective_layout_offsets=objective_layout_offsets,
             objective_spawn_offset=objective_spawn_offset,
@@ -628,6 +649,18 @@ class RoomSelector:
             objective_guide_radius=objective_guide_radius,
             objective_exit_radius=objective_exit_radius,
             objective_damage_cooldown_ms=objective_damage_cooldown_ms,
+            escort_checkpoints=escort_checkpoints,
+            escort_blast_points=escort_blast_points,
+            escort_blast_duration_ms=escort_blast_duration_ms,
+            escort_blast_radius=escort_blast_radius,
+            escort_blast_damage=escort_blast_damage,
+            escort_carrier_stall_interval_ms=escort_carrier_stall_interval_ms,
+            escort_carrier_stall_duration_ms=escort_carrier_stall_duration_ms,
+            escort_harasser_count=escort_harasser_count,
+            escort_stagger_interval_ms=escort_stagger_interval_ms,
+            escort_stagger_duration_ms=escort_stagger_duration_ms,
+            escort_hazard_interval_ms=escort_hazard_interval_ms,
+            escort_hazard_damage=escort_hazard_damage,
             puzzle_reinforcement_count=puzzle_reinforcement_count,
             puzzle_stall_duration_ms=puzzle_stall_duration_ms,
             puzzle_stabilizer_count=puzzle_stabilizer_count,
@@ -636,6 +669,7 @@ class RoomSelector:
             puzzle_camp_pulse_interval_ms=puzzle_camp_pulse_interval_ms,
             puzzle_camp_pulse_grace_ms=puzzle_camp_pulse_grace_ms,
             puzzle_camp_pulse_radius=puzzle_camp_pulse_radius,
+            puzzle_decay_interval_ms=puzzle_decay_interval_ms,
             trap_intensity_scale=trap_intensity_scale,
             trap_speed_scale=trap_speed_scale,
             trap_challenge_reward_kind=trap_challenge_reward_kind,
@@ -646,6 +680,7 @@ class RoomSelector:
             trap_vent_chilled_duration_ms=trap_vent_chilled_duration_ms,
             trap_surge_interval_ms=trap_surge_interval_ms,
             trap_surge_duration_ms=trap_surge_duration_ms,
+            collapse_terrain_effect=template.collapse_terrain_effect or "",
             danger_variant=danger_variant,
             terrain_layout=template.terrain_layout or "",
         )

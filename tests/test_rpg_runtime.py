@@ -209,6 +209,7 @@ class GameRuntimeTests(unittest.TestCase):
     def test_on_level_complete_applies_timed_extraction_bonus_before_completing_dungeon(self):
         room = SimpleNamespace(
             claim_timed_extraction_completion_bonus=Mock(return_value=14),
+            claim_resource_race_split_cache_bonus=Mock(return_value=0),
             room_plan=SimpleNamespace(objective_rule="loot_then_timer"),
             objective_status="escape",
         )
@@ -243,6 +244,7 @@ class GameRuntimeTests(unittest.TestCase):
     def test_on_level_complete_marks_overtime_bonus_lost_in_screen_details(self):
         room = SimpleNamespace(
             claim_timed_extraction_completion_bonus=Mock(return_value=0),
+            claim_resource_race_split_cache_bonus=Mock(return_value=0),
             room_plan=SimpleNamespace(objective_rule="loot_then_timer"),
             objective_status="overtime",
         )

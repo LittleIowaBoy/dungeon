@@ -66,6 +66,8 @@ def _plan(
     ritual_payoff_kind="",
     ritual_payoff_label="",
     ritual_wrong_strike_spawn_count=0,
+    ritual_tether_regen_ms=0,
+    ritual_tether_regen_hp=0,
     objective_label="",
     objective_layout_offsets=(),
     objective_spawn_offset=None,
@@ -86,6 +88,7 @@ def _plan(
     puzzle_camp_pulse_interval_ms=0,
     puzzle_camp_pulse_grace_ms=0,
     puzzle_camp_pulse_radius=0,
+    puzzle_decay_interval_ms=0,
     trap_intensity_scale=1.0,
     trap_speed_scale=1.0,
     trap_challenge_reward_kind="chest_upgrade",
@@ -96,6 +99,20 @@ def _plan(
     trap_vent_chilled_duration_ms=0,
     trap_surge_interval_ms=0,
     trap_surge_duration_ms=0,
+    escort_blast_points=(),
+    escort_blast_duration_ms=0,
+    escort_blast_radius=0,
+    escort_blast_damage=0,
+    escort_carrier_stall_interval_ms=0,
+    escort_carrier_stall_duration_ms=0,
+    escort_harasser_count=0,
+    escort_stagger_interval_ms=0,
+    escort_stagger_duration_ms=0,
+    escort_hazard_interval_ms=0,
+    escort_hazard_damage=0,
+    resource_race_rival_label="",
+    resource_race_reclaim_window_ms=0,
+    terrain_patch_count_range=(1, 1),
 ):
     return RoomPlan(
         position=(0, 0),
@@ -114,7 +131,7 @@ def _plan(
         objective_duration_ms=duration,
         guaranteed_chest=guaranteed_chest,
         chest_spawn_chance=1.0 if chest_spawn_chance is None and guaranteed_chest else chest_spawn_chance,
-        terrain_patch_count_range=(1, 1),
+        terrain_patch_count_range=terrain_patch_count_range,
         terrain_patch_size_range=(2, 2),
         clear_center=True,
         reward_tier=reward_tier,
@@ -135,6 +152,8 @@ def _plan(
         ritual_payoff_kind=ritual_payoff_kind,
         ritual_payoff_label=ritual_payoff_label,
         ritual_wrong_strike_spawn_count=ritual_wrong_strike_spawn_count,
+        ritual_tether_regen_ms=ritual_tether_regen_ms,
+        ritual_tether_regen_hp=ritual_tether_regen_hp,
         objective_label=objective_label,
         objective_layout_offsets=objective_layout_offsets,
         objective_spawn_offset=objective_spawn_offset,
@@ -155,6 +174,7 @@ def _plan(
         puzzle_camp_pulse_interval_ms=puzzle_camp_pulse_interval_ms,
         puzzle_camp_pulse_grace_ms=puzzle_camp_pulse_grace_ms,
         puzzle_camp_pulse_radius=puzzle_camp_pulse_radius,
+        puzzle_decay_interval_ms=puzzle_decay_interval_ms,
         trap_intensity_scale=trap_intensity_scale,
         trap_speed_scale=trap_speed_scale,
         trap_challenge_reward_kind=trap_challenge_reward_kind,
@@ -165,6 +185,19 @@ def _plan(
         trap_vent_chilled_duration_ms=trap_vent_chilled_duration_ms,
         trap_surge_interval_ms=trap_surge_interval_ms,
         trap_surge_duration_ms=trap_surge_duration_ms,
+        escort_blast_points=escort_blast_points,
+        escort_blast_duration_ms=escort_blast_duration_ms,
+        escort_blast_radius=escort_blast_radius,
+        escort_blast_damage=escort_blast_damage,
+        escort_carrier_stall_interval_ms=escort_carrier_stall_interval_ms,
+        escort_carrier_stall_duration_ms=escort_carrier_stall_duration_ms,
+        escort_harasser_count=escort_harasser_count,
+        escort_stagger_interval_ms=escort_stagger_interval_ms,
+        escort_stagger_duration_ms=escort_stagger_duration_ms,
+        escort_hazard_interval_ms=escort_hazard_interval_ms,
+        escort_hazard_damage=escort_hazard_damage,
+        resource_race_rival_label=resource_race_rival_label,
+        resource_race_reclaim_window_ms=resource_race_reclaim_window_ms,
     )
 
 
@@ -1546,6 +1579,74 @@ class RoomObjectiveTests(unittest.TestCase):
         )
         self.assertEqual(damage_log, [])
 
+    # ── P follow-up: puzzle plate decay ──────────────────────────────────────
+
+    def test_puzzle_decay_rolls_back_last_activated_plate_after_interval(self):
+        """Decay deactivates the last solved plate when idle for decay_interval_ms."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                objective_entity_count=3,
+                objective_label="Rune",
+                puzzle_stall_duration_ms=10000,  # keep stall inert
+                puzzle_decay_interval_ms=2000,
+            ),
+        )
+        room.on_enter(1000)
+
+        controller = room._puzzle_controller()
+        # Find the plate that is first in the solve order and manually activate it.
+        first_plate_id = controller["target_sequence"][0]
+        first_plate = next(
+            c for c in room.objective_entity_configs
+            if c.get("kind") == "pressure_plate" and c.get("plate_id", c.get("order_index", -1)) == first_plate_id
+        )
+        first_plate["activated"] = True
+        controller["progress_index"] = 1
+        controller["last_progress_at"] = 2000
+
+        # Advance past decay interval — no new progress.
+        room.update_objective(4001, [])  # 4001 - 2000 = 2001 >= 2000
+
+        self.assertFalse(first_plate["activated"])
+        self.assertEqual(controller["progress_index"], 0)
+        self.assertIsNotNone(controller["last_decay_at"])
+
+    def test_puzzle_decay_shown_in_hud_suffix_after_rollback(self):
+        """'| Decay' appears in the HUD label immediately after a decay fires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "puzzle_gated_doors",
+                objective_rule="charge_plates",
+                objective_entity_count=3,
+                objective_label="Rune",
+                puzzle_stall_duration_ms=10000,
+                puzzle_decay_interval_ms=1000,
+            ),
+        )
+        room.on_enter(1000)
+
+        controller = room._puzzle_controller()
+        first_plate_id = controller["target_sequence"][0]
+        first_plate = next(
+            c for c in room.objective_entity_configs
+            if c.get("kind") == "pressure_plate" and c.get("plate_id", c.get("order_index", -1)) == first_plate_id
+        )
+        first_plate["activated"] = True
+        controller["progress_index"] = 1
+        controller["last_progress_at"] = 2000
+
+        room.update_objective(3001, [])  # fires decay
+        hud = room.objective_hud_state(3001)["label"]
+        self.assertIn("| Decay", hud)
+
+    # ── end P follow-up: puzzle plate decay ──────────────────────────────────
+
     def test_playtest_identifier_describes_holdout_circle_room(self):
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
@@ -2385,7 +2486,579 @@ class RoomObjectiveTests(unittest.TestCase):
         update = room.update_objective(2000, [])
         self.assertIn("preservation_bonus_tier", update)
 
+    # ── B3: carrier blast vault ───────────────────────────────────────────────
+
+    def test_blast_vault_ready_flagged_on_last_blast_completion(self):
+        """blast_vault_ready is set on the escort config when the last blast fires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_blast_points=((0, 0),),
+                escort_blast_duration_ms=1000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Simulate carrier arriving at blast point (blast armed and timer already expired).
+        escort["detonating"] = True
+        escort["detonation_until_ms"] = 1
+        room.update_objective(2000, [])
+        self.assertTrue(escort.get("blast_vault_ready"))
+
+    def test_blast_vault_update_emitted_on_next_tick_after_last_blast(self):
+        """update_objective returns spawn_blast_vault on the tick after the last blast fires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_blast_points=((0, 0),),
+                escort_blast_duration_ms=1000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["detonating"] = True
+        escort["detonation_until_ms"] = 1
+        room.update_objective(2000, [])
+        # blast_vault_ready is now set — next tick should emit the vault spawn.
+        update = room.update_objective(2001, [])
+        self.assertIsNotNone(update)
+        self.assertEqual(update.get("kind"), "spawn_blast_vault")
+        self.assertEqual(update.get("reward_tier"), "gold")
+        self.assertIn("position", update)
+        # Flag should be cleared after emitting.
+        self.assertFalse(escort.get("blast_vault_ready"))
+
+    def test_blast_vault_not_emitted_for_intermediate_blast_point(self):
+        """blast_vault_ready must NOT be set when only the first of two blast points fires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_blast_points=((0, -1), (0, 1)),
+                escort_blast_duration_ms=1000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["detonating"] = True
+        escort["detonation_until_ms"] = 1
+        room.update_objective(2000, [])
+        # Index is 1, but len(blast_point_positions)==2 — vault must NOT be ready.
+        self.assertFalse(escort.get("blast_vault_ready"))
+
+    def test_blast_vault_hud_shows_vault_opened_after_all_blasts_cleared(self):
+        """HUD route suffix changes to '→ Exit (vault opened)' once all blasts are done."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_blast_points=((0, 0),),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Advance past all blast points.
+        escort["blast_point_index"] = len(escort["blast_point_positions"])
+        label = room.objective_hud_state(1000)["label"]
+        self.assertIn("vault opened", label)
+
+    # ── end B3 ────────────────────────────────────────────────────────────────
+
+    # ── B4: carrier stall ─────────────────────────────────────────────────────
+
+    def test_carrier_stall_timer_initialises_on_first_tick(self):
+        """_tick_carrier_stall arms the first stall after one interval."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_carrier_stall_interval_ms=5000,
+                escort_carrier_stall_duration_ms=2000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Before first update the timer is un-initialised.
+        self.assertEqual(escort["carrier_stall_next_at"], 0)
+        room.update_objective(1000, [])
+        # After the first tick the next-stall is now+interval.
+        self.assertEqual(escort["carrier_stall_next_at"], 6000)
+        self.assertFalse(escort["carrier_stalled"])
+
+    def test_carrier_stall_activates_at_interval(self):
+        """carrier_stalled becomes True when the interval expires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_carrier_stall_interval_ms=5000,
+                escort_carrier_stall_duration_ms=2000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Manually arm the timer to fire immediately.
+        escort["carrier_stall_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertTrue(escort["carrier_stalled"])
+        self.assertEqual(escort["carrier_stalling_until"], 4000)  # 2000 + 2000
+
+    def test_carrier_stall_clears_after_duration(self):
+        """carrier_stalled goes back to False once the stall window expires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_carrier_stall_interval_ms=5000,
+                escort_carrier_stall_duration_ms=2000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Put the carrier mid-stall, expiring at t=3000.
+        escort["carrier_stall_next_at"] = 99999
+        escort["carrier_stalling_until"] = 3000
+        room.update_objective(2500, [])  # during stall
+        self.assertTrue(escort["carrier_stalled"])
+        room.update_objective(3001, [])  # after stall
+        self.assertFalse(escort["carrier_stalled"])
+
+    def test_carrier_stall_hud_shows_stall_remaining(self):
+        """HUD label says 'Carrier stalled X.Xs' during a stall window."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+                escort_carrier_stall_interval_ms=5000,
+                escort_carrier_stall_duration_ms=2000,
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Manually set a stall ending 2 s from now (at t=3000).
+        escort["carrier_stalling_until"] = 3000
+        label = room.objective_hud_state(1000)["label"]
+        self.assertIn("Carrier stalled", label)
+        self.assertIn("2.0s", label)
+
+    def test_carrier_stall_absent_when_zero_interval(self):
+        """No stall fires when escort_carrier_stall_interval_ms=0 (default)."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_bomb_carrier",
+                objective_rule="escort_bomb_to_exit",
+                enemy_count_range=(1, 1),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["carrier_stall_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertFalse(escort.get("carrier_stalled"))
+
+    # ── end B4 ────────────────────────────────────────────────────────────────
+
     # ── end E2 ────────────────────────────────────────────────────────────────
+
+    # ── E3: escort harasser archetype overrides ─────────────────────────
+
+    def test_get_escort_rect_returns_none_for_non_escort_room(self):
+        """get_escort_rect() returns None when no escort objective config exists."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=False,
+            room_plan=None,
+        )
+        self.assertIsNone(room.get_escort_rect())
+
+    def test_get_escort_rect_returns_rect_at_escort_pos(self):
+        """get_escort_rect() returns a Rect centred on the escort's config pos."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["pos"] = (200, 300)
+        r = room.get_escort_rect()
+        self.assertIsNotNone(r)
+        self.assertEqual(r.center, (200, 300))
+
+    def test_get_escort_rect_returns_none_when_escort_destroyed(self):
+        """get_escort_rect() returns None once the escort is destroyed."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+            ),
+        )
+        room.on_enter(1000)
+        room.objective_entity_configs[0]["destroyed"] = True
+        self.assertIsNone(room.get_escort_rect())
+
+    def test_get_escort_rect_returns_none_when_escort_reached_exit(self):
+        """get_escort_rect() returns None once the escort has reached the exit."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+            ),
+        )
+        room.on_enter(1000)
+        room.objective_entity_configs[0]["reached_exit"] = True
+        self.assertIsNone(room.get_escort_rect())
+
+    # ── end E3 ────────────────────────────────────────────────────────────────
+
+    # ── E4: biome-specific escort variants ─────────────────────────────────
+
+    def test_escort_stagger_initialises_on_first_tick(self):
+        """_tick_escort_stagger arms the next stagger after one interval."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_stagger_interval_ms=9000,
+                escort_stagger_duration_ms=2000,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        self.assertEqual(escort["escort_stagger_next_at"], 0)
+        room.update_objective(1000, [])
+        self.assertEqual(escort["escort_stagger_next_at"], 10000)  # 1000 + 9000
+        self.assertFalse(escort["escort_staggered"])
+
+    def test_escort_stagger_activates_at_interval(self):
+        """escort_staggered becomes True when the interval expires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_stagger_interval_ms=9000,
+                escort_stagger_duration_ms=2000,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["escort_stagger_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertTrue(escort["escort_staggered"])
+        self.assertEqual(escort["escort_staggering_until"], 4000)  # 2000 + 2000
+
+    def test_escort_stagger_clears_after_duration(self):
+        """escort_staggered returns to False once the stagger window expires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_stagger_interval_ms=9000,
+                escort_stagger_duration_ms=2000,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["escort_stagger_next_at"] = 99999
+        escort["escort_staggering_until"] = 3000
+        room.update_objective(2500, [])
+        self.assertTrue(escort["escort_staggered"])
+        room.update_objective(3001, [])
+        self.assertFalse(escort["escort_staggered"])
+
+    def test_escort_stagger_skipped_when_player_close(self):
+        """Stagger is skipped when the player is within guide_radius at fire time."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_stagger_interval_ms=9000,
+                escort_stagger_duration_ms=2000,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        # Place escort and player at the same spot — player is close.
+        escort["pos"] = (300, 300)
+        escort["_last_player_center"] = (310, 300)   # within default guide_radius
+        escort["guide_radius"] = 96
+        escort["escort_stagger_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertFalse(escort["escort_staggered"])
+        # Next stagger is rescheduled for interval from now.
+        self.assertEqual(escort["escort_stagger_next_at"], 11000)  # 2000 + 9000
+
+    def test_escort_stagger_resolves_early_when_player_close(self):
+        """A mid-stagger resolves early once the player moves within guide_radius."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_stagger_interval_ms=9000,
+                escort_stagger_duration_ms=2000,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        escort["pos"] = (300, 300)
+        escort["guide_radius"] = 96
+        # Start mid-stagger with player far away.
+        escort["escort_stagger_next_at"] = 99999
+        escort["escort_staggering_until"] = 5000
+        escort["_last_player_center"] = (600, 600)   # far
+        room.update_objective(2000, [])
+        self.assertTrue(escort["escort_staggered"])
+        # Now player moves close.
+        escort["_last_player_center"] = (310, 300)   # within guide_radius
+        room.update_objective(2100, [])
+        self.assertFalse(escort["escort_staggered"])
+
+    def test_escort_hazard_deals_chip_damage(self):
+        """escort_hazard_damage is applied when the interval fires."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_hazard_interval_ms=7000,
+                escort_hazard_damage=3,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        start_hp = escort["current_hp"]
+        # Place player far from escort so the tick deals damage.
+        escort["pos"] = (300, 300)
+        escort["_last_player_center"] = (600, 600)
+        escort["guide_radius"] = 96
+        escort["escort_hazard_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertEqual(escort["current_hp"], start_hp - 3)
+
+    def test_escort_hazard_skipped_when_player_close(self):
+        """Hazard tick deals no damage when the player is within guide_radius."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                escort_hazard_interval_ms=7000,
+                escort_hazard_damage=3,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        start_hp = escort["current_hp"]
+        # Player close to escort.
+        escort["pos"] = (300, 300)
+        escort["_last_player_center"] = (310, 300)
+        escort["guide_radius"] = 96
+        escort["escort_hazard_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertEqual(escort["current_hp"], start_hp)
+
+    def test_escort_hazard_absent_when_zero_interval(self):
+        """No hazard damage fires when escort_hazard_interval_ms=0 (default)."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "escort_protection",
+                objective_rule="escort_to_exit",
+                enemy_count_range=(1, 1),
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        escort = room.objective_entity_configs[0]
+        start_hp = escort["current_hp"]
+        escort["pos"] = (300, 300)
+        escort["_last_player_center"] = (600, 600)
+        escort["escort_hazard_next_at"] = 2000
+        room.update_objective(2000, [])
+        self.assertEqual(escort["current_hp"], start_hp)
+
+    # ── end E4 ────────────────────────────────────────────────────────────────
+
+    # ── R6: ritual tether drain ───────────────────────────────────────────────
+
+    def test_ritual_tether_drain_regen_fires_when_anchor_alive(self):
+        """Non-anchor altars recover HP on the regen tick while anchor lives."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(0, 0),
+                ritual_link_mode="tether_drain",
+                ritual_role_script=("ward", "pulse", "pulse"),
+                ritual_tether_regen_ms=3000,
+                ritual_tether_regen_hp=2,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        # First update initialises deferred tether timers.
+        room.update_objective(1000, [])
+        # Manually damage a pulse altar so regen has room to work.
+        pulse_config = next(
+            c for c in room.objective_entity_configs
+            if c.get("kind") == "altar" and c.get("role") == "pulse"
+        )
+        max_hp = pulse_config["max_hp"]
+        pulse_config["current_hp"] = max_hp - 4
+        # Advance to just past the regen tick (1000 + 3000 = 4000).
+        room.update_objective(4001, [])
+        self.assertEqual(pulse_config["current_hp"], max_hp - 4 + 2)
+
+    def test_ritual_tether_drain_regen_stops_after_anchor_dies(self):
+        """Once the anchor (ward) is destroyed the regen does not fire."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(0, 0),
+                ritual_link_mode="tether_drain",
+                ritual_role_script=("ward", "pulse", "pulse"),
+                ritual_tether_regen_ms=3000,
+                ritual_tether_regen_hp=2,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        room.update_objective(1000, [])
+        # Damage the pulse altar and kill the ward anchor.
+        pulse_config = next(
+            c for c in room.objective_entity_configs
+            if c.get("kind") == "altar" and c.get("role") == "pulse"
+        )
+        max_hp = pulse_config["max_hp"]
+        pulse_config["current_hp"] = max_hp - 4
+        for c in room.objective_entity_configs:
+            if c.get("kind") == "altar" and c.get("role") == "ward":
+                c["destroyed"] = True
+        # Advance past the regen window — no recovery expected.
+        room.update_objective(4001, [])
+        self.assertEqual(pulse_config["current_hp"], max_hp - 4)
+
+    def test_ritual_tether_drain_hud_shows_tether_suffix(self):
+        """HUD suffix includes tether hint while anchor is alive, drops after."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(0, 0),
+                ritual_link_mode="tether_drain",
+                ritual_role_script=("ward", "pulse", "pulse"),
+                ritual_tether_regen_ms=5000,
+                ritual_tether_regen_hp=2,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        room.update_objective(1000, [])
+        label_with = room.objective_hud_state(1000)["label"]
+        self.assertIn("Tether active", label_with)
+        self.assertIn("ward", label_with)
+        # Kill the ward anchor — tether suffix should disappear.
+        for c in room.objective_entity_configs:
+            if c.get("kind") == "altar" and c.get("role") == "ward":
+                c["destroyed"] = True
+        label_without = room.objective_hud_state(1001)["label"]
+        self.assertNotIn("Tether active", label_without)
+
+    def test_ritual_tether_drain_playtest_detail_names_anchor(self):
+        """Playtest detail identifies the anchor role in the solve hint."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "ritual_disruption",
+                objective_rule="destroy_altars",
+                enemy_count_range=(0, 0),
+                ritual_link_mode="tether_drain",
+                ritual_role_script=("ward", "pulse", "pulse"),
+                ritual_tether_regen_ms=5000,
+                ritual_tether_regen_hp=2,
+                terrain_patch_count_range=(0, 0),
+            ),
+        )
+        room.on_enter(1000)
+        detail = room.playtest_identifier_state(1000)["detail"]
+        self.assertIn("tether anchor", detail)
+        self.assertIn("ward", detail)
+        self.assertIn("regenerates", detail)
+
+    # ── end R6 ────────────────────────────────────────────────────────────────
 
     def test_puzzle_room_uses_metadata_layout_and_label(self):
         offsets = ((-2, -1), (2, 1))
@@ -2518,7 +3191,7 @@ class RoomObjectiveTests(unittest.TestCase):
 
         self.assertIsNone(room.update_objective(2600, [object()]))
         self.assertIn("Objective: Escape with the relic", room.objective_hud_state(2600)["label"])
-        self.assertIn("Rival reclaim", room.objective_hud_state(2600)["label"])
+        self.assertIn("Rival:", room.objective_hud_state(2600)["label"])
 
         update = room.update_objective(4600, [object()])
 
@@ -2616,6 +3289,52 @@ class RoomObjectiveTests(unittest.TestCase):
         self.assertEqual(room.minimap_objective_marker(), ("relic", "Heartstone"))
         self.assertEqual(room.objective_hud_state(1000)["label"], "Objective: Secure the heartstone 5.0s")
 
+    # ── C4: biome-specific contested artifact labels + reclaim overrides ───────
+
+    def test_resource_race_rival_label_shown_in_hud_reclaim_suffix(self):
+        """Custom rival label (e.g. 'Icebound') replaces 'Rival' in the HUD reclaim suffix."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "resource_race",
+                objective_rule="claim_relic_before_lockdown",
+                duration=6000,
+                guaranteed_chest=True,
+                enemy_count_range=(1, 1),
+                objective_variant="glacier_core",
+                resource_race_rival_label="Icebound",
+            ),
+        )
+        room.on_enter(1000)
+        room.notify_chest_opened(2000)
+        # Force a reclaim in progress.
+        room._resource_race_reclaim_started_at = 2500
+        hud = room.objective_hud_state(2500)["label"]
+        self.assertIn("Icebound:", hud)
+        self.assertNotIn("Rival:", hud)
+
+    def test_resource_race_reclaim_window_override_respected(self):
+        """resource_race_reclaim_window_ms overrides the computed window duration."""
+        room = Room(
+            {"top": True, "bottom": False, "left": False, "right": False},
+            is_exit=True,
+            room_plan=_plan(
+                "resource_race",
+                objective_rule="claim_relic_before_lockdown",
+                duration=6600,
+                guaranteed_chest=True,
+                enemy_count_range=(1, 1),
+                objective_variant="tide_pearl",
+                resource_race_reclaim_window_ms=2000,
+            ),
+        )
+        room.on_enter(1000)
+        # Plan override should take precedence over duration-derived value.
+        self.assertEqual(room._resource_race_reclaim_window_ms(), 2000)
+
+    # ── end C4 ────────────────────────────────────────────────────────────────
+
     def test_stealth_passage_locks_exit_and_spawns_reinforcements_after_alarm(self):
         room = Room(
             {"top": True, "bottom": False, "left": False, "right": False},
@@ -2662,6 +3381,7 @@ class RoomObjectiveTests(unittest.TestCase):
                 objective_layout_offsets=offsets,
                 objective_patrol_offset=patrol_offset,
                 objective_radius=48,
+                terrain_patch_count_range=(0, 0),
             ),
         )
 

@@ -323,6 +323,7 @@ _PUZZLE_PENALTY_HUD_MS = 1600
 _PUZZLE_PENALTY_FLASH_MS = 700
 _PUZZLE_STALL_DURATION_MS = 2500
 _PUZZLE_SKIP_HUD_MS = 1800
+_RESOURCE_RACE_SPLIT_CACHE_BONUS = 5  # coin bonus at level-complete when split cache opened
 _DEFAULT_PUZZLE_STABILIZER_HP = 12
 _DEFAULT_PUZZLE_STABILIZER_OFFSET = (0, -1)
 _DEFAULT_PUZZLE_CAMP_PULSE_RADIUS = 32
@@ -385,6 +386,8 @@ class Room:
         self._resource_race_wave_index = 0
         self._resource_race_claimed_once = False
         self._resource_race_reclaim_started_at = None
+        self._resource_race_split_cache_pos: tuple | None = None
+        self._resource_race_split_cache_looted: bool = False
         self._stealth_search_started_at = None
         self._stealth_alarm_started_at = None
         self._stealth_lockdown_started = False
@@ -393,6 +396,7 @@ class Room:
         self._timed_extraction_wave_index = 0
         self._timed_extraction_route_sealed = False
         self._timed_extraction_bonus_awarded = False
+        self._collapse_revert_cells: list[tuple[int, int]] = []
         self._heartstone_config = None  # Set when chest opened in Heartstone Claim rooms.
         self._heartstone_spawn_pending = False
         self._heartstone_delivered = False
@@ -1770,8 +1774,16 @@ class Room:
                 self.objective_started_at = now_ticks
             self._set_portal_active(True)
 
-    def notify_chest_opened(self, now_ticks):
+    def notify_chest_opened(self, now_ticks, is_split_cache=False):
         if self.room_plan is None:
+            return
+        if is_split_cache:
+            # Track the mini-chest as looted without touching core objective
+            # state.  Update the config dict so re-entry reflects looted state.
+            self._resource_race_split_cache_looted = True
+            for cfg in self.objective_entity_configs:
+                if cfg.get("kind") == "split_cache":
+                    cfg["looted"] = True
             return
         self.chest_looted = True
         if self.room_plan.objective_rule == "loot_then_timer":
@@ -1970,6 +1982,7 @@ class Room:
                 puzzle_update = self._maybe_trigger_puzzle_reaction(now_ticks)
                 if puzzle_update is not None:
                     return puzzle_update
+                self._tick_puzzle_decay(now_ticks)
             return None
 
         if rule in {"escort_to_exit", "escort_bomb_to_exit"}:
@@ -2008,6 +2021,23 @@ class Room:
             else:
                 self.objective_status = "active"
                 self._set_portal_active(False)
+                # B4: advance the periodic stall timer (sets carrier_stalled flag).
+                self._tick_carrier_stall(escort, now_ticks)
+                # E4: biome escort mechanics.
+                self._tick_escort_stagger(escort, now_ticks)
+                self._tick_escort_hazard(escort, now_ticks)
+                # B3: vault spawn on final blast completion (one-tick-deferred from _tick_blast_detonation).
+                if escort.get("blast_vault_ready"):
+                    escort["blast_vault_ready"] = False
+                    vault_pos = self._random_floor_pos(margin=3)
+                    return {
+                        "kind": "spawn_blast_vault",
+                        "position": vault_pos,
+                        "reward_tier": "gold",
+                    }
+                blast_update = self._tick_blast_detonation(escort, now_ticks)
+                if blast_update is not None:
+                    return blast_update
                 wave_update = self._maybe_spawn_escort_wave(escort)
                 if wave_update is not None:
                     return wave_update
@@ -2161,6 +2191,7 @@ class Room:
             # ward immediately drops shielding on remaining altars even if no
             # new ritual reaction triggers this tick.
             self._refresh_ritual_links()
+            self._tick_ritual_tether_drain(now_ticks)
             wrong_strike_update = self._consume_ritual_wrong_strikes(now_ticks)
             remaining_altars = self.remaining_objective_entities()
             if remaining_altars == 0:
@@ -2191,8 +2222,12 @@ class Room:
             duration = self.room_plan.objective_duration_ms or 0
             if duration and elapsed_ms > duration:
                 self._timed_extraction_route_sealed = False
+                self._revert_collapse_terrain()
                 self.objective_status = "overtime"
                 if not self._reinforcement_spawned:
+                    effect = self.room_plan.collapse_terrain_effect if self.room_plan else ""
+                    if effect == "current_surge":
+                        self._apply_current_surge()
                     reinforcements = self._spawn_reinforcement_wave()
                     self._reinforcement_spawned = True
                     self.enemy_configs.extend(reinforcements)
@@ -2210,6 +2245,7 @@ class Room:
                     return None
                 else:
                     self._timed_extraction_route_sealed = False
+                    self._revert_collapse_terrain()
                     self.objective_status = "escape"
                     self._set_portal_active(True)
                     return None
@@ -2463,11 +2499,43 @@ class Room:
             if escort.get("reached_exit") or self.objective_status == "completed":
                 return {"visible": False, "label": ""}
             hp_label = f"HP {escort['current_hp']}/{escort['max_hp']}"
+            # B1/B2: detonation warning takes priority over routing copy.
+            if rule == "escort_bomb_to_exit" and escort.get("detonating"):
+                _det_ms = escort.get("detonation_until_ms", 0) - now_ticks
+                _det_s = max(0, _det_ms) / 1000
+                return {"visible": True, "label": f"Objective: BLAST INCOMING — clear the zone! {_det_s:.1f}s {hp_label}"}
+            # B4: carrier stall — show stall remaining.
+            if rule == "escort_bomb_to_exit" and escort.get("carrier_stalling_until", 0) > now_ticks:
+                _stall_ms = escort["carrier_stalling_until"] - now_ticks
+                _stall_s = _stall_ms / 1000
+                return {"visible": True, "label": f"Objective: Carrier stalled {_stall_s:.1f}s {hp_label}"}
+            # E4: escort stagger (frozen biome) — show stagger remaining.
+            if rule == "escort_to_exit" and escort.get("escort_staggered"):
+                _stagger_ms = escort.get("escort_staggering_until", 0) - now_ticks
+                _stagger_s = max(0, _stagger_ms) / 1000
+                return {"visible": True, "label": f"Objective: {escort_label} staggered {_stagger_s:.1f}s — stay close! {hp_label}"}
+            # Route suffix: blast points → checkpoints → exit.
+            _bp_list = escort.get("blast_point_positions") or []
+            _bp_idx = escort.get("blast_point_index", 0)
+            _cp_list = escort.get("checkpoint_positions") or []
+            _cp_idx = escort.get("checkpoint_index", 0)
+            if _bp_list and _bp_idx < len(_bp_list):
+                _route_suffix = f" | → Blast Point {_bp_idx + 1}/{len(_bp_list)}"
+            elif _bp_list and _cp_list and _cp_idx < len(_cp_list):
+                _route_suffix = f" | → Checkpoint {_cp_idx + 1}/{len(_cp_list)}"
+            elif _bp_list:
+                _route_suffix = " | → Exit (vault opened)"
+            elif _cp_list and _cp_idx < len(_cp_list):
+                _route_suffix = f" | → Checkpoint {_cp_idx + 1}/{len(_cp_list)}"
+            elif _cp_list:
+                _route_suffix = " | → Exit"
+            else:
+                _route_suffix = ""
             if rule == "escort_bomb_to_exit" and escort.get("waiting_for_clearance"):
                 return {"visible": True, "label": f"Objective: Clear a safe lane {hp_label}"}
             if rule == "escort_bomb_to_exit":
-                return {"visible": True, "label": f"Objective: Guide {escort_label} {hp_label}"}
-            return {"visible": True, "label": f"Objective: Protect {escort_label} {hp_label}"}
+                return {"visible": True, "label": f"Objective: Guide {escort_label} {hp_label}{_route_suffix}"}
+            return {"visible": True, "label": f"Objective: Protect {escort_label} {hp_label}{_route_suffix}"}
 
         if rule == "avoid_alarm_zones" and self.is_exit:
             if self.objective_status == "search":
@@ -2512,9 +2580,11 @@ class Room:
             if self._resource_race_failed:
                 return {"visible": True, "label": "Objective: Relic lost, clear the room"}
             reclaim_suffix = ""
-            reclaim_remaining_ms = self._resource_race_reclaim_remaining_ms(now_ticks)
-            if reclaim_remaining_ms is not None:
-                reclaim_suffix = f" | Rival reclaim {reclaim_remaining_ms / 1000:.1f}s"
+            reclaim_progress = self._resource_race_claim_progress(now_ticks)
+            if reclaim_progress is not None:
+                reclaim_pct = int(reclaim_progress * 100)
+                rival_label = (self.room_plan.resource_race_rival_label if self.room_plan else "") or "Rival"
+                reclaim_suffix = f" | {rival_label}: {reclaim_pct}%"
             return {"visible": True, "label": f"Objective: Escape with the {relic_label}{reclaim_suffix}"}
 
         if rule == "clear_enemies" and self.is_exit and self.objective_status != "completed":
@@ -2564,9 +2634,19 @@ class Room:
             last_wrong = self._ritual_last_wrong_strike_at
             if last_wrong is not None and now_ticks - last_wrong <= _RITUAL_WRONG_STRIKE_HUD_MS:
                 wrong_strike_suffix = " | Wrong target"
+            tether_suffix = ""
+            if (self.room_plan.ritual_link_mode or "") == "tether_drain":
+                _priority = self._ritual_role_chain_priority()
+                _anchor_role = _priority[0] if _priority else None
+                if _anchor_role and any(
+                    not c.get("destroyed") and c.get("role") == _anchor_role
+                    for c in self.objective_entity_configs
+                    if c.get("kind") == "altar"
+                ):
+                    tether_suffix = f" | Tether active \u2014 break {_anchor_role} first"
             return {
                 "visible": True,
-                "label": f"Objective: Destroy {self.remaining_objective_entities()} {label}{pulse_suffix}{window_suffix}{summon_suffix}{shield_suffix}{wrong_strike_suffix}",
+                "label": f"Objective: Destroy {self.remaining_objective_entities()} {label}{pulse_suffix}{window_suffix}{summon_suffix}{shield_suffix}{wrong_strike_suffix}{tether_suffix}",
             }
 
         if rule == "loot_then_timer" and self.is_exit:
@@ -2639,12 +2719,16 @@ class Room:
             camp_suffix = ""
             if self._puzzle_has_camp_pulses():
                 camp_suffix = " Solved plates pulse damage if you linger on them."
+            decay_suffix = ""
+            controller = self._puzzle_controller() or {}
+            if int(controller.get("decay_interval_ms", 0) or 0) > 0:
+                decay_suffix = " Solved progress decays if you slow down."
             if self._puzzle_variant() == "paired_runes":
-                return f"Solve: Match two {label} with the same symbol. Changing symbols or waiting too long summons reinforcements.{shortcut_suffix}{camp_suffix}"
+                return f"Solve: Match two {label} with the same symbol. Changing symbols or waiting too long summons reinforcements.{shortcut_suffix}{camp_suffix}{decay_suffix}"
             if self._puzzle_variant() == "staggered_plates":
                 sequence = ", ".join(self._puzzle_sequence_labels())
-                return f"Solve: Follow the staggered {label} order {sequence}. Wrong steps or stalling summon reinforcements.{shortcut_suffix}{camp_suffix}"
-            return f"Solve: Activate the numbered {label} in order to unlock the exit. Wrong steps or stalling summon reinforcements.{shortcut_suffix}{camp_suffix}"
+                return f"Solve: Follow the staggered {label} order {sequence}. Wrong steps or stalling summon reinforcements.{shortcut_suffix}{camp_suffix}{decay_suffix}"
+            return f"Solve: Activate the numbered {label} in order to unlock the exit. Wrong steps or stalling summon reinforcements.{shortcut_suffix}{camp_suffix}{decay_suffix}"
 
         if rule == "escort_to_exit":
             escort = self._escort_config() or {}
@@ -2658,8 +2742,15 @@ class Room:
             escort_label = escort.get("label", "Carrier")
             if escort.get("destroyed") and self.objective_status != "completed":
                 return f"Solve: {escort_label} is down. Clear the room to finish."
+            if escort.get("detonating"):
+                return f"Solve: Stay back — {escort_label} is detonating a blast point. Clear the zone."
             if escort.get("waiting_for_clearance"):
                 return f"Solve: Clear a safe lane so {escort_label} can advance."
+            blast_positions = escort.get("blast_point_positions") or []
+            bp_idx = escort.get("blast_point_index", 0)
+            if blast_positions and bp_idx < len(blast_positions):
+                remaining = len(blast_positions) - bp_idx
+                return f"Solve: Guide {escort_label} to the next blast point ({remaining} remaining), then clear back before detonation."
             return f"Solve: Guide {escort_label} to the exit and keep them alive."
 
         if rule == "avoid_alarm_zones":
@@ -2695,6 +2786,11 @@ class Room:
             if self._ritual_payoff_available():
                 return f"Solve: Claim the revealed {self._ritual_payoff_label().lower()}."
             label = pluralize_label(self._altar_label()).lower()
+            if (self.room_plan.ritual_link_mode or "") == "tether_drain":
+                _priority = self._ritual_role_chain_priority()
+                _anchor_role = _priority[0] if _priority else None
+                if _anchor_role:
+                    return f"Solve: Break the tether anchor ({_anchor_role}) first \u2014 it regenerates all other {label} while it stands."
             shielded_count = sum(
                 1
                 for config in self.objective_entity_configs
@@ -2764,6 +2860,9 @@ class Room:
 
     def _resource_race_reclaim_window_ms(self):
         duration = self.room_plan.objective_duration_ms if self.room_plan else None
+        plan_override = (self.room_plan.resource_race_reclaim_window_ms if self.room_plan else 0) or 0
+        if plan_override > 0:
+            return plan_override
         if not duration:
             return 1500
         return max(1200, duration // 3)
@@ -2772,6 +2871,16 @@ class Room:
         if self._resource_race_reclaim_started_at is None:
             return None
         return max(0, self._resource_race_reclaim_window_ms() - (now_ticks - self._resource_race_reclaim_started_at))
+
+    def _resource_race_claim_progress(self, now_ticks):
+        """Return rival reclaim progress 0.0–1.0, or None if no reclaim is active."""
+        if self._resource_race_reclaim_started_at is None:
+            return None
+        window = self._resource_race_reclaim_window_ms()
+        if window <= 0:
+            return 1.0
+        elapsed = now_ticks - self._resource_race_reclaim_started_at
+        return min(1.0, max(0.0, elapsed / window))
 
     def _maybe_spawn_resource_race_wave(self, now_ticks):
         thresholds = self._resource_race_wave_thresholds()
@@ -2860,6 +2969,180 @@ class Room:
 
         return None
 
+    def _tick_blast_detonation(self, escort, now_ticks):
+        """Advance the blast-point detonation timer for a bomb carrier.
+
+        Called each frame from update_objective when the carrier is active.
+        Returns a ``blast_damage`` update dict when a detonation fires and
+        the player was inside the blast radius, otherwise ``None``.
+        The player's last-known position is stored in the escort config by
+        EscortNPC.update_behavior each frame.
+        """
+        if not escort.get("detonating"):
+            return None
+
+        # Arm the timer on the first tick after the carrier reaches the point.
+        if not escort["detonation_until_ms"]:
+            escort["detonation_until_ms"] = now_ticks + (escort.get("blast_duration_ms") or 1500)
+            return None
+
+        if now_ticks < escort["detonation_until_ms"]:
+            return None
+
+        # Detonation fires — advance the blast point index and clear the flag.
+        bp_index = escort.get("blast_point_index", 0)
+        blast_positions = escort.get("blast_point_positions") or []
+        blast_pos = blast_positions[bp_index] if bp_index < len(blast_positions) else None
+
+        new_bp_index = bp_index + 1
+        escort["blast_point_index"] = new_bp_index
+        escort["detonating"] = False
+        escort["detonation_until_ms"] = 0
+
+        # B3: flag vault spawn when the final blast point clears.
+        if new_bp_index >= len(blast_positions):
+            escort["blast_vault_ready"] = True
+
+        # B2: deal damage if the player was inside the blast radius.
+        if blast_pos is not None:
+            player_pos = escort.get("_last_player_center")
+            if player_pos is not None:
+                blast_radius = escort.get("blast_radius") or 72
+                dx = player_pos[0] - blast_pos[0]
+                dy = player_pos[1] - blast_pos[1]
+                if dx * dx + dy * dy <= blast_radius * blast_radius:
+                    return {
+                        "kind": "blast_damage",
+                        "damage": escort.get("blast_damage") or 8,
+                    }
+        return None
+
+    def _tick_carrier_stall(self, escort, now_ticks):
+        """Manage the periodic carrier stall timer for B4 biome specialization.
+
+        Sets ``escort["carrier_stalled"]`` True during the stall window, False
+        otherwise.  Called each frame from update_objective; update_behavior
+        reads the flag to freeze movement.
+        """
+        interval_ms = escort.get("carrier_stall_interval_ms", 0)
+        duration_ms = escort.get("carrier_stall_duration_ms", 0)
+        if not interval_ms or not duration_ms:
+            escort["carrier_stalled"] = False
+            return
+
+        # Deferred init: arm the first stall after one full interval.
+        if not escort.get("carrier_stall_next_at"):
+            escort["carrier_stall_next_at"] = now_ticks + interval_ms
+            escort["carrier_stalling_until"] = 0
+            escort["carrier_stalled"] = False
+            return
+
+        stalling_until = escort.get("carrier_stalling_until", 0)
+        stall_next_at = escort["carrier_stall_next_at"]
+
+        if now_ticks < stalling_until:
+            # Mid-stall.
+            escort["carrier_stalled"] = True
+        elif now_ticks >= stall_next_at:
+            # Trigger a new stall.
+            escort["carrier_stalling_until"] = now_ticks + duration_ms
+            escort["carrier_stall_next_at"] = now_ticks + duration_ms + interval_ms
+            escort["carrier_stalled"] = True
+        else:
+            escort["carrier_stalled"] = False
+
+    def _tick_escort_stagger(self, escort, now_ticks):
+        """E4: frozen-biome periodic stagger for escort_to_exit rooms.
+
+        Sets ``escort["escort_staggered"]`` True during the stagger window.
+        If the player is within guide_radius when the stagger fires it is
+        skipped.  If the player moves close while already staggered the
+        stagger resolves early.
+        """
+        interval_ms = escort.get("escort_stagger_interval_ms", 0)
+        duration_ms = escort.get("escort_stagger_duration_ms", 0)
+        if not interval_ms or not duration_ms:
+            escort["escort_staggered"] = False
+            return
+
+        # Deferred init: arm the first stagger after one full interval.
+        if not escort.get("escort_stagger_next_at"):
+            escort["escort_stagger_next_at"] = now_ticks + interval_ms
+            escort["escort_staggering_until"] = 0
+            escort["escort_staggered"] = False
+            return
+
+        # Player-proximity check using the position written by update_behavior.
+        player_center = escort.get("_last_player_center")
+        pos = escort.get("pos")
+        guide_radius = escort.get("guide_radius", 96)
+        player_close = False
+        if player_center and pos:
+            dx = player_center[0] - pos[0]
+            dy = player_center[1] - pos[1]
+            player_close = dx * dx + dy * dy <= guide_radius * guide_radius
+
+        staggering_until = escort.get("escort_staggering_until", 0)
+        stagger_next_at = escort["escort_stagger_next_at"]
+
+        if now_ticks < staggering_until:
+            # Mid-stagger: resolve early when player is close.
+            if player_close:
+                escort["escort_staggering_until"] = 0
+                escort["escort_staggered"] = False
+            else:
+                escort["escort_staggered"] = True
+        elif now_ticks >= stagger_next_at:
+            if player_close:
+                # Player nearby — skip this stagger entirely.
+                escort["escort_stagger_next_at"] = now_ticks + interval_ms
+                escort["escort_staggered"] = False
+            else:
+                escort["escort_staggering_until"] = now_ticks + duration_ms
+                escort["escort_stagger_next_at"] = now_ticks + duration_ms + interval_ms
+                escort["escort_staggered"] = True
+        else:
+            escort["escort_staggered"] = False
+
+    def _tick_escort_hazard(self, escort, now_ticks):
+        """E4: water-biome periodic chip damage for escort_to_exit rooms.
+
+        Every ``escort_hazard_interval_ms`` the escort takes
+        ``escort_hazard_damage`` points of damage.  The tick is skipped if
+        the player is within guide_radius (they are shielding the escort).
+        """
+        interval_ms = escort.get("escort_hazard_interval_ms", 0)
+        damage = escort.get("escort_hazard_damage", 0)
+        if not interval_ms or not damage:
+            return
+
+        # Deferred init.
+        if not escort.get("escort_hazard_next_at"):
+            escort["escort_hazard_next_at"] = now_ticks + interval_ms
+            return
+
+        if now_ticks < escort["escort_hazard_next_at"]:
+            return
+
+        # Arm next tick before proximity check so the interval is consistent.
+        escort["escort_hazard_next_at"] = now_ticks + interval_ms
+
+        # Skip damage if player is close.
+        player_center = escort.get("_last_player_center")
+        pos = escort.get("pos")
+        guide_radius = escort.get("guide_radius", 96)
+        if player_center and pos:
+            dx = player_center[0] - pos[0]
+            dy = player_center[1] - pos[1]
+            if dx * dx + dy * dy <= guide_radius * guide_radius:
+                return
+
+        previous_hp = escort.get("current_hp", 0)
+        new_hp = max(0, previous_hp - damage)
+        escort["current_hp"] = new_hp
+        if new_hp <= 0:
+            escort["destroyed"] = True
+
     def _maybe_spawn_holdout_wave(self, elapsed_ms):
         thresholds = self._holdout_wave_thresholds()
         if self._holdout_wave_index >= len(thresholds):
@@ -2930,11 +3213,53 @@ class Room:
         self.enemy_configs.extend(enemy_configs)
         self._timed_extraction_wave_index += 1
         self._timed_extraction_route_sealed = True
+        effect = self.room_plan.collapse_terrain_effect if self.room_plan else ""
+        if effect == "quicksand_vents":
+            self._apply_quicksand_vents()
+        elif effect == "slide_activation":
+            self._apply_slide_activation()
         return {
             "kind": "spawn_enemies",
             "source": "timed_extraction",
             "enemy_configs": enemy_configs,
         }
+
+    def _apply_quicksand_vents(self):
+        """Convert 2–3 FLOOR cells near the portal edge to QUICKSAND when a wave seals the route."""
+        candidates = [
+            (r, c)
+            for r in range(ROOM_ROWS - 4, ROOM_ROWS - 1)
+            for c in range(1, ROOM_COLS - 1)
+            if self.grid[r][c] == FLOOR
+        ]
+        chosen = random.sample(candidates, min(3, len(candidates)))
+        for r, c in chosen:
+            self.grid[r][c] = QUICKSAND
+
+    def _apply_slide_activation(self):
+        """Convert a mid-room FLOOR strip to SLIDE tiles when the route seals; reverses on clear."""
+        mid_row = ROOM_ROWS // 2 + 1
+        for c in range(1, ROOM_COLS - 1):
+            if self.grid[mid_row][c] == FLOOR:
+                self.grid[mid_row][c] = SLIDE
+                self._collapse_revert_cells.append((mid_row, c))
+
+    def _apply_current_surge(self):
+        """Activate CURRENT vectors across a mid-room band at overtime onset."""
+        band_row = ROOM_ROWS // 2
+        for c in range(1, ROOM_COLS - 1):
+            tile = self.grid[band_row][c]
+            if tile not in {WALL, DOOR, PORTAL}:
+                self.grid[band_row][c] = CURRENT
+                self.current_vectors[(c, band_row)] = (1.0, 0.0)
+
+    def _revert_collapse_terrain(self):
+        """Restore SLIDE (and any other revert-tracked) tiles to FLOOR."""
+        for r, c in self._collapse_revert_cells:
+            if self.grid[r][c] not in {WALL, DOOR, PORTAL}:
+                self.grid[r][c] = FLOOR
+                self.current_vectors.pop((c, r), None)
+        self._collapse_revert_cells.clear()
 
     def escort_allows_advance(self, enemy_group):
         if self.room_plan is None:
@@ -2945,6 +3270,25 @@ class Room:
         if escort is None or escort.get("destroyed") or escort.get("reached_exit"):
             return False
         return len(enemy_group) == 0
+
+    def get_escort_rect(self):
+        """Return a pygame.Rect centred on the escort NPC's current position, or None.
+
+        Used by the enemy AI to redirect harasser enemies toward the escort
+        instead of the player.  Returns None when there is no active escort
+        or the escort has been destroyed / has reached the exit.
+        """
+        escort = self._escort_config()
+        if escort is None:
+            return None
+        if escort.get("destroyed") or escort.get("reached_exit"):
+            return None
+        pos = escort.get("pos")
+        if pos is None:
+            return None
+        r = pygame.Rect(0, 0, 24, 24)
+        r.center = (int(pos[0]), int(pos[1]))
+        return r
 
     def portal_center_pixel(self):
         return self._portal_center_pixel()
@@ -3040,6 +3384,20 @@ class Room:
             return 0
         self._timed_extraction_bonus_awarded = True
         return _TIMED_EXTRACTION_CLEAN_BONUS_COINS.get(self.room_plan.reward_tier, 0)
+
+    def claim_resource_race_split_cache_bonus(self):
+        """Return split-cache partial payout coins when the primary relic was stolen.
+
+        Only awards when the player both opened the mini-chest AND the rival
+        reclaim succeeded (``_resource_race_failed``).  Clears the flag so it
+        fires at most once per portal.
+        """
+        if not self._resource_race_split_cache_looted:
+            return 0
+        if not self._resource_race_failed:
+            return 0
+        self._resource_race_split_cache_looted = False
+        return _RESOURCE_RACE_SPLIT_CACHE_BONUS
 
     def timed_extraction_bonus_state(self):
         """Return the current Mire Cache extraction bonus state for HUD display.
@@ -3412,13 +3770,14 @@ class Room:
     def _puzzle_pressure_suffix(self, now_ticks):
         controller = self._puzzle_controller() or {}
         last_penalty_at = controller.get("last_penalty_at")
-        if last_penalty_at is None:
-            return ""
-        if now_ticks - last_penalty_at > _PUZZLE_PENALTY_HUD_MS:
-            return ""
-        if controller.get("last_penalty_reason") == "camp":
-            return f" | {_PUZZLE_CAMP_HUD_LABEL}"
-        return " | Pressure spike"
+        if last_penalty_at is not None and now_ticks - last_penalty_at <= _PUZZLE_PENALTY_HUD_MS:
+            if controller.get("last_penalty_reason") == "camp":
+                return f" | {_PUZZLE_CAMP_HUD_LABEL}"
+            return " | Pressure spike"
+        last_decay_at = controller.get("last_decay_at")
+        if last_decay_at is not None and now_ticks - last_decay_at <= _PUZZLE_PENALTY_HUD_MS:
+            return " | Decay"
+        return ""
 
     def _puzzle_skip_suffix(self, now_ticks):
         controller = self._puzzle_controller() or {}
@@ -3506,6 +3865,54 @@ class Room:
     def remaining_objective_entities(self):
         return sum(1 for config in self.objective_entity_configs if not config["destroyed"])
 
+    def _tick_puzzle_decay(self, now_ticks):
+        """Roll back the last solved plate if no progress for decay_interval_ms.
+
+        The decay timer is independent from the stall timer: it uses its own
+        last_decay_at cooldown so it fires at most once per decay_interval_ms,
+        while leaving last_progress_at unchanged so the stall reaction can still
+        fire independently if the player has been idle long enough.
+        """
+        controller = self._puzzle_controller()
+        if controller is None:
+            return
+        decay_interval_ms = int(controller.get("decay_interval_ms", 0) or 0)
+        if decay_interval_ms <= 0:
+            return
+        last_progress_at = controller.get("last_progress_at")
+        if last_progress_at is None:
+            return
+        if now_ticks - last_progress_at < decay_interval_ms:
+            return
+        # Throttle: at most one decay per decay_interval_ms.
+        last_decay_at = controller.get("last_decay_at") or last_progress_at
+        if now_ticks - last_decay_at < decay_interval_ms:
+            return
+        variant = self._puzzle_variant()
+        if variant == "paired_runes":
+            primed = [c for c in controller.get("configs", ()) if c.get("primed")]
+            if not primed:
+                return
+            for c in primed:
+                c["primed"] = False
+            controller["pending_pair_label"] = None
+        else:
+            progress_index = controller.get("progress_index", 0)
+            if progress_index <= 0:
+                return
+            target_sequence = controller.get("target_sequence") or []
+            if progress_index > len(target_sequence):
+                return
+            last_plate_id = target_sequence[progress_index - 1]
+            for config in controller.get("configs", ()):
+                if config.get("kind") == "pressure_plate" and config.get("plate_id", config.get("order_index", -1)) == last_plate_id:
+                    config["activated"] = False
+                    config["activated_at"] = None
+                    config["last_camp_pulse_at"] = None
+                    break
+            controller["progress_index"] = progress_index - 1
+        controller["last_decay_at"] = now_ticks
+
     def remaining_puzzle_plates(self):
         return sum(
             1
@@ -3541,6 +3948,7 @@ class Room:
                     "invulnerable": False,
                     "window_gated": self.room_plan.ritual_link_mode == "pulse_gates_damage",
                     "window_vulnerable": False,
+                    "tether_regen_next_at": 0,
                     "destroyed": False,
                 }
                 for index, pos in enumerate(self._altar_positions(self.room_plan.objective_entity_count or 3))
@@ -3562,6 +3970,25 @@ class Room:
             exit_radius = self.room_plan.objective_exit_radius or 24
             damage_cooldown_ms = self.room_plan.objective_damage_cooldown_ms or 500
             goal_pos = self._portal_center_pixel()
+            checkpoints = []
+            for col_off, row_off in (self.room_plan.escort_checkpoints or ()):
+                col = max(1, min(ROOM_COLS - 2, ROOM_COLS // 2 + col_off))
+                row = max(1, min(ROOM_ROWS - 2, ROOM_ROWS // 2 + row_off))
+                px = col * TILE_SIZE + TILE_SIZE // 2
+                py = row * TILE_SIZE + TILE_SIZE // 2
+                px, py = self._safe_objective_pixel(px, py, margin=2)
+                checkpoints.append((int(px), int(py)))
+            blast_points = []
+            for col_off, row_off in (self.room_plan.escort_blast_points or ()):
+                col = max(1, min(ROOM_COLS - 2, ROOM_COLS // 2 + col_off))
+                row = max(1, min(ROOM_ROWS - 2, ROOM_ROWS // 2 + row_off))
+                px = col * TILE_SIZE + TILE_SIZE // 2
+                py = row * TILE_SIZE + TILE_SIZE // 2
+                px, py = self._safe_objective_pixel(px, py, margin=2)
+                blast_points.append((int(px), int(py)))
+            blast_duration_ms = self.room_plan.escort_blast_duration_ms or 1500
+            blast_radius = self.room_plan.escort_blast_radius or 72
+            blast_damage = self.room_plan.escort_blast_damage or 8
             self.objective_entity_configs = [
                 {
                     "kind": "escort_npc",
@@ -3583,6 +4010,30 @@ class Room:
                     "waiting_for_clearance": False,
                     "damage_cooldown_ms": damage_cooldown_ms,
                     "damage_cooldown_until": 0,
+                    "checkpoint_positions": checkpoints,
+                    "checkpoint_index": 0,
+                    "blast_point_positions": blast_points,
+                    "blast_point_index": 0,
+                    "detonating": False,
+                    "detonation_until_ms": 0,
+                    "blast_duration_ms": blast_duration_ms,
+                    "blast_radius": blast_radius,
+                    "blast_damage": blast_damage,
+                    # B4: biome-specific periodic stall.
+                    "carrier_stall_interval_ms": self.room_plan.escort_carrier_stall_interval_ms,
+                    "carrier_stall_duration_ms": self.room_plan.escort_carrier_stall_duration_ms,
+                    "carrier_stall_next_at": 0,
+                    "carrier_stalling_until": 0,
+                    "carrier_stalled": False,
+                    # E4: biome-specific stagger (frozen) and hazard (water).
+                    "escort_stagger_interval_ms": self.room_plan.escort_stagger_interval_ms,
+                    "escort_stagger_duration_ms": self.room_plan.escort_stagger_duration_ms,
+                    "escort_stagger_next_at": 0,
+                    "escort_staggering_until": 0,
+                    "escort_staggered": False,
+                    "escort_hazard_interval_ms": self.room_plan.escort_hazard_interval_ms,
+                    "escort_hazard_damage": self.room_plan.escort_hazard_damage,
+                    "escort_hazard_next_at": 0,
                     # Progress-wave tracking: record spawn position on first
                     # update so we can measure how far the NPC has travelled.
                     # _wave_origin is set lazily (None until NPC first moves).
@@ -3652,6 +4103,12 @@ class Room:
             self.objective_entity_configs = self._build_tide_lord_arena_configs()
         elif self.room_plan.room_id == "ice_frost_witch_arena":
             self.objective_entity_configs = self._build_frost_witch_arena_configs()
+        elif self.room_plan.objective_rule == "claim_relic_before_lockdown":
+            pos = self._random_floor_pos(margin=3)
+            self._resource_race_split_cache_pos = pos
+            self.objective_entity_configs = [
+                {"kind": "split_cache", "pos": pos, "looted": False}
+            ]
 
     def _build_crystal_vein_configs(self):
         """Place 3-4 destructible vein crystals on FLOOR cells.
@@ -4245,6 +4702,8 @@ class Room:
             "camp_pulse_interval_ms": max(0, int(self.room_plan.puzzle_camp_pulse_interval_ms or 0)),
             "camp_pulse_grace_ms": max(0, int(self.room_plan.puzzle_camp_pulse_grace_ms or 0)),
             "camp_pulse_radius": max(0, int(self.room_plan.puzzle_camp_pulse_radius or 0)),
+            "decay_interval_ms": max(0, int(self.room_plan.puzzle_decay_interval_ms or 0)),
+            "last_decay_at": None,
         }
         configs = []
         if variant == "paired_runes":
@@ -4710,9 +5169,9 @@ class Room:
         for dc, dr in offsets[: max(1, min(count, len(offsets)))]:
             col = cx + dc
             row = cy + dr
-            positions.append(
-                (col * TILE_SIZE + TILE_SIZE // 2, row * TILE_SIZE + TILE_SIZE // 2)
-            )
+            raw_px = col * TILE_SIZE + TILE_SIZE // 2
+            raw_py = row * TILE_SIZE + TILE_SIZE // 2
+            positions.append(self._safe_objective_pixel(raw_px, raw_py))
         return tuple(positions)
 
     def _objective_positions(self, scripted_offsets, default_offsets, count):
@@ -4722,7 +5181,8 @@ class Room:
             offsets = default_offsets[: max(1, min(count, len(default_offsets)))]
         positions = []
         for offset in offsets:
-            positions.append(self._offset_to_pixel(offset))
+            raw_px, raw_py = self._offset_to_pixel(offset)
+            positions.append(self._safe_objective_pixel(raw_px, raw_py))
         return tuple(positions)
 
     def _stealth_patrol_points(self, position, patrol_offset=None, shape="line", beacon_index=0):
@@ -4796,10 +5256,20 @@ class Room:
                 (-ox, -oy),
             ]
 
-        patrol_points = [
-            self._clamp_objective_pixel((position[0] + dx, position[1] + dy))
-            for dx, dy in offsets
-        ]
+        patrol_points = []
+        for dx, dy in offsets:
+            clamped = self._clamp_objective_pixel((position[0] + dx, position[1] + dy))
+            col = int(clamped[0]) // TILE_SIZE
+            row = int(clamped[1]) // TILE_SIZE
+            if (
+                0 <= row < ROOM_ROWS
+                and 0 <= col < ROOM_COLS
+                and self.grid[row][col] == SLIDE
+            ):
+                # SLIDE tiles cause uncontrolled directional commitment; snap
+                # the patrol waypoint to the nearest interior FLOOR cell.
+                clamped = self._safe_objective_pixel(clamped[0], clamped[1])
+            patrol_points.append(clamped)
         return tuple(dict.fromkeys(patrol_points))
 
     def _sentry_blocker_positions(self, beacon_positions, count=2):
@@ -5054,7 +5524,13 @@ class Room:
         portal_center = self._portal_center_pixel()
         migrate_ms = max(0, int(self.room_plan.holdout_zone_migrate_ms or 0))
         migration_offsets = tuple(self.room_plan.holdout_zone_migration_offsets or ())
-        anchors = (portal_center, *(self._offset_to_pixel(offset) for offset in migration_offsets))
+        anchors = (
+            portal_center,
+            *(
+                self._safe_objective_pixel(*self._offset_to_pixel(offset))
+                for offset in migration_offsets
+            ),
+        )
         if len(anchors) <= 1:
             migrate_ms = 0
         stabilizer_migration_delay_ms = max(
@@ -5178,6 +5654,47 @@ class Room:
             "source": "ritual_wrong_strike",
             "enemy_configs": enemy_configs,
         }
+
+    def _tick_ritual_tether_drain(self, now_ticks):
+        """Periodic HP regeneration for tether_drain ritual rooms.
+
+        While the anchor altar (first unique role in script order) is alive,
+        all non-anchor altars regain ``ritual_tether_regen_hp`` HP every
+        ``ritual_tether_regen_ms`` ms.  Once the anchor is destroyed the
+        regen stops permanently.
+        """
+        if self.room_plan is None:
+            return
+        if (self.room_plan.ritual_link_mode or "") != "tether_drain":
+            return
+        interval_ms = int(self.room_plan.ritual_tether_regen_ms or 0)
+        regen_hp = int(self.room_plan.ritual_tether_regen_hp or 0)
+        if interval_ms <= 0 or regen_hp <= 0:
+            return
+        priority = self._ritual_role_chain_priority()
+        anchor_role = priority[0] if priority else None
+        anchor_alive = any(
+            config.get("kind") == "altar"
+            and not config.get("destroyed")
+            and config.get("role") == anchor_role
+            for config in self.objective_entity_configs
+        )
+        if not anchor_alive:
+            return
+        for config in self.objective_entity_configs:
+            if config.get("kind") != "altar" or config.get("destroyed"):
+                continue
+            if config.get("role") == anchor_role:
+                continue  # anchor itself does not regen
+            # Deferred init: schedule first tick one full interval after enter.
+            if config.get("tether_regen_next_at", 0) == 0:
+                config["tether_regen_next_at"] = now_ticks + interval_ms
+                continue
+            if now_ticks < config["tether_regen_next_at"]:
+                continue
+            new_hp = min(config["max_hp"], config["current_hp"] + regen_hp)
+            config["current_hp"] = new_hp
+            config["tether_regen_next_at"] = now_ticks + interval_ms
 
     def _refresh_ritual_links(self):
         link_mode = self.room_plan.ritual_link_mode if self.room_plan else ""
@@ -5359,6 +5876,61 @@ class Room:
     def _relic_label(self):
         variant_id = self.room_plan.objective_variant if self.room_plan else DEFAULT_RELIC_VARIANT
         return get_relic_variant(variant_id or DEFAULT_RELIC_VARIANT)["label"]
+
+    def _safe_objective_pixel(self, px, py, margin=2):
+        """Return a pixel-centre snapped to the nearest interior FLOOR cell.
+
+        If the tile at (*px*, *py*) is already ``FLOOR`` the coordinates are
+        returned unchanged.  Otherwise a BFS walk finds the nearest FLOOR cell
+        within the room interior (``margin`` tiles from each wall edge).  Used
+        by objective-entity placement to keep stationary actors (altars, plates,
+        beacons, stabilizers) off hazard tiles introduced by the terrain-layout
+        system (WATER, THIN_ICE, CURRENT, SLIDE, QUICKSAND, etc.).
+
+        Parameters
+        ----------
+        px, py : float
+            Pixel-space position.  Converted to tile (col, row) internally.
+        margin : int
+            Minimum tile distance from any outer wall for accepted candidates.
+
+        Returns
+        -------
+        tuple[float, float]
+            A pixel-centre ``(px, py)``.  Falls back to the original position
+            if no FLOOR cell is reachable within the room (extremely rare).
+        """
+        from collections import deque as _deque
+
+        col0 = int(px) // TILE_SIZE
+        row0 = int(py) // TILE_SIZE
+        # Fast path: already on a safe interior FLOOR cell.
+        if (
+            margin <= col0 < ROOM_COLS - margin
+            and margin <= row0 < ROOM_ROWS - margin
+            and self.grid[row0][col0] == FLOOR
+        ):
+            return px, py
+        visited: set = {(col0, row0)}
+        queue = _deque([(col0, row0)])
+        while queue:
+            col, row = queue.popleft()
+            if (
+                margin <= col < ROOM_COLS - margin
+                and margin <= row < ROOM_ROWS - margin
+                and self.grid[row][col] == FLOOR
+            ):
+                return (
+                    col * TILE_SIZE + TILE_SIZE // 2,
+                    row * TILE_SIZE + TILE_SIZE // 2,
+                )
+            for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nc, nr = col + dc, row + dr
+                if (nc, nr) not in visited and 0 <= nc < ROOM_COLS and 0 <= nr < ROOM_ROWS:
+                    visited.add((nc, nr))
+                    queue.append((nc, nr))
+        # Fallback: return the original pixel position.
+        return px, py
 
     def _random_floor_pos(self, margin=3, door_buffer_tiles=None):
         """Return a (px, py) on a FLOOR tile.

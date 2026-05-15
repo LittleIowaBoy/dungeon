@@ -40,12 +40,13 @@ _CHEST_BONUS_LOOT_BY_REWARD_KIND = {
 class Chest(pygame.sprite.Sprite):
     SIZE = 24
 
-    def __init__(self, x, y, looted=False, reward_tier="standard", reward_kind="chest_upgrade"):
+    def __init__(self, x, y, looted=False, reward_tier="standard", reward_kind="chest_upgrade", is_split_cache=False):
         super().__init__()
         self.looted = looted
         self.reward_tier = reward_tier
         self.reward_kind = reward_kind
         self.gamble_pending = False
+        self.is_split_cache = is_split_cache
         self._set_image()
         self.rect = self.image.get_rect(center=(x, y))
         # Pre-generate contents (only used if not looted)
@@ -168,6 +169,11 @@ class Chest(pygame.sprite.Sprite):
 
     def _roll_contents(self):
         contents = []
+        if self.is_split_cache:
+            # Split-cache is a minor fallback; drop coins only.
+            for _ in range(random.randint(2, 3)):
+                contents.append(("coin",))
+            return contents
         bonus_items = _CHEST_BONUS_ITEMS_BY_TIER.get(self.reward_tier, 0)
         count = random.randint(CHEST_MIN_ITEMS, CHEST_MAX_ITEMS) + bonus_items
         for _ in range(count):

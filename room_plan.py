@@ -49,6 +49,10 @@ class RoomTemplate:
     ritual_payoff_kind: str = ""
     ritual_payoff_label: str = ""
     ritual_wrong_strike_spawn_count: int = 0
+    ritual_tether_regen_ms: int = 0
+    ritual_tether_regen_hp: int = 0
+    resource_race_rival_label: str = ""
+    resource_race_reclaim_window_ms: int = 0
     objective_label: str = ""
     objective_layout_offsets: str = ""
     objective_spawn_offset: str = ""
@@ -61,6 +65,18 @@ class RoomTemplate:
     objective_guide_radius: int = 0
     objective_exit_radius: int = 0
     objective_damage_cooldown_ms: int = 0
+    escort_checkpoints: str = ""
+    escort_blast_points: str = ""
+    escort_blast_duration_ms: int = 0
+    escort_blast_radius: int = 0
+    escort_blast_damage: int = 0
+    escort_carrier_stall_interval_ms: int = 0
+    escort_carrier_stall_duration_ms: int = 0
+    escort_harasser_count: int = 0
+    escort_stagger_interval_ms: int = 0
+    escort_stagger_duration_ms: int = 0
+    escort_hazard_interval_ms: int = 0
+    escort_hazard_damage: int = 0
     puzzle_reinforcement_count: int = 0
     puzzle_stall_duration_ms: int = 0
     puzzle_stabilizer_count: int = 0
@@ -69,6 +85,7 @@ class RoomTemplate:
     puzzle_camp_pulse_interval_ms: int = 0
     puzzle_camp_pulse_grace_ms: int = 0
     puzzle_camp_pulse_radius: int = 0
+    puzzle_decay_interval_ms: int = 0
     trap_intensity_scale: float = 1.0
     trap_speed_scale: float = 1.0
     trap_challenge_reward_kind: str = "chest_upgrade"
@@ -79,6 +96,7 @@ class RoomTemplate:
     trap_vent_chilled_duration_ms: int = 0
     trap_surge_interval_ms: int = 0
     trap_surge_duration_ms: int = 0
+    collapse_terrain_effect: str = ""
     notes: str = ""
     # Terrain layout system (terrain_layouts.py).
     terrain_layout: str = ""
@@ -133,6 +151,10 @@ class RoomTemplate:
             ritual_payoff_kind=row.get("ritual_payoff_kind", ""),
             ritual_payoff_label=row.get("ritual_payoff_label", ""),
             ritual_wrong_strike_spawn_count=row.get("ritual_wrong_strike_spawn_count", 0),
+            ritual_tether_regen_ms=row.get("ritual_tether_regen_ms", 0),
+            ritual_tether_regen_hp=row.get("ritual_tether_regen_hp", 0),
+            resource_race_rival_label=row.get("resource_race_rival_label", ""),
+            resource_race_reclaim_window_ms=row.get("resource_race_reclaim_window_ms", 0),
             objective_label=row.get("objective_label", ""),
             objective_layout_offsets=row.get("objective_layout_offsets", ""),
             objective_spawn_offset=row.get("objective_spawn_offset", ""),
@@ -145,6 +167,18 @@ class RoomTemplate:
             objective_guide_radius=row.get("objective_guide_radius", 0),
             objective_exit_radius=row.get("objective_exit_radius", 0),
             objective_damage_cooldown_ms=row.get("objective_damage_cooldown_ms", 0),
+            escort_checkpoints=row.get("escort_checkpoints", "") or "",
+            escort_blast_points=row.get("escort_blast_points", "") or "",
+            escort_blast_duration_ms=row.get("escort_blast_duration_ms", 0),
+            escort_blast_radius=row.get("escort_blast_radius", 0),
+            escort_blast_damage=row.get("escort_blast_damage", 0),
+            escort_carrier_stall_interval_ms=row.get("escort_carrier_stall_interval_ms", 0),
+            escort_carrier_stall_duration_ms=row.get("escort_carrier_stall_duration_ms", 0),
+            escort_harasser_count=row.get("escort_harasser_count", 0),
+            escort_stagger_interval_ms=row.get("escort_stagger_interval_ms", 0),
+            escort_stagger_duration_ms=row.get("escort_stagger_duration_ms", 0),
+            escort_hazard_interval_ms=row.get("escort_hazard_interval_ms", 0),
+            escort_hazard_damage=row.get("escort_hazard_damage", 0),
             puzzle_reinforcement_count=row.get("puzzle_reinforcement_count", 0),
             puzzle_stall_duration_ms=row.get("puzzle_stall_duration_ms", 0),
             puzzle_stabilizer_count=row.get("puzzle_stabilizer_count", 0),
@@ -153,6 +187,7 @@ class RoomTemplate:
             puzzle_camp_pulse_interval_ms=row.get("puzzle_camp_pulse_interval_ms", 0),
             puzzle_camp_pulse_grace_ms=row.get("puzzle_camp_pulse_grace_ms", 0),
             puzzle_camp_pulse_radius=row.get("puzzle_camp_pulse_radius", 0),
+            puzzle_decay_interval_ms=row.get("puzzle_decay_interval_ms", 0),
             trap_intensity_scale=row.get("trap_intensity_scale", 1.0),
             trap_speed_scale=row.get("trap_speed_scale", 1.0),
             trap_challenge_reward_kind=row.get("trap_challenge_reward_kind", "chest_upgrade"),
@@ -163,6 +198,7 @@ class RoomTemplate:
             trap_vent_chilled_duration_ms=row.get("trap_vent_chilled_duration_ms", 0),
             trap_surge_interval_ms=row.get("trap_surge_interval_ms", 0),
             trap_surge_duration_ms=row.get("trap_surge_duration_ms", 0),
+            collapse_terrain_effect=row.get("collapse_terrain_effect", "") or "",
             notes=row["notes"],
             terrain_layout=row.get("terrain_layout", "") or "",
             allow_terrain_accent=bool(row.get("allow_terrain_accent", True)),
@@ -212,6 +248,10 @@ class RoomPlan:
     ritual_payoff_kind: str = ""
     ritual_payoff_label: str = ""
     ritual_wrong_strike_spawn_count: int = 0
+    ritual_tether_regen_ms: int = 0
+    ritual_tether_regen_hp: int = 0
+    resource_race_rival_label: str = ""
+    resource_race_reclaim_window_ms: int = 0
     objective_label: str = ""
     objective_layout_offsets: tuple[tuple[int, int], ...] = ()
     objective_spawn_offset: tuple[int, int] | None = None
@@ -224,6 +264,18 @@ class RoomPlan:
     objective_guide_radius: int = 0
     objective_exit_radius: int = 0
     objective_damage_cooldown_ms: int = 0
+    escort_checkpoints: tuple[tuple[int, int], ...] = ()
+    escort_blast_points: tuple[tuple[int, int], ...] = ()
+    escort_blast_duration_ms: int = 0
+    escort_blast_radius: int = 0
+    escort_blast_damage: int = 0
+    escort_carrier_stall_interval_ms: int = 0
+    escort_carrier_stall_duration_ms: int = 0
+    escort_harasser_count: int = 0
+    escort_stagger_interval_ms: int = 0
+    escort_stagger_duration_ms: int = 0
+    escort_hazard_interval_ms: int = 0
+    escort_hazard_damage: int = 0
     puzzle_reinforcement_count: int = 0
     puzzle_stall_duration_ms: int = 0
     puzzle_stabilizer_count: int = 0
@@ -232,6 +284,7 @@ class RoomPlan:
     puzzle_camp_pulse_interval_ms: int = 0
     puzzle_camp_pulse_grace_ms: int = 0
     puzzle_camp_pulse_radius: int = 0
+    puzzle_decay_interval_ms: int = 0
     trap_intensity_scale: float = 1.0
     trap_speed_scale: float = 1.0
     trap_challenge_reward_kind: str = "chest_upgrade"
@@ -242,6 +295,7 @@ class RoomPlan:
     trap_vent_chilled_duration_ms: int = 0
     trap_surge_interval_ms: int = 0
     trap_surge_duration_ms: int = 0
+    collapse_terrain_effect: str = ""
     # Danger Mode: True when this room is a flagged danger branch.
     danger_variant: bool = False
     # Terrain layout system (terrain_layouts.py).

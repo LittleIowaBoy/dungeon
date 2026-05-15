@@ -502,9 +502,19 @@ class Dungeon:
         if not room.enemies_cleared:
             frozen = bool(getattr(room, "frozen_enemies", False))
             attacks_enabled = bool(getattr(room, "enemy_attacks_enabled", True))
+            # E3: how many initial enemies should harass the escort NPC instead of the player.
+            harasser_quota = 0
+            if room.room_plan is not None and room.room_plan.objective_rule in {
+                "escort_to_exit", "escort_bomb_to_exit"
+            }:
+                harasser_quota = room.room_plan.escort_harasser_count
+            harasser_spawned = 0
             for cls, (px, py) in room.enemy_configs:
                 enemy = cls(px, py, is_frozen=frozen)
                 enemy.attacks_disabled = not attacks_enabled
+                if harasser_spawned < harasser_quota:
+                    enemy.harasses_escort = True
+                    harasser_spawned += 1
                 self.enemy_group.add(enemy)
 
             # Danger Mode: apply pressure HP/damage boost to all spawned enemies.
@@ -680,13 +690,21 @@ class Dungeon:
                         self.current_room._set_portal_active(False)
                     import damage_feedback
                     damage_feedback.report_boss_intro(self.boss_controller.name)
+            elif config["kind"] == "split_cache" and not config.get("looted"):
+                pos = config["pos"]
+                self.chest_group.add(
+                    Chest(pos[0], pos[1], looted=False, reward_tier="standard",
+                          is_split_cache=True)
+                )
 
     def _save_chest_state(self):
         """Persist chest looted flag back to the Room data."""
         room = self.current_room
         for chest in self.chest_group:
+            if getattr(chest, "is_split_cache", False):
+                continue
             room.chest_looted = chest.looted
-            break  # only one chest per room
+            break  # only one main chest per room
 
     # ── door detection ──────────────────────────────────
     @staticmethod

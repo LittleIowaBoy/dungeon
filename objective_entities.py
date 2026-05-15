@@ -108,6 +108,8 @@ class AltarAnchor(pygame.sprite.Sprite):
         # (e.g. _empower_remaining_altars) take effect on the sprite.
         self.pulse_radius = self._config.get("pulse_radius", self.pulse_radius)
         self.pulse_damage = self._config.get("pulse_damage", self.pulse_damage)
+        # Re-sync HP so external regen (tether_drain) is reflected in _build_image.
+        self.current_hp = self._config.get("current_hp", self.current_hp)
         elapsed = max(0, now_ticks + self.pulse_offset_ms)
         self.pulse_active = elapsed % self.pulse_cycle_ms < self.pulse_active_ms
         if self._config.get("window_gated"):
@@ -1473,6 +1475,8 @@ class EscortNPC(pygame.sprite.Sprite):
 
     def update_behavior(self, *, player, wall_rects, portal_pos, allow_advance):
         if self._config.get("destroyed") or self._config.get("reached_exit"):
+            if self._config.get("destroyed") and self.alive():
+                self.kill()
             return False
 
         # Snap to config["pos"] on the very first tick.  _position_escort_for_entry
@@ -1519,7 +1523,39 @@ class EscortNPC(pygame.sprite.Sprite):
         # Use the config's goal_pos as the escort's walk target if one has
         # been set (e.g. by _position_escort_for_entry).  Fall back to
         # portal_pos only when no explicit target was placed.
-        goal_pos = self._config.get("goal_pos") or portal_pos
+        # Priority: blast points (with detonation event) → checkpoints (pass-through) → exit.
+
+        # B1/B2: If the carrier is currently detonating, freeze in place.
+        if self._config.get("detonating"):
+            self._config["pos"] = self.rect.center
+            return False
+
+        # B4: If the carrier is stalling (biome freeze), freeze in place.
+        if self._config.get("carrier_stalled"):
+            self._config["pos"] = self.rect.center
+            return False
+
+        # E4: If the escort is staggered (frozen biome), freeze in place.
+        if self._config.get("escort_staggered"):
+            self._config["pos"] = self.rect.center
+            return False
+
+        _blast_positions = self._config.get("blast_point_positions") or []
+        _bp_index = self._config.get("blast_point_index", 0)
+        _checkpoints = self._config.get("checkpoint_positions") or []
+        _cp_index = self._config.get("checkpoint_index", 0)
+        if _bp_index < len(_blast_positions):
+            goal_pos = _blast_positions[_bp_index]
+            _on_blast_point = True
+            _on_checkpoint = False
+        elif _cp_index < len(_checkpoints):
+            goal_pos = _checkpoints[_cp_index]
+            _on_blast_point = False
+            _on_checkpoint = True
+        else:
+            goal_pos = self._config.get("goal_pos") or portal_pos
+            _on_blast_point = False
+            _on_checkpoint = False
 
         # ── Choose target ─────────────────────────────────────────────────────
         # Switch from trailing to goal-seeking only once the *player* is
@@ -1549,6 +1585,14 @@ class EscortNPC(pygame.sprite.Sprite):
         ex = goal_pos[0] - self.rect.centerx
         ey = goal_pos[1] - self.rect.centery
         if ex * ex + ey * ey <= exit_radius * exit_radius:
+            if _on_blast_point:
+                # Trigger detonation — room.py will advance index after timer.
+                self._config["detonating"] = True
+                self._config["detonation_until_ms"] = 0  # armed by _tick_blast_detonation
+                return False
+            if _on_checkpoint:
+                self._config["checkpoint_index"] = _cp_index + 1
+                return False
             self.rect.center = goal_pos
             self._config["pos"] = goal_pos
             self._config["reached_exit"] = True

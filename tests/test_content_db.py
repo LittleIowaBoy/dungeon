@@ -387,5 +387,46 @@ class RoomContentBootstrapTests(unittest.TestCase):
         self.assertIn("puzzle_stall_duration_ms", columns)
 
 
+    # ── *_4 boon room biome variants ──────────────────────────────────────
+    def test_boon_room_biome_overrides_apply_per_dungeon_names_and_layouts(self):
+        content_db.ensure_room_content_db()
+
+        mud_catalog = content_db.load_room_catalog("mud_caverns")
+        mud_altar = next(t for t in mud_catalog if t["room_id"] == "rune_altar_chamber")
+        mud_pact = next(t for t in mud_catalog if t["room_id"] == "pact_shrine_chamber")
+        self.assertEqual(mud_altar["display_name"], "Stone Cipher Altar")
+        self.assertEqual(mud_altar["objective_label"], "Cipher")
+        self.assertEqual(mud_altar["terrain_layout"], "alcove_pockets")
+        self.assertIn("quarry stone", mud_altar["notes"])
+        self.assertEqual(mud_pact["display_name"], "Quarry Pact Shrine")
+        self.assertEqual(mud_pact["objective_label"], "Pact Stone")
+        self.assertEqual(mud_pact["terrain_layout"], "island_cluster_sparse")
+        self.assertIn("quarry", mud_pact["notes"])
+
+        frozen_catalog = content_db.load_room_catalog("frozen_depths")
+        frozen_altar = next(t for t in frozen_catalog if t["room_id"] == "rune_altar_chamber")
+        frozen_pact = next(t for t in frozen_catalog if t["room_id"] == "pact_shrine_chamber")
+        self.assertEqual(frozen_altar["display_name"], "Frost Glyph Altar")
+        self.assertEqual(frozen_altar["objective_label"], "Glyph")
+        self.assertEqual(frozen_altar["terrain_layout"], "column_hall_offset")
+        self.assertIn("crystalline frost", frozen_altar["notes"])
+        self.assertEqual(frozen_pact["display_name"], "Reliquary Pact Shrine")
+        self.assertEqual(frozen_pact["objective_label"], "Pact Seal")
+        self.assertEqual(frozen_pact["terrain_layout"], "fortress_courtyard")
+        self.assertIn("frost-sealed", frozen_pact["notes"])
+
+        sunken_catalog = content_db.load_room_catalog("sunken_ruins")
+        sunken_altar = next(t for t in sunken_catalog if t["room_id"] == "rune_altar_chamber")
+        sunken_pact = next(t for t in sunken_catalog if t["room_id"] == "pact_shrine_chamber")
+        self.assertEqual(sunken_altar["display_name"], "Tidal Seal Altar")
+        self.assertEqual(sunken_altar["objective_label"], "Seal")
+        self.assertEqual(sunken_altar["terrain_layout"], "choke_bridge_simple")
+        self.assertIn("ancient tides", sunken_altar["notes"])
+        self.assertEqual(sunken_pact["display_name"], "Sunken Pact Shrine")
+        self.assertEqual(sunken_pact["objective_label"], "Pact Relic")
+        self.assertEqual(sunken_pact["terrain_layout"], "alcove_pockets")
+        self.assertIn("tides", sunken_pact["notes"])
+
+
 if __name__ == "__main__":
     unittest.main()
