@@ -1,6 +1,7 @@
 """Objective-specific room entities such as altar anchors."""
 
 import math
+import random
 
 import pygame
 
